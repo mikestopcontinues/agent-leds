@@ -103,40 +103,35 @@ const fn palette(error: u32, question: u32, stopped: u32, working: u32) -> Palet
     }
 }
 
-/// Palettes chosen for RGB LEDs, which mix colors from three narrow-band dies
-/// whose light output is linear in the value sent. Single-die colors are the
-/// most reliable; mixed colors carry far less green than their screen
-/// equivalents because the green die is the brightest.
-pub const PALETTES: [NamedPalette; 6] = [
+/// Palettes chosen for the Pro's RGB LEDs. Their light is linear in the value
+/// sent and their three dies are nearly single-wavelength, so a mixed color
+/// needs far less of its second die than the same color on a screen, and the
+/// single-die colors are the most dependable.
+pub const PALETTES: [NamedPalette; 5] = [
     NamedPalette {
         name: "signal",
-        about: "red, orange, green, blue; orange is the only mixed color",
-        colors: palette(0xFF0000, 0xFF3000, 0x00FF00, 0x0000FF),
+        about: "red, orange, green, blue: one die each, orange the only mix",
+        colors: palette(0xFF0000, 0xFF5000, 0x00FF00, 0x0000FF),
     },
     NamedPalette {
-        name: "azure",
-        about: "signal with a lighter blue and amber, easier to tell apart off-axis",
-        colors: palette(0xFF0000, 0xFF5000, 0x00FF20, 0x0050FF),
+        name: "bright",
+        about: "signal with a yellower orange and a lighter blue, further apart at a glance",
+        colors: palette(0xFF0000, 0xFF7000, 0x00FF30, 0x0050FF),
     },
     NamedPalette {
         name: "colorblind",
-        about: "separates the states on the blue-yellow axis for red-green color blindness",
-        colors: palette(0xFF0030, 0xFF9000, 0x00FFC0, 0x0030FF),
+        about: "pink, yellow, white, blue: told apart without comparing red to green",
+        colors: palette(0xFF0050, 0xFFB000, 0xFFFFFF, 0x0030FF),
     },
     NamedPalette {
         name: "neon",
-        about: "two-die colors, the brightest the LEDs can make",
-        colors: palette(0xFF0050, 0xFFA000, 0x00FF80, 0x6000FF),
+        about: "pink, amber, mint, violet: two dies each, the brightest set",
+        colors: palette(0xFF0060, 0xFFA000, 0x00FF80, 0x3000FF),
     },
     NamedPalette {
         name: "soft",
-        about: "a little of every die in each color, gentler in a dark room",
-        colors: palette(0xFF1808, 0xFF5810, 0x30FF28, 0x1838FF),
-    },
-    NamedPalette {
-        name: "ember",
-        about: "warm states with working in violet instead of blue",
-        colors: palette(0xFF0000, 0xFF4000, 0x90FF00, 0x9000FF),
+        about: "signal with a little of every die in each color, gentler in a dark room",
+        colors: palette(0xFF2010, 0xFF7020, 0x30FF40, 0x2040FF),
     },
 ];
 

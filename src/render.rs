@@ -193,7 +193,7 @@ mod tests {
         };
         assert_eq!(
             announce(Question, &slots(&[Question]), &config),
-            "#FF3000 700ms pulse\n#FF3000 #000000 #000000 #000000 #000000 #000000 #000000 #000000 500ms ease"
+            "#FF5000 700ms pulse\n#FF5000 #000000 #000000 #000000 #000000 #000000 #000000 #000000 500ms ease"
         );
     }
 

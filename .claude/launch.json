@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "workshop",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["--hot", "prototype/server.ts"],
+      "port": 4477
+    }
+  ]
+}

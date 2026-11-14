@@ -1,0 +1,294 @@
+:root {
+  color-scheme: dark;
+  --bg: #0e0f12;
+  --panel: #17191e;
+  --line: #2a2d35;
+  --text: #e6e8ec;
+  --muted: #9097a3;
+  --accent: #7aa2ff;
+  --bad: #ff6b6b;
+  font: 14px/1.5 system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+main {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+header p,
+.note,
+.loading {
+  color: var(--muted);
+  margin: 4px 0 0;
+}
+
+.loading {
+  padding: 24px;
+}
+
+h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 20px 0 8px;
+}
+
+section > h2:first-child {
+  margin-top: 0;
+}
+
+.stage {
+  margin: 20px 0;
+  padding: 28px 20px 16px;
+  background: #000;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+/* The card edge: eight lights in a row, 0 on the left. */
+.strip {
+  max-width: 760px;
+  margin: 0 auto 20px;
+}
+
+.lights,
+.indexes {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 14px;
+}
+
+.lights {
+  padding: 26px 8px;
+}
+
+.lights i {
+  height: 22px;
+  border-radius: 6px;
+}
+
+.indexes span {
+  position: relative;
+  text-align: center;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.indexes b {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-weight: 500;
+  font-size: 12px;
+}
+
+.indexes span:first-child b {
+  left: 0;
+  transform: none;
+}
+
+.indexes span:last-child b {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+  margin-top: 44px;
+}
+
+.message {
+  margin: 10px 0 0;
+  color: var(--accent);
+}
+
+.bad {
+  color: var(--bad);
+}
+
+.panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
+}
+
+.panels > section {
+  min-width: 0;
+  padding: 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+button,
+select,
+input[type="text"],
+.hex,
+textarea {
+  font: inherit;
+  color: var(--text);
+  background: #22252c;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 10px;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+button.chosen {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.toggle,
+.field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field {
+  margin: 8px 0;
+}
+
+.field output {
+  min-width: 3ch;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  vertical-align: -1px;
+}
+
+.queue {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  min-height: 40px;
+}
+
+.queue li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+
+.queue .empty {
+  color: var(--muted);
+}
+
+.program {
+  margin: 8px 0;
+}
+
+.program figcaption {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+}
+
+pre,
+textarea,
+.hex {
+  font: 12px/1.5 ui-monospace, monospace;
+}
+
+pre {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  background: #0e0f12;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.colors {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.colors th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.colors td {
+  padding: 3px 0;
+}
+
+.hex {
+  width: 9ch;
+}
+
+.hex.bad {
+  border-color: var(--bad);
+}
+
+input[type="color"] {
+  width: 40px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: none;
+}
