@@ -1,5 +1,7 @@
 //! The queue of agent sessions that are doing something or need something.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// What a session is doing, in queue order: the first variant sits at the front.
@@ -45,6 +47,15 @@ pub struct Item {
     pub since: u64,
     /// When the session last reported anything, in Unix milliseconds.
     seen: u64,
+    /// When the user first looked at the session after it stopped, in Unix milliseconds.
+    pub read: Option<u64>,
+}
+
+impl Item {
+    /// Whether the session has stopped and the user has not looked at it since.
+    fn is_unread(&self) -> bool {
+        self.state == State::Stopped && self.read.is_none()
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -76,6 +87,7 @@ impl Queue {
                 }
                 item.state = state;
                 item.since = now;
+                item.read = None;
                 Change::Entered(state)
             }
             (Update::Enter(state), None) => {
@@ -85,6 +97,7 @@ impl Queue {
                     state,
                     since: now,
                     seen: now,
+                    read: None,
                 });
                 Change::Entered(state)
             }
@@ -96,6 +109,7 @@ impl Queue {
                 }
                 item.state = State::Working;
                 item.since = now;
+                item.read = None;
                 Change::Entered(State::Working)
             }
             (Update::Leave, Some(index)) => {
@@ -123,10 +137,37 @@ impl Queue {
         self.items.len() != before
     }
 
-    pub fn expire(&mut self, now: u64) -> bool {
+    /// When the oldest stopped session that has not been read stopped.
+    pub fn unread_since(&self) -> Option<u64> {
+        let unread = self.items.iter().filter(|item| item.is_unread());
+        unread.map(|item| item.since).min()
+    }
+
+    /// Marks the stopped sessions the user has looked at since they stopped as
+    /// read, given when each session was last looked at.
+    pub fn mark_read(&mut self, looked_at: &HashMap<String, u64>) -> bool {
+        let mut marked = false;
+        for item in self.items.iter_mut().filter(|item| item.is_unread()) {
+            if let Some(&at) = looked_at.get(&item.session)
+                && at >= item.since
+            {
+                item.read = Some(at);
+                marked = true;
+            }
+        }
+        marked
+    }
+
+    /// Drops working sessions that have gone silent, and stopped sessions
+    /// that were read at least `keep_read_ms` ago.
+    pub fn expire(&mut self, now: u64, keep_read_ms: u64) -> bool {
         let before = self.items.len();
-        self.items.retain(|item| {
-            item.state != State::Working || now.saturating_sub(item.seen) <= WORKING_SILENCE_MS
+        self.items.retain(|item| match item.state {
+            State::Working => now.saturating_sub(item.seen) <= WORKING_SILENCE_MS,
+            State::Stopped => item
+                .read
+                .is_none_or(|read| now.saturating_sub(read) < keep_read_ms),
+            State::Error | State::Question => true,
         });
         self.items.len() != before
     }
@@ -234,8 +275,41 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&queue).unwrap()).unwrap();
         assert_eq!(states(&reloaded), states(&queue));
         // What was last seen survives too, so silence is still measured from then.
-        assert!(reloaded.expire(5 + WORKING_SILENCE_MS + 1));
+        assert!(reloaded.expire(5 + WORKING_SILENCE_MS + 1, 0));
         assert_eq!(states(&reloaded), [("b", State::Stopped)]);
+    }
+
+    #[test]
+    fn a_stopped_session_leaves_a_while_after_it_is_read() {
+        const KEEP: u64 = 1000;
+        let looked_at = |session: &str, at: u64| HashMap::from([(session.to_owned(), at)]);
+        let mut queue = Queue::default();
+        queue.apply("done", "done", Update::Enter(State::Stopped), 100);
+        queue.apply("asks", "asks", Update::Enter(State::Question), 100);
+        assert_eq!(queue.unread_since(), Some(100));
+        // Looking at it before it stopped does not count, and unread it stays however long.
+        assert!(!queue.mark_read(&looked_at("done", 99)));
+        assert!(!queue.expire(1_000_000, KEEP));
+        // Only a stopped session can be read: a question still needs an answer.
+        assert!(!queue.mark_read(&looked_at("asks", 150)));
+        assert!(queue.mark_read(&looked_at("done", 150)));
+        assert_eq!(queue.unread_since(), None);
+        // The first look counts, not a later one.
+        assert!(!queue.mark_read(&looked_at("done", 900)));
+        assert!(!queue.expire(150 + KEEP - 1, KEEP));
+        assert!(queue.expire(150 + KEEP, KEEP));
+        assert_eq!(states(&queue), [("asks", State::Question)]);
+    }
+
+    #[test]
+    fn a_session_that_stops_again_is_unread_again() {
+        let mut queue = Queue::default();
+        queue.apply("a", "a", Update::Enter(State::Stopped), 1);
+        assert!(queue.mark_read(&HashMap::from([("a".to_owned(), 2)])));
+        queue.apply("a", "a", Update::Enter(State::Working), 3);
+        queue.apply("a", "a", Update::Enter(State::Stopped), 4);
+        assert_eq!(queue.unread_since(), Some(4));
+        assert!(!queue.expire(1_000_000, 0));
     }
 
     #[test]
@@ -245,7 +319,7 @@ mod tests {
         queue.apply("busy", "busy", Update::Enter(State::Working), 0);
         queue.apply("done", "done", Update::Enter(State::Stopped), 0);
         queue.apply("busy", "busy", Update::Background, WORKING_SILENCE_MS);
-        assert!(queue.expire(WORKING_SILENCE_MS + 1));
+        assert!(queue.expire(WORKING_SILENCE_MS + 1, 0));
         assert_eq!(
             states(&queue),
             [("done", State::Stopped), ("busy", State::Working)]

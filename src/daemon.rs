@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::config::{Color, Config, PALETTES, state_dir};
-use crate::device;
 use crate::render::{self, Step};
 use crate::state::{Change, Queue, State, Update};
+use crate::{desktop, device};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -215,6 +215,10 @@ impl Daemon {
             } => {
                 match self.queue.apply(&session, &label, update, now_ms()) {
                     Change::Entered(state) => {
+                        if state == State::Stopped {
+                            // A session that stops while the user is looking at it is read already.
+                            self.mark_read();
+                        }
                         self.save_queue();
                         self.announce(state);
                     }
@@ -319,8 +323,13 @@ impl Daemon {
         }
         if self.next_check <= now {
             self.next_check = now + DEVICE_CHECK;
-            if self.queue.expire(now_ms()) {
+            let read = self.mark_read();
+            let keep_read_ms = u64::from(self.config.keep_read_minutes) * 60_000;
+            let left = self.queue.expire(now_ms(), keep_read_ms);
+            if read || left {
                 self.save_queue();
+            }
+            if left {
                 self.refresh();
             }
             match device::uptime_ms() {
@@ -333,6 +342,14 @@ impl Daemon {
                 Err(_) => self.uptime = None,
             }
         }
+    }
+
+    /// Notes which stopped sessions the user has looked at since they stopped.
+    fn mark_read(&mut self) -> bool {
+        let Some(since) = self.queue.unread_since() else {
+            return false;
+        };
+        self.queue.mark_read(&desktop::looked_at(since, now_ms()))
     }
 
     fn save_queue(&self) {

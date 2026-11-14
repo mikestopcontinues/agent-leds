@@ -3,6 +3,7 @@
 mod claude;
 mod config;
 mod daemon;
+mod desktop;
 mod device;
 mod launchd;
 mod render;
@@ -199,16 +200,19 @@ fn status(json: bool) -> Result<()> {
     }
     let now = status["now"].as_u64().unwrap_or_default();
     for item in status["items"].as_array().into_iter().flatten() {
-        let seconds = now.saturating_sub(item["since"].as_u64().unwrap_or(now)) / 1000;
-        let age = match seconds {
-            0..60 => format!("{seconds}s"),
-            60..3600 => format!("{}m", seconds / 60),
-            _ => format!("{}h{:02}m", seconds / 3600, seconds % 3600 / 60),
+        let age = |since: &Value| match now.saturating_sub(since.as_u64().unwrap_or(now)) / 1000 {
+            seconds @ 0..60 => format!("{seconds}s"),
+            seconds @ 60..3600 => format!("{}m", seconds / 60),
+            seconds => format!("{}h{:02}m", seconds / 3600, seconds % 3600 / 60),
+        };
+        let read = match &item["read"] {
+            Value::Null => String::new(),
+            at => format!("  read {} ago", age(at)),
         };
         println!(
-            "{:<9} {:>6}  {}  {}",
+            "{:<9} {:>6}  {}  {}{read}",
             item["state"].as_str().unwrap_or_default(),
-            age,
+            age(&item["since"]),
             item["session"]
                 .as_str()
                 .unwrap_or_default()

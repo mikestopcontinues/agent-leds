@@ -185,6 +185,7 @@ button.primary:not(:disabled) {
 button,
 select,
 input[type="text"],
+input[type="number"],
 .hex,
 textarea {
   font: inherit;
@@ -230,6 +231,11 @@ button.chosen {
 
 .field select {
   justify-self: start;
+}
+
+.field input[type="number"] {
+  justify-self: start;
+  width: 8ch;
 }
 
 details {

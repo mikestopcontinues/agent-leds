@@ -21,6 +21,8 @@ export type Config = {
   brightness: number;
   front_led: number;
   balance: [number, number, number];
+  /** How many minutes a stopped session keeps its light after it has been looked at, 0 to 1440. */
+  keep_read_minutes: number;
   colors: Palette;
   snake: Snake;
 };

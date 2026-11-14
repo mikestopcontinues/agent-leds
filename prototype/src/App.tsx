@@ -286,6 +286,19 @@ export function App() {
         </section>
 
         <section>
+          <h2>Read sessions</h2>
+          <p className="note">
+            A stopped session keeps its light until you have looked at it in the desktop app, and then for this many
+            minutes more. At 0 it goes as soon as the service notices, which takes up to 15 seconds.
+          </p>
+          <label className="field">
+            Keep minutes
+            <input type="number" min={0} max={1440} step={1} value={config.keep_read_minutes}
+              onChange={(event) => set({ keep_read_minutes: Math.min(1440, Math.max(0, Math.round(Number(event.target.value) || 0))) })} />
+          </label>
+        </section>
+
+        <section>
           <h2>Colors</h2>
           <table className="colors">
             <thead>

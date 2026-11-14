@@ -214,6 +214,9 @@ pub struct Config {
     /// The default is an estimate from the dies' luminance and how much
     /// brighter saturated colors look than their luminance; tune it by eye.
     pub balance: [f64; 3],
+    /// How long a stopped session keeps its light after the user has looked
+    /// at it, in minutes. One that has not been looked at keeps it.
+    pub keep_read_minutes: u32,
     pub colors: Palette,
     pub snake: Snake,
 }
@@ -224,6 +227,7 @@ impl Default for Config {
             brightness: 255,
             front_led: 7,
             balance: [0.32, 0.54, 0.14],
+            keep_read_minutes: 15,
             colors: PALETTES[0].colors,
             snake: Snake::default(),
         }
@@ -259,6 +263,9 @@ impl Config {
             .all(|weight| weight.is_finite() && *weight > 0.0)
         {
             return Err("each die's brightness must be above 0".into());
+        }
+        if self.keep_read_minutes > 24 * 60 {
+            return Err("a read session keeps its light for 0-1440 minutes".into());
         }
         let snake = &self.snake;
         if !snake
@@ -355,6 +362,12 @@ mod tests {
                 .contains("timings")
         );
         assert!(with(|config| config.snake.fade_out_ms = 5001).is_err());
+        assert!(with(|config| config.keep_read_minutes = 1440).is_ok());
+        assert!(
+            with(|config| config.keep_read_minutes = 1441)
+                .unwrap_err()
+                .contains("minutes")
+        );
     }
 
     #[test]
