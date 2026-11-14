@@ -1,6 +1,6 @@
 [package]
 name = "agent-leds"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Status lights for coding agents on a SidePulse Pro, replacing its own software"
 repository = "https://github.com/mikestopcontinues/agent-leds"
