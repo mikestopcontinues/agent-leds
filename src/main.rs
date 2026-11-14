@@ -7,6 +7,8 @@ mod device;
 mod doctor;
 mod eject;
 mod files;
+#[allow(dead_code)]
+mod fsm;
 mod harness;
 mod ipc;
 mod launchd;
