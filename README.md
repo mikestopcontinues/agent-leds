@@ -241,6 +241,7 @@ cd prototype && bun install && bun run dev
 
 ## Open questions
 
+- Installing with Homebrew has been checked on Apple silicon. The Intel build is made the same way but has not been run.
 - Claude Code, Codex 0.153.2, Grok 1.0.13 and `cursor-agent` 2026.05.28 have been checked against real sessions, the last two only run once from the command line (`grok -p`, `cursor-agent -p`). What Cursor sends from its interface is taken from its code, and Junie's events from its documentation.
 - Refusing an eject has been checked with `diskutil eject`: the eject fails and the card is mounted again within 5 seconds. A wake from hibernation with the screen locked has not been seen, nor has a restart of Disk Arbitration.
 - Whether Grok sends its own camelCase payloads to the hooks it reads from `~/.claude/settings.json`. If it sent Claude Code's spelling there, a Grok session would be reported twice.
