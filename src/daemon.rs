@@ -4,8 +4,9 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -68,11 +69,38 @@ trait World {
     fn instant(&self) -> Instant;
     fn save_queue(&mut self, queue: &Queue);
     fn save_config(&mut self, config: &Config) -> Result<()>;
+    /// Whether the binary the daemon was started from has been replaced,
+    /// as an upgrade does.
+    fn replaced(&self) -> bool;
 }
 
 /// The Mac the daemon runs on.
 struct System {
     desktop: Desktop,
+    exe: PathBuf,
+    /// The file `exe` led to when the daemon started.
+    started_from: Option<Binary>,
+}
+
+/// Which file a path leads to, and when it was last written.
+#[derive(PartialEq)]
+struct Binary {
+    device: u64,
+    inode: u64,
+    modified: SystemTime,
+}
+
+impl Binary {
+    /// The file at `path`, after any symlinks, such as the one Homebrew
+    /// points at each version in turn.
+    fn at(path: &Path) -> Option<Binary> {
+        let metadata = std::fs::metadata(path).ok()?;
+        Some(Binary {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            modified: metadata.modified().ok()?,
+        })
+    }
 }
 
 impl World for System {
@@ -112,6 +140,13 @@ impl World for System {
     fn save_config(&mut self, config: &Config) -> Result<()> {
         config.save()
     }
+
+    fn replaced(&self) -> bool {
+        // A binary that is gone, as during an uninstall, has no new version
+        // to restart into.
+        let now = Binary::at(&self.exe);
+        now.is_some() && now != self.started_from
+    }
 }
 
 struct Daemon<W: World> {
@@ -126,6 +161,9 @@ struct Daemon<W: World> {
     next_look: Instant,
     /// When the last check ran, in Unix milliseconds. A long gap means the Mac slept.
     checked: u64,
+    /// The binary was replaced, so the daemon should exit and let launchd
+    /// start the new one.
+    replaced: bool,
 }
 
 type Inbox = mpsc::Receiver<(Request, Sender<Result<Value>>)>;
@@ -133,11 +171,14 @@ type Inbox = mpsc::Receiver<(Request, Sender<Result<Value>>)>;
 pub fn run() -> Result<()> {
     let inbox = listen()?;
     thread::spawn(eject::guard);
+    let exe = std::env::current_exe()?;
     let world = System {
         desktop: Desktop::default(),
+        started_from: Binary::at(&exe),
+        exe,
     };
     let mut daemon = Daemon::new(world, Config::load()?, saved_queue());
-    loop {
+    while !daemon.replaced {
         let deadline = [
             Some(daemon.next_check),
             daemon.player.deadline(),
@@ -158,6 +199,10 @@ pub fn run() -> Result<()> {
         }
         daemon.tick();
     }
+    // The queue is saved with every change, and the new daemon rewrites the
+    // card when it first checks it.
+    eprintln!("agent-leds: the binary was replaced; exiting for launchd to start the new one");
+    Ok(())
 }
 
 /// Listens on the socket, handing each request to the main loop with a way to answer it.
@@ -210,6 +255,7 @@ impl<W: World> Daemon<W> {
             uptime: None,
             next_check: now,
             next_look: now,
+            replaced: false,
         }
     }
 
@@ -381,6 +427,7 @@ impl<W: World> Daemon<W> {
             }
             Err(_) => self.uptime = None,
         }
+        self.replaced = self.world.replaced();
     }
 
     /// Notes which sessions the user has looked at since their turn ended.
@@ -443,6 +490,7 @@ mod tests {
         instant: Instant,
         saved_queues: usize,
         saved_config: Option<Config>,
+        replaced: bool,
     }
 
     impl World for Fake {
@@ -485,6 +533,10 @@ mod tests {
             self.saved_config = Some(config.clone());
             Ok(())
         }
+
+        fn replaced(&self) -> bool {
+            self.replaced
+        }
     }
 
     fn daemon() -> Daemon<Fake> {
@@ -497,6 +549,7 @@ mod tests {
             instant: Instant::now(),
             saved_queues: 0,
             saved_config: None,
+            replaced: false,
         };
         Daemon::new(world, Config::default(), Queue::default())
     }
@@ -666,5 +719,22 @@ mod tests {
         assert_eq!(status.now, daemon.world.now_ms);
         assert_eq!(status.device_uptime_ms, Some(1_000));
         assert!(status.device.is_some());
+    }
+
+    #[test]
+    fn an_upgrade_is_noticed_once_nothing_is_playing() {
+        let mut daemon = daemon();
+        daemon.check();
+        assert!(!daemon.replaced);
+        daemon.world.replaced = true;
+        report(&mut daemon, "s1", Update::Enter(State::Stopped));
+        daemon.next_check = daemon.world.instant;
+        daemon.tick();
+        // The snake is playing, so the check waits.
+        assert!(!daemon.replaced);
+        play_out(&mut daemon);
+        daemon.world.instant = daemon.next_check;
+        daemon.tick();
+        assert!(daemon.replaced);
     }
 }
