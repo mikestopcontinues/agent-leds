@@ -7,6 +7,7 @@
 
 mod claude;
 mod codex;
+mod cursor;
 mod grok;
 
 use std::fs;
@@ -29,10 +30,16 @@ pub enum Harness {
     Claude,
     Codex,
     Grok,
+    Cursor,
 }
 
 impl Harness {
-    pub const ALL: [Harness; 3] = [Harness::Claude, Harness::Codex, Harness::Grok];
+    pub const ALL: [Harness; 4] = [
+        Harness::Claude,
+        Harness::Codex,
+        Harness::Grok,
+        Harness::Cursor,
+    ];
 
     /// What the harness is called on the command line and in the queue.
     fn name(self) -> &'static str {
@@ -40,6 +47,7 @@ impl Harness {
             Harness::Claude => "claude",
             Harness::Codex => "codex",
             Harness::Grok => "grok",
+            Harness::Cursor => "cursor",
         }
     }
 
@@ -49,6 +57,7 @@ impl Harness {
             Harness::Claude => "Claude Code",
             Harness::Codex => "Codex",
             Harness::Grok => "Grok",
+            Harness::Cursor => "Cursor",
         }
     }
 
@@ -59,6 +68,7 @@ impl Harness {
             Harness::Claude => ".claude",
             Harness::Codex => ".codex",
             Harness::Grok => ".grok",
+            Harness::Cursor => ".cursor",
         }
     }
 
@@ -80,6 +90,7 @@ impl Harness {
             Harness::Claude => claude::event(payload),
             Harness::Codex => codex::event(payload),
             Harness::Grok => grok::event(payload),
+            Harness::Cursor => cursor::event(payload),
         }
     }
 
@@ -88,6 +99,7 @@ impl Harness {
             Harness::Claude => claude::install(home, exe),
             Harness::Codex => codex::install(home, exe),
             Harness::Grok => grok::install(home, exe),
+            Harness::Cursor => cursor::install(home, exe),
         }
     }
 
@@ -96,6 +108,7 @@ impl Harness {
             Harness::Claude => claude::uninstall(home),
             Harness::Codex => codex::uninstall(home),
             Harness::Grok => grok::uninstall(home),
+            Harness::Cursor => cursor::uninstall(home),
         }
     }
 }
