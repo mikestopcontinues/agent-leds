@@ -12,8 +12,10 @@ The device runs whatever program is written to its `LEDS.LED` file, in SidePulse
 
 - **Every state is equally bright.** A state's color sets its hue only. The renderer scales the four colors to the brightness of the dimmest hue at full strength, using the `balance` setting: how bright the red, green and blue dies look relative to each other. The default balance is an estimate and should be tuned by eye in the prototype.
 - **A change** fades the lights out, slides the color of the state a session just entered along the dark strip toward the front of the queue, then fades in the new queue. It takes about two and a half seconds.
-- **More than eight items** are compressed. Every state present keeps at least one light, the rest go to states in queue order, and the last light of a state that did not fit breathes to say it stands for several. The prototype has brightness-based alternatives to the breathing.
+- **More than eight items** are cut to fit. Every state present keeps at least one light and the rest go to states in queue order. Nothing marks the items that are hidden.
 - **A played program** (`leds play`, or the prototype's "Show on device") holds the lights for a few seconds, then the queue returns.
+
+The daemon saves the queue to `~/.local/state/leds/queue.json` on every change and reloads it when it starts, so restarting it loses nothing.
 
 The daemon reads the card's uptime every 15 seconds. The read keeps the SD reader from powering the card down, and an uptime that went backwards means the card restarted, so the queue is rewritten.
 
@@ -28,7 +30,9 @@ The daemon reads the card's uptime every 15 seconds. The read keeps the SD reade
 | `StopFailure` | error |
 | `SessionEnd`, or a tool aborted by an interrupt | removed |
 
-Events from subagents only mark the session as alive. Two gaps follow from what Claude Code reports:
+Events from subagents never say what the session needs, but they do say that work is going on. A stopped session whose background subagent runs a tool goes back to working; a session with a question or an error stays as it is. Three gaps follow from what Claude Code reports:
+
+- A subagent's permission request does not turn the session orange, because nothing after it says which agent was answered.
 
 - Claude Code fires no hook when you interrupt a turn between tool calls, so that session stays blue until its next prompt, or for 30 minutes of silence.
 - "Unread" ends at the session's next prompt, at `leds dismiss`, or when the session ends. Nothing detects that you looked at it.
@@ -60,7 +64,8 @@ cd prototype && bun install && bun run dev
 ```
 
 - Programs run in the firmware's own interpreter (`vendor/sdled.wasm`, from the SidePulse project), so what the page shows is what the device will do.
-- "Service" renders through the installed `leds` binary. The other designs are TypeScript sketches in `src/designs.ts`: four ways to show that a state has more items than lights, and one that makes the front of the queue breathe.
+- "Slide" renders through the installed `leds` binary. The other designs are TypeScript sketches in `src/designs.ts`: other ways to announce a change (pull the queue in behind a bright head, land in or bloom from the changed session's slot, fill and resolve, blink in place, a slide whose speed depends on the state), and one that makes the front of the queue breathe.
+- A change animation can span several programs, written one after another. "Pull the queue in" needs three, because its eleven full rows do not fit in 512 bytes. The daemon writes a single program per change, so adopting such a design means teaching it to play a sequence.
 - "Equal brightness" shows the three dies side by side, on the page or the device, so the balance can be set by eye.
 - "True color" shows how a value looks on the Pro's WS2816 LEDs rather than as the same hex on a screen; `src/color.ts` explains the model and its assumptions.
 - "Show on device" plays the current programs on the real card for ten seconds.
@@ -69,5 +74,6 @@ cd prototype && bun install && bun run dev
 
 ## Open questions
 
+- Which change animation the service should use. The sketches are there to compare on the device.
 - The default die balance (0.32, 0.54, 0.14) starts from the dies' luminance and allows for saturated red and blue looking brighter than their luminance. It has not been checked against the device.
 - The color model assumes the firmware's white balance lands on D65 and uses estimated die chromaticities. Comparing the page against the card will show how far off that is.

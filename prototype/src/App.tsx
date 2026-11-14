@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { DEFAULT_MODEL, appearanceHex, css, deviceColorFor, fromHex, toHex, type Gamut, type Model, type RGB } from "./color";
-import { DESIGNS, STATES, scaled, type Config, type Palette, type Rendering, type Scene, type State } from "./designs";
+import { DESIGNS, STATES, scaled, type Config, type Palette, type Rendering, type Scene, type ServiceRendering, type State } from "./designs";
 import { Engine, LED_COUNT } from "./engine";
 
 type Item = { id: number; state: State };
 type NamedPalette = { name: string; about: string; colors: Palette };
-type ServiceRendering = Rendering & { config: Config };
 
 const MAX_BYTES = 512;
 const DEVICE_HOLD_SECONDS = 10;
+const DEFAULT_DIFFUSION = 0.35;
 
 const GAMUT: Gamut =
   window.matchMedia("(color-gamut: p3)").matches && CSS.supports("color", "color(display-p3 1 0 0)") ? "p3" : "srgb";
@@ -19,6 +19,9 @@ async function api<T>(path: string, body?: unknown): Promise<T> {
   if (!response.ok) throw new Error(data.error);
   return data as T;
 }
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const bytes = (text: string) => new TextEncoder().encode(text).length;
 
 const PRESETS: Record<string, State[]> = {
   Empty: [],
@@ -49,14 +52,17 @@ export function App() {
   const [palettes, setPalettes] = useState<NamedPalette[]>([]);
   const [items, setItems] = useState<Item[]>([]);
   const [designId, setDesignId] = useState("service");
+  const [lit, setLit] = useState<Palette | null>(null);
   const [rendering, setRendering] = useState<Rendering | null>(null);
+  const [replays, setReplays] = useState(0);
   const [scratch, setScratch] = useState("#FF0044 #FF8800 #FFFF00 #00FF66 #00CCFF #004CFF #8800FF #FF00CC\nroll 2s linear\nrepeat");
   const [trueColor, setTrueColor] = useState(true);
   const [model, setModel] = useState<Model>(DEFAULT_MODEL);
-  const [diffusion, setDiffusion] = useState(0.35);
+  const [diffusion, setDiffusion] = useState(DEFAULT_DIFFUSION);
   const [message, setMessage] = useState<{ text: string; bad: boolean } | null>(null);
-  // The state to announce on the next render; set by queue edits, consumed once.
+  // The state to announce on the next render; set by queue edits and replays, consumed once.
   const announce = useRef<State | null>(null);
+  const lastAnnounced = useRef<State | null>(null);
   const design = DESIGNS.find((candidate) => candidate.id === designId)!;
 
   useEffect(() => {
@@ -84,43 +90,53 @@ export function App() {
   useEffect(() => {
     if (!engine || !config) return;
     let stale = false;
-    let settle: number | undefined;
+    const timers: number[] = [];
     const scene: Scene = { ...config, states: items.map((entry) => entry.state), announce: announce.current };
     announce.current = null;
     api<ServiceRendering>("/api/render", scene)
       .then((service) => {
         if (stale) return;
         const result = design.adapt(scene, service);
+        setLit(service.lit);
         setRendering(result);
         setMessage(null);
-        if (result.announce && run(result.announce)) {
-          settle = window.setTimeout(() => run(result.steady), result.announce_ms + 50);
-        } else {
-          run(result.steady);
+        // Write each program when the one before it ends, as the service would.
+        let at = 0;
+        for (const step of result.steps) {
+          timers.push(window.setTimeout(() => run(step.program), at));
+          at += step.ms;
         }
+        timers.push(window.setTimeout(() => run(result.steady), at));
       })
       .catch((error) => stale || fail(error));
     return () => {
       stale = true;
-      window.clearTimeout(settle);
+      timers.forEach((timer) => window.clearTimeout(timer));
     };
-  }, [engine, config, items, design]);
+  }, [engine, config, items, design, replays]);
 
   function changeQueue(next: Item[], entered: State | null) {
     announce.current = entered;
+    if (entered) lastAnnounced.current = entered;
     setItems(next);
   }
 
+  function replay() {
+    announce.current = lastAnnounced.current;
+    setReplays(replays + 1);
+  }
+
   async function showOnDevice(programs: Rendering | string) {
+    const play = (program: string) => api("/api/play", { program, seconds: DEVICE_HOLD_SECONDS });
     try {
       if (typeof programs === "string") {
-        await api("/api/play", { program: programs, seconds: DEVICE_HOLD_SECONDS });
+        await play(programs);
       } else {
-        if (programs.announce) {
-          await api("/api/play", { program: programs.announce, seconds: DEVICE_HOLD_SECONDS });
-          await new Promise((resolve) => setTimeout(resolve, programs.announce_ms));
+        for (const step of programs.steps) {
+          await play(step.program);
+          await wait(step.ms);
         }
-        await api("/api/play", { program: programs.steady, seconds: DEVICE_HOLD_SECONDS });
+        await play(programs.steady);
       }
       setMessage({ text: `Showing on the device for ${DEVICE_HOLD_SECONDS} seconds, then the real queue returns.`, bad: false });
     } catch (error) {
@@ -158,24 +174,6 @@ export function App() {
 
       <section className="stage">
         <Strip engine={engine} trueColor={trueColor} model={model} diffusion={diffusion} frontLed={config.front_led} />
-        <div className="controls">
-          <label className="toggle">
-            <input type="checkbox" checked={trueColor} onChange={(event) => setTrueColor(event.target.checked)} />
-            True color
-          </label>
-          <Slider label="Exposure" value={model.exposure} min={0.25} max={4} step={0.05} disabled={!trueColor}
-            onChange={(exposure) => setModel({ ...model, exposure })} />
-          <Slider label="Response" value={model.response} min={0.6} max={2.4} step={0.05} disabled={!trueColor}
-            onChange={(response) => setModel({ ...model, response })} />
-          <Slider label="Diffusion" value={diffusion} min={0} max={1} step={0.05} disabled={!trueColor}
-            onChange={setDiffusion} />
-          <button disabled={!trueColor} onClick={() => { setModel(DEFAULT_MODEL); setDiffusion(0.35); }}>Reset</button>
-        </div>
-        <p className="note">
-          {trueColor
-            ? "True color models the Pro's WS2816 LEDs: light linear in the value, near single-wavelength dies, white-balanced by the firmware. Response 1 is the hardware's linear response. The model comes from the datasheet, so tune it against the device."
-            : "Showing each value as the screen color with the same hex. On the device, dim values are much brighter and mixed colors lean toward their weaker die."}
-        </p>
         {message && <p className={message.bad ? "message bad" : "message"}>{message.text}</p>}
       </section>
 
@@ -224,17 +222,22 @@ export function App() {
             ))}
           </div>
           <p className="note">{design.about}</p>
-          {rendering && (
-            <>
-              {rendering.announce && <Program title="On the change" text={rendering.announce} />}
-              <Program title="Then, held" text={rendering.steady} />
-              <button onClick={() => showOnDevice(rendering)}>Show on device</button>
-            </>
-          )}
+          <div className="row">
+            <button disabled={!lastAnnounced.current} onClick={replay}>Replay the last change</button>
+            {rendering && <button onClick={() => showOnDevice(rendering)}>Show on device</button>}
+          </div>
+          {rendering?.steps.map((step, index) => (
+            <Program
+              key={index}
+              title={`On the change${rendering.steps.length > 1 ? `, part ${index + 1}` : ""} · ${(step.ms / 1000).toFixed(2)} s`}
+              text={step.program}
+            />
+          ))}
+          {rendering && <Program title="Then, held" text={rendering.steady} />}
           <h2>Scratch program</h2>
           <textarea value={scratch} rows={5} spellCheck={false} onChange={(event) => setScratch(event.target.value)} />
           <div className="row">
-            <span className={scratch.length > MAX_BYTES ? "count bad" : "count"}>{new TextEncoder().encode(scratch).length} / {MAX_BYTES} bytes</span>
+            <span className={bytes(scratch) > MAX_BYTES ? "count bad" : "count"}>{bytes(scratch)} / {MAX_BYTES} bytes</span>
             <button onClick={() => run(scratch) && setMessage(null)}>Run here</button>
             <button onClick={() => showOnDevice(scratch)}>Show on device</button>
           </div>
@@ -258,7 +261,7 @@ export function App() {
                       onChange={(event) => setColor(state, toHex(deviceColorFor(event.target.value, model)!))}
                     />
                   </td>
-                  <td><code>{rendering?.lit[state]}</code></td>
+                  <td><code>{lit?.[state]}</code></td>
                 </tr>
               ))}
             </tbody>
@@ -295,6 +298,26 @@ export function App() {
             <button onClick={() => showOnDevice(diesProgram)}>Show dies on device</button>
           </div>
           <button onClick={saveToService}>Save to the service</button>
+        </section>
+
+        <section>
+          <h2>Color look</h2>
+          <label className="toggle">
+            <input type="checkbox" checked={trueColor} onChange={(event) => setTrueColor(event.target.checked)} />
+            True color
+          </label>
+          <Slider label="Exposure" value={model.exposure} min={0.25} max={4} step={0.05} disabled={!trueColor}
+            onChange={(exposure) => setModel({ ...model, exposure })} />
+          <Slider label="Response" value={model.response} min={0.6} max={2.4} step={0.05} disabled={!trueColor}
+            onChange={(response) => setModel({ ...model, response })} />
+          <Slider label="Diffusion" value={diffusion} min={0} max={1} step={0.05} disabled={!trueColor}
+            onChange={setDiffusion} />
+          <button disabled={!trueColor} onClick={() => { setModel(DEFAULT_MODEL); setDiffusion(DEFAULT_DIFFUSION); }}>Reset</button>
+          <p className="note">
+            {trueColor
+              ? "True color models the Pro's WS2816 LEDs: light linear in the value, near single-wavelength dies, white-balanced by the firmware. Response 1 is the hardware's linear response. The model comes from the datasheet, so tune it against the device."
+              : "Showing each value as the screen color with the same hex. On the device, dim values are much brighter and mixed colors lean toward their weaker die."}
+          </p>
         </section>
       </div>
     </main>
@@ -349,7 +372,7 @@ function Program(props: { title: string; text: string }) {
   return (
     <figure className="program">
       <figcaption>
-        {props.title} <span className="count">{new TextEncoder().encode(props.text).length} / {MAX_BYTES} bytes</span>
+        {props.title} <span className="count">{bytes(props.text)} / {MAX_BYTES} bytes</span>
       </figcaption>
       <pre>{props.text}</pre>
     </figure>

@@ -3,8 +3,6 @@
 //! A program is text in the device's LEDS.LED language. The firmware runs it
 //! by itself, so a steady display costs nothing on the Mac.
 
-use serde::Serialize;
-
 use crate::config::{Color, Config, Palette};
 use crate::state::State;
 
@@ -20,25 +18,12 @@ const FADE_IN_MS: u64 = 500;
 pub const ANNOUNCE_MS: u64 =
     FADE_OUT_MS + SLIDE_PULSE_MS + (LEDS as u64 - 1) * SLIDE_STEP_MS + FADE_IN_MS;
 
-const STACK_PULSE_MS: u64 = 1600;
-/// How far a stacked light dips when it breathes.
-const STACK_DIP: f64 = 0.125;
-
-/// One lit light and the number of queue items it stands for. A light with a
-/// count above one is "stacked": it holds every remaining item of its state
-/// when the queue is longer than the strip.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-pub struct Slot {
-    pub state: State,
-    pub count: usize,
-}
-
-/// Assigns lights to queue items given their states in any order.
+/// Chooses the lights for the queue, front first, given its items' states in any order.
 ///
-/// Every state present keeps at least one light. The remaining lights go to
-/// states in queue order, and a state with more items than lights ends in a
-/// stacked light.
-pub fn slots(states: &[State]) -> Vec<Slot> {
+/// Every state present keeps at least one light and the remaining lights go
+/// to states in queue order. A queue longer than the strip is cut short;
+/// nothing shows that items are hidden.
+pub fn slots(states: &[State]) -> Vec<State> {
     let mut shares = State::ALL.map(|state| {
         let total = states.iter().filter(|&&other| other == state).count();
         (state, total, total.min(1))
@@ -51,16 +36,7 @@ pub fn slots(states: &[State]) -> Vec<Slot> {
     }
     shares
         .iter()
-        .flat_map(|&(state, total, lights)| {
-            (0..lights).map(move |light| Slot {
-                state,
-                count: if light + 1 == lights {
-                    total + 1 - lights
-                } else {
-                    1
-                },
-            })
-        })
+        .flat_map(|&(state, _, lights)| std::iter::repeat_n(state, lights))
         .collect()
 }
 
@@ -97,34 +73,16 @@ pub fn balanced(config: &Config) -> Palette {
     palette
 }
 
-/// The program that holds the queue on the lights. Stacked lights breathe.
-pub fn steady(slots: &[Slot], config: &Config) -> String {
-    let colors = balanced(config);
-    let lights = place(slots, config);
-    let mut program = format!("{}{} ease", settings(config), row(&lights, &colors));
-    let dips: Vec<String> = lights
-        .iter()
-        .enumerate()
-        .filter_map(|(index, slot)| {
-            let slot = slot.filter(|slot| slot.count > 1)?;
-            Some(format!(
-                "{index}:{}",
-                colors.of(slot.state).scaled(STACK_DIP)
-            ))
-        })
-        .collect();
-    if !dips.is_empty() {
-        program += &format!("\n{} {STACK_PULSE_MS}ms pulse\nrepeat", dips.join(" "));
-    }
-    program
+/// The program that holds the queue on the lights.
+pub fn steady(slots: &[State], config: &Config) -> String {
+    format!("{}{} ease", settings(config), row(slots, config))
 }
 
 /// The program for a session entering `state`: the lights fade out, the
 /// state's color slides along the dark strip toward the front of the queue,
 /// then the queue fades in.
-pub fn announce(state: State, slots: &[Slot], config: &Config) -> String {
-    let colors = balanced(config);
-    let color = colors.of(state);
+pub fn announce(state: State, slots: &[State], config: &Config) -> String {
+    let color = balanced(config).of(state);
     let slide: Vec<String> = (0..LEDS)
         .map(|step| {
             let delay = if step == 0 {
@@ -142,7 +100,7 @@ pub fn announce(state: State, slots: &[Slot], config: &Config) -> String {
         "{}off {FADE_OUT_MS}ms ease\n{}\n{} {FADE_IN_MS}ms ease",
         settings(config),
         slide.join(";"),
-        row(&place(slots, config), &colors),
+        row(slots, config),
     )
 }
 
@@ -155,22 +113,14 @@ fn led_at(position: usize, config: &Config) -> usize {
     }
 }
 
-/// Slots in physical order.
-fn place(slots: &[Slot], config: &Config) -> [Option<Slot>; LEDS] {
-    let mut lights = [None; LEDS];
-    for (position, slot) in slots.iter().enumerate() {
-        lights[led_at(position, config)] = Some(*slot);
+/// The colors of the eight lights in physical order.
+fn row(slots: &[State], config: &Config) -> String {
+    let colors = balanced(config);
+    let mut lights = [Color::OFF; LEDS];
+    for (position, &state) in slots.iter().enumerate() {
+        lights[led_at(position, config)] = colors.of(state);
     }
-    lights
-}
-
-fn row(lights: &[Option<Slot>; LEDS], colors: &Palette) -> String {
-    lights
-        .map(|slot| {
-            slot.map_or(Color::OFF, |slot| colors.of(slot.state))
-                .to_string()
-        })
-        .join(" ")
+    lights.map(|color| color.to_string()).join(" ")
 }
 
 fn settings(config: &Config) -> String {
@@ -187,18 +137,11 @@ mod tests {
     use crate::device;
     use State::*;
 
-    /// One letter per light, lower case when it is stacked.
+    /// One letter per light.
     fn shape(states: &[State]) -> String {
         slots(states)
             .iter()
-            .map(|slot| {
-                let letter = format!("{:?}", slot.state).chars().next().unwrap();
-                if slot.count > 1 {
-                    letter.to_ascii_lowercase()
-                } else {
-                    letter
-                }
-            })
+            .map(|state| format!("{state:?}").chars().next().unwrap())
             .collect()
     }
 
@@ -220,30 +163,21 @@ mod tests {
     }
 
     #[test]
-    fn long_queues_stack_the_lowest_priority_states_first() {
-        assert_eq!(shape(&[Working; 9]), "WWWWWWWw");
+    fn long_queues_keep_a_light_for_every_state() {
+        assert_eq!(shape(&[Working; 9]), "WWWWWWWW");
         assert_eq!(
             shape(&[[Error; 2].as_slice(), &[Working; 10]].concat()),
-            "EEWWWWWw"
+            "EEWWWWWW"
         );
-        // Every state keeps a light even when errors alone would fill the strip.
+        // Errors alone would fill the strip, but each other state keeps one light.
         assert_eq!(
             shape(&[[Error; 9].as_slice(), &[Question, Stopped, Working]].concat()),
-            "EEEEeQSW"
+            "EEEEEQSW"
         );
         assert_eq!(
             shape(&[[Stopped; 5].as_slice(), &[Working; 5]].concat()),
-            "SSSSSWWw"
+            "SSSSSWWW"
         );
-    }
-
-    #[test]
-    fn a_stacked_light_counts_what_it_holds() {
-        let counts: Vec<usize> = slots(&[[Error; 2].as_slice(), &[Working; 10]].concat())
-            .iter()
-            .map(|slot| slot.count)
-            .collect();
-        assert_eq!(counts, [1, 1, 1, 1, 1, 1, 1, 5]);
     }
 
     #[test]
@@ -283,10 +217,8 @@ mod tests {
     }
 
     #[test]
-    fn stacked_lights_breathe() {
-        let program = steady(&slots(&[Working; 9]), &plain(0));
-        assert_eq!(program.lines().nth(1), Some("7:#000020 1600ms pulse"));
-        assert_eq!(program.lines().last(), Some("repeat"));
+    fn a_full_strip_holds_still() {
+        assert_eq!(steady(&slots(&[Working; 12]), &plain(0)).lines().count(), 1);
     }
 
     #[test]
@@ -325,7 +257,6 @@ mod tests {
             ]
             .concat(),
         );
-        assert_eq!(crowded.iter().filter(|slot| slot.count > 1).count(), 4);
         device::check(&steady(&crowded, &config)).unwrap();
         device::check(&announce(Error, &crowded, &config)).unwrap();
     }

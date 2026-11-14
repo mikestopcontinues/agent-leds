@@ -78,6 +78,21 @@ pub fn request(request: &Request) -> Result<Value> {
     }
 }
 
+fn queue_path() -> PathBuf {
+    state_dir().join("queue.json")
+}
+
+/// The queue as last saved, so a restart keeps what is unread and in progress.
+fn saved_queue() -> Queue {
+    let Ok(saved) = std::fs::read(queue_path()) else {
+        return Queue::default();
+    };
+    serde_json::from_slice(&saved).unwrap_or_else(|error| {
+        eprintln!("leds: ignoring the saved queue: {error}");
+        Queue::default()
+    })
+}
+
 /// How often to read the device's uptime, which also keeps the SD reader awake.
 const DEVICE_CHECK: Duration = Duration::from_secs(15);
 
@@ -113,7 +128,7 @@ pub fn run() -> Result<()> {
 
     let mut daemon = Daemon {
         config: Config::load()?,
-        queue: Queue::default(),
+        queue: saved_queue(),
         settle_at: None,
         holding: false,
         uptime: None,
@@ -175,8 +190,14 @@ impl Daemon {
                 update,
             } => {
                 match self.queue.apply(&session, &label, update, now_ms()) {
-                    Change::Entered(state) => self.announce(state),
-                    Change::Left => self.refresh(),
+                    Change::Entered(state) => {
+                        self.save_queue();
+                        self.announce(state);
+                    }
+                    Change::Left => {
+                        self.save_queue();
+                        self.refresh();
+                    }
                     Change::None => {}
                 }
                 Ok(Value::Null)
@@ -190,6 +211,7 @@ impl Daemon {
             })),
             Request::Dismiss { session } => {
                 if self.queue.dismiss(session.as_deref()) {
+                    self.save_queue();
                     self.refresh();
                 }
                 Ok(Value::Null)
@@ -253,6 +275,7 @@ impl Daemon {
         if self.next_check <= now {
             self.next_check = now + DEVICE_CHECK;
             if self.queue.expire(now_ms()) {
+                self.save_queue();
                 self.refresh();
             }
             match device::uptime_ms() {
@@ -267,7 +290,14 @@ impl Daemon {
         }
     }
 
-    fn slots(&self) -> Vec<render::Slot> {
+    fn save_queue(&self) {
+        let saved = serde_json::to_vec(&self.queue).expect("a queue is plain data");
+        if let Err(error) = std::fs::write(queue_path(), saved) {
+            eprintln!("leds: could not save the queue: {error}");
+        }
+    }
+
+    fn slots(&self) -> Vec<State> {
         let states: Vec<State> = self.queue.items().iter().map(|item| item.state).collect();
         render::slots(&states)
     }

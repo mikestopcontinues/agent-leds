@@ -28,9 +28,10 @@ const EVENTS: [&str; 10] = [
 pub fn report(event: &Value) -> Option<Request> {
     let text = |key: &str| event.get(key).and_then(Value::as_str);
     let update = if event.get("agent_id").is_some() {
-        // A subagent's activity shows the session is alive, but only the main
-        // agent's events say what the session needs.
-        Update::Touch
+        // Only the main agent's events say what the session needs. A
+        // subagent's say that work is going on, which matters once the main
+        // agent has stopped and left a subagent running in the background.
+        Update::Background
     } else {
         match text("hook_event_name")? {
             "UserPromptSubmit" | "PostToolUse" | "ElicitationResult" => {
@@ -248,7 +249,7 @@ mod tests {
                 "PreToolUse",
                 json!({ "agent_id": "a1", "tool_name": "AskUserQuestion" })
             )),
-            Some(Update::Touch)
+            Some(Update::Background)
         );
     }
 

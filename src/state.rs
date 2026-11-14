@@ -28,20 +28,22 @@ impl State {
 #[serde(rename_all = "lowercase")]
 pub enum Update {
     Enter(State),
-    /// The session is alive but its state is unchanged.
-    Touch,
+    /// Something other than the main agent is working in the session: a
+    /// subagent ran a tool. A session that had stopped is working again;
+    /// one that needs the user still does.
+    Background,
     /// The session no longer belongs in the queue.
     Leave,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Item {
     pub session: String,
     pub label: String,
     pub state: State,
     /// When the session entered this state, in Unix milliseconds.
     pub since: u64,
-    #[serde(skip)]
+    /// When the session last reported anything, in Unix milliseconds.
     seen: u64,
 }
 
@@ -56,7 +58,8 @@ pub enum Change {
 /// interrupted: Claude Code fires no hook when the user stops a turn.
 const WORKING_SILENCE_MS: u64 = 30 * 60 * 1000;
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Queue {
     items: Vec<Item>,
 }
@@ -85,15 +88,21 @@ impl Queue {
                 });
                 Change::Entered(state)
             }
-            (Update::Touch, Some(index)) => {
-                self.items[index].seen = now;
-                Change::None
+            (Update::Background, Some(index)) => {
+                let item = &mut self.items[index];
+                item.seen = now;
+                if item.state != State::Stopped {
+                    return Change::None;
+                }
+                item.state = State::Working;
+                item.since = now;
+                Change::Entered(State::Working)
             }
             (Update::Leave, Some(index)) => {
                 self.items.remove(index);
                 Change::Left
             }
-            (Update::Touch | Update::Leave, None) => Change::None,
+            (Update::Background | Update::Leave, None) => Change::None,
         }
     }
 
@@ -158,7 +167,7 @@ mod tests {
     #[test]
     fn reports_only_real_changes() {
         let mut queue = Queue::default();
-        assert_eq!(queue.apply("a", "a", Update::Touch, 1), Change::None);
+        assert_eq!(queue.apply("a", "a", Update::Background, 1), Change::None);
         assert_eq!(queue.apply("a", "a", Update::Leave, 1), Change::None);
         assert_eq!(
             queue.apply("a", "a", Update::Enter(State::Working), 1),
@@ -189,12 +198,53 @@ mod tests {
     }
 
     #[test]
-    fn silent_working_sessions_expire_unless_touched() {
+    fn background_work_resumes_a_stopped_session_only() {
+        let mut queue = Queue::default();
+        queue.apply("done", "done", Update::Enter(State::Stopped), 1);
+        queue.apply("asks", "asks", Update::Enter(State::Question), 1);
+        queue.apply("fails", "fails", Update::Enter(State::Error), 1);
+        assert_eq!(
+            queue.apply("done", "done", Update::Background, 2),
+            Change::Entered(State::Working)
+        );
+        assert_eq!(
+            queue.apply("asks", "asks", Update::Background, 2),
+            Change::None
+        );
+        assert_eq!(
+            queue.apply("fails", "fails", Update::Background, 2),
+            Change::None
+        );
+        assert_eq!(
+            states(&queue),
+            [
+                ("fails", State::Error),
+                ("asks", State::Question),
+                ("done", State::Working)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_saved_queue_reloads_as_it_was() {
+        let mut queue = Queue::default();
+        queue.apply("a", "alpha", Update::Enter(State::Working), 5);
+        queue.apply("b", "beta", Update::Enter(State::Stopped), 6);
+        let mut reloaded: Queue =
+            serde_json::from_str(&serde_json::to_string(&queue).unwrap()).unwrap();
+        assert_eq!(states(&reloaded), states(&queue));
+        // What was last seen survives too, so silence is still measured from then.
+        assert!(reloaded.expire(5 + WORKING_SILENCE_MS + 1));
+        assert_eq!(states(&reloaded), [("b", State::Stopped)]);
+    }
+
+    #[test]
+    fn silent_working_sessions_expire_unless_seen() {
         let mut queue = Queue::default();
         queue.apply("quiet", "quiet", Update::Enter(State::Working), 0);
         queue.apply("busy", "busy", Update::Enter(State::Working), 0);
         queue.apply("done", "done", Update::Enter(State::Stopped), 0);
-        queue.apply("busy", "busy", Update::Touch, WORKING_SILENCE_MS);
+        queue.apply("busy", "busy", Update::Background, WORKING_SILENCE_MS);
         assert!(queue.expire(WORKING_SILENCE_MS + 1));
         assert_eq!(
             states(&queue),
