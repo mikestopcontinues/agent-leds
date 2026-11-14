@@ -10,12 +10,10 @@ What sets it apart:
 - Every color looks equally bright on the card.
 - The card stays mounted through sleep and locked-screen wakes, which otherwise leave it dark until it is reseated.
 
-| On the card | |
-| --- | --- |
-| A session stops: the snake brings its light to the front | <img src="docs/previews/stopped.webp" height="40" alt="A blue snake crosses the strip and two green lights rise in behind it with a blue one at the front"> |
-| A session asks a question | <img src="docs/previews/question.webp" height="40" alt="An orange snake crosses the strip; the queue rises with orange at the front"> |
-| A session fails | <img src="docs/previews/error.webp" height="40" alt="A red snake crosses the strip; the queue rises with red at the front"> |
-| You read a finished session: its light leaves quietly | <img src="docs/previews/read.webp" height="40" alt="A wave runs along the queue and the blue light is gone"> |
+<img src="docs/previews/stopped.webp" height="40" alt="A blue snake crosses the strip and two green lights rise in behind it with a blue one at the front"> A session stops: the snake brings its light to the front<br>
+<img src="docs/previews/question.webp" height="40" alt="An orange snake crosses the strip; the queue rises with orange at the front"> A session asks a question<br>
+<img src="docs/previews/error.webp" height="40" alt="A red snake crosses the strip; the queue rises with red at the front"> A session fails<br>
+<img src="docs/previews/read.webp" height="40" alt="A wave runs along the queue and the blue light is gone"> You read a finished session: its light leaves quietly<br>
 
 It runs on macOS only. It is unofficial and not affiliated with SidePulse.
 
@@ -64,22 +62,20 @@ Every command takes `-h`. `agent-leds config -h` lists the settings with their r
 
 The service keeps its settings in `~/.config/agent-leds/config.toml` and reads the file only when it starts, so change them with `agent-leds config`, which applies them at once. A key the service does not know is ignored, so a config from an older version still loads; a value it cannot use stops the service with a message in its log, `~/.local/state/agent-leds/daemon.log`.
 
-`agent-leds palette <name>` switches the four colors at once:
+`agent-leds palette <name>` switches the four colors at once. Each picture shows, from the left, working, stopped, question and error:
 
-| Palette | Working, stopped, question, error | |
-| --- | --- | --- |
-| `default` | <img src="docs/previews/palette-default.webp" height="40" alt="The default palette"> | Red, orange, blue, green: what the service starts with. |
-| `signal` | <img src="docs/previews/palette-signal.webp" height="40" alt="The signal palette"> | Red, orange, green, blue: one die each, orange the only mix. |
-| `bright` | <img src="docs/previews/palette-bright.webp" height="40" alt="The bright palette"> | Signal with a yellower orange and a lighter blue. |
-| `terminal` | <img src="docs/previews/palette-terminal.webp" height="40" alt="The terminal palette"> | Red, yellow, green, cyan, like a terminal's colors. |
-| `neon` | <img src="docs/previews/palette-neon.webp" height="40" alt="The neon palette"> | Pink, amber, mint, violet. |
-| `vapor` | <img src="docs/previews/palette-vapor.webp" height="40" alt="The vapor palette"> | Pink, yellow, cyan, purple: the widest spread of hues. |
-| `candy` | <img src="docs/previews/palette-candy.webp" height="40" alt="The candy palette"> | Pink-red, orange, lime, cyan: no deep blue, so it runs brighter. |
-| `sunset` | <img src="docs/previews/palette-sunset.webp" height="40" alt="The sunset palette"> | Red, yellow, magenta, violet: no green states. |
-| `ice` | <img src="docs/previews/palette-ice.webp" height="40" alt="The ice palette"> | Magenta, white, cyan, violet: cool, with white for questions. |
-| `colorblind` | <img src="docs/previews/palette-colorblind.webp" height="40" alt="The colorblind palette"> | Pink, yellow, white, blue: told apart without comparing red to green. |
-| `soft` | <img src="docs/previews/palette-soft.webp" height="40" alt="The soft palette"> | Signal with a little of every die in each color, less saturated. |
-| `pastel` | <img src="docs/previews/palette-pastel.webp" height="40" alt="The pastel palette"> | Washed-out red, yellow, green, blue: the brightest and gentlest. |
+<img src="docs/previews/palette-default.webp" height="40" alt="The default palette"> `default` — red, orange, blue, green: what the service starts with.<br>
+<img src="docs/previews/palette-signal.webp" height="40" alt="The signal palette"> `signal` — red, orange, green, blue: one die each, orange the only mix.<br>
+<img src="docs/previews/palette-bright.webp" height="40" alt="The bright palette"> `bright` — signal with a yellower orange and a lighter blue.<br>
+<img src="docs/previews/palette-terminal.webp" height="40" alt="The terminal palette"> `terminal` — red, yellow, green, cyan, like a terminal's colors.<br>
+<img src="docs/previews/palette-neon.webp" height="40" alt="The neon palette"> `neon` — pink, amber, mint, violet.<br>
+<img src="docs/previews/palette-vapor.webp" height="40" alt="The vapor palette"> `vapor` — pink, yellow, cyan, purple: the widest spread of hues.<br>
+<img src="docs/previews/palette-candy.webp" height="40" alt="The candy palette"> `candy` — pink-red, orange, lime, cyan: no deep blue, so it runs brighter.<br>
+<img src="docs/previews/palette-sunset.webp" height="40" alt="The sunset palette"> `sunset` — red, yellow, magenta, violet: no green states.<br>
+<img src="docs/previews/palette-ice.webp" height="40" alt="The ice palette"> `ice` — magenta, white, cyan, violet: cool, with white for questions.<br>
+<img src="docs/previews/palette-colorblind.webp" height="40" alt="The colorblind palette"> `colorblind` — pink, yellow, white, blue: told apart without comparing red to green.<br>
+<img src="docs/previews/palette-soft.webp" height="40" alt="The soft palette"> `soft` — signal with a little of every die in each color, less saturated.<br>
+<img src="docs/previews/palette-pastel.webp" height="40" alt="The pastel palette"> `pastel` — washed-out red, yellow, green, blue: the brightest and gentlest.<br>
 
 `agent-leds play` shows a program of your own, written in the card's LEDS.LED language, for a few seconds.
 
