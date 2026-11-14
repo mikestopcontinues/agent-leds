@@ -4,14 +4,23 @@ export const STATES = ["error", "question", "stopped", "working"] as const;
 export type State = (typeof STATES)[number];
 export type Palette = Record<State, string>;
 
-/** How a change is announced; see `Snake` in the service's config. */
+/** How a change is announced; see `Snake` in the service's config. Levels are 0 to 1, timings milliseconds. */
 export type Snake = {
-  nose: number;
+  /** The brightness of the head's front, middle and back lights. A front or back at 0 is left out. */
+  head: [number, number, number];
+  /** Whether a dark light separates the head from the tail. */
+  gap: boolean;
   tail: number;
   hold_ms: number;
   move_ms: number;
   fade_out_ms: number;
   fade_in_ms: number;
+  /** How far the queue squeezes toward the front end when it arrives; 0 is no crunch. */
+  crunch: number;
+  crunch_ms: number;
+  /** How far past its resting length the queue springs back, as a share of the squeeze. */
+  bounce: number;
+  spring_ms: number;
 };
 
 export type Config = {

@@ -9,7 +9,19 @@ import { STATES, scaled, type Config, type Rendering, type Scene, type Snake, ty
 const engine = await Engine.load(await Bun.file(`${import.meta.dir}/../vendor/sdled.wasm`).arrayBuffer());
 let clock = 0;
 
-const SNAKE: Snake = { nose: 0.6, tail: 0.3, hold_ms: 60, move_ms: 90, fade_out_ms: 300, fade_in_ms: 500 };
+const SNAKE: Snake = {
+  head: [0.6, 1, 0],
+  gap: true,
+  tail: 0.3,
+  hold_ms: 60,
+  move_ms: 90,
+  fade_out_ms: 300,
+  fade_in_ms: 500,
+  crunch: 0,
+  crunch_ms: 120,
+  bounce: 0.4,
+  spring_ms: 350,
+};
 const CONFIG: Config = {
   brightness: 255,
   front_led: 7,
@@ -89,7 +101,7 @@ test("a change: a dim nose, a bright light and a dark one lead the dimmed queue 
   const { lit, steps } = rendering;
   expect(steps.length).toBeGreaterThan(1);
   const dim = (state: State) => rgb(scaled(lit[state], SNAKE.tail));
-  const nose = rgb(scaled(lit.stopped, SNAKE.nose));
+  const nose = rgb(scaled(lit.stopped, SNAKE.head[0]));
   const bright = rgb(lit.stopped);
   const stepMs = SNAKE.hold_ms + SNAKE.move_ms;
   const at = (ms: number) => {
@@ -113,11 +125,33 @@ test("a change: a dim nose, a bright light and a dark one lead the dimmed queue 
   expect(play(rendering.steady, 1000)[0]).toEqual(full);
 });
 
+test("a crunch: the arriving queue piles up at the front end, springs back past its length, then rests", async () => {
+  const snake: Snake = { ...SNAKE, tail: 1, crunch: 0.5, crunch_ms: 120, bounce: 0.5, spring_ms: 300 };
+  const rendering = await render(scene(["error", "stopped", "working"], "working", { snake }));
+  const lit = (lights: RGB[]) => lights.filter((light) => light.some((die) => die > 0)).length;
+  const arrived = snake.fade_out_ms + 11 * (snake.hold_ms + snake.move_ms);
+  const at = (ms: number) => {
+    play("off", 100);
+    return during(rendering, ms);
+  };
+  // Three items at rest, squeezed onto two lights, stretched over four, then at rest again.
+  expect(lit(at(arrived))).toBe(3);
+  const squeezed = at(arrived + 120);
+  expect(lit(squeezed)).toBe(2);
+  // The front light holds the error and half of the item behind it.
+  expect(squeezed[7]![0]).toBe(rgb(rendering.lit.error)[0]);
+  expect(squeezed[7]![2]).toBeGreaterThan(0);
+  expect(lit(at(arrived + 120 + 180))).toBe(4);
+  expect(at(arrived + 120 + 300)).toEqual(at(arrived));
+});
+
 test("every change is accepted by the firmware and ends on the queue, in the hardest cases", async () => {
   const snakes: Snake[] = [
     SNAKE,
-    { nose: 0, tail: 0, hold_ms: 0, move_ms: 1, fade_out_ms: 1, fade_in_ms: 1 },
-    { nose: 1, tail: 1, hold_ms: 5000, move_ms: 5000, fade_out_ms: 5000, fade_in_ms: 5000 },
+    { ...SNAKE, crunch: 0.5 },
+    { ...SNAKE, crunch: 1, bounce: 0 },
+    { head: [0, 0, 0], gap: false, tail: 0, hold_ms: 0, move_ms: 1, fade_out_ms: 1, fade_in_ms: 1, crunch: 0.05, crunch_ms: 1, bounce: 1, spring_ms: 1 },
+    { head: [1, 1, 1], gap: true, tail: 1, hold_ms: 5000, move_ms: 5000, fade_out_ms: 5000, fade_in_ms: 5000, crunch: 1, crunch_ms: 5000, bounce: 1, spring_ms: 5000 },
   ];
   for (const states of [["error"], STATES.slice(), many(8, "working"), OVERFLOW] as State[][]) {
     for (const announce of [null, ...new Set(states)]) {
@@ -142,5 +176,5 @@ test("the service refuses settings it cannot render", async () => {
     stderr: "pipe",
   });
   expect(await child.exited).not.toBe(0);
-  expect(await new Response(child.stderr).text()).toContain("the snake's move");
+  expect(await new Response(child.stderr).text()).toContain("timings");
 });

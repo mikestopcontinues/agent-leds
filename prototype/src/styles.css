@@ -50,6 +50,12 @@ h2 {
   margin: 20px 0 8px;
 }
 
+h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 14px 0 4px;
+}
+
 section > h2:first-child {
   margin-top: 0;
 }

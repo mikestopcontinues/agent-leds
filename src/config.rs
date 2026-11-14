@@ -168,15 +168,21 @@ pub const PALETTES: [NamedPalette; 11] = [
 ];
 
 /// The animation that announces a change: a head in the new state's color
-/// crosses the dark strip and pulls the new queue in behind it as a dimmed tail.
+/// crosses the dark strip and pulls the new queue in behind it as a dimmed
+/// tail, which can crunch against the front end before it settles.
+///
+/// Brightness levels are shares from 0 to 1 and timings are milliseconds.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Snake {
-    /// How bright the head's leading light is, as a share of the bright light behind it.
-    pub nose: f64,
+    /// How bright the head's front, middle and back lights are. A front or
+    /// back light at 0 is left out, which makes the head shorter.
+    pub head: [f64; 3],
+    /// Whether a dark light separates the head from the tail.
+    pub gap: bool,
     /// How bright the queue is while it trails the head, as a share of its resting brightness.
     pub tail: f64,
-    /// How long each step holds still before the snake moves on, in milliseconds.
+    /// How long each step holds still before the snake moves on.
     pub hold_ms: u32,
     /// How long the move to the next light takes.
     pub move_ms: u32,
@@ -184,17 +190,32 @@ pub struct Snake {
     pub fade_out_ms: u32,
     /// How long the new queue takes to rise to full brightness once it is in place.
     pub fade_in_ms: u32,
+    /// How far the queue squeezes toward the front end when it arrives, as a
+    /// share of its length. 0 is no crunch.
+    pub crunch: f64,
+    /// How long the squeeze takes.
+    pub crunch_ms: u32,
+    /// How far past its resting length the queue springs back, as a share of
+    /// the squeeze. 0 returns straight to rest.
+    pub bounce: f64,
+    /// How long the queue takes to spring back and come to rest.
+    pub spring_ms: u32,
 }
 
 impl Default for Snake {
     fn default() -> Self {
         Snake {
-            nose: 0.6,
+            head: [0.6, 1.0, 0.0],
+            gap: true,
             tail: 0.3,
             hold_ms: 60,
             move_ms: 90,
             fade_out_ms: 300,
             fade_in_ms: 500,
+            crunch: 0.0,
+            crunch_ms: 120,
+            bounce: 0.4,
+            spring_ms: 350,
         }
     }
 }
@@ -258,16 +279,27 @@ impl Config {
             return Err("each die's brightness must be above 0".into());
         }
         let snake = &self.snake;
-        if ![snake.nose, snake.tail]
+        let levels = [snake.tail, snake.crunch, snake.bounce];
+        if !snake
+            .head
             .iter()
+            .chain(&levels)
             .all(|level| (0.0..=1.0).contains(level))
         {
-            return Err("the snake's nose and tail are between 0 and 1".into());
+            return Err(
+                "the snake's brightness levels, crunch and bounce are between 0 and 1".into(),
+            );
         }
-        let moving = [snake.move_ms, snake.fade_out_ms, snake.fade_in_ms];
-        if moving.iter().any(|&ms| ms == 0 || ms > LONGEST_MS) || snake.hold_ms > LONGEST_MS {
+        let timings = [
+            snake.move_ms,
+            snake.fade_out_ms,
+            snake.fade_in_ms,
+            snake.crunch_ms,
+            snake.spring_ms,
+        ];
+        if timings.iter().any(|&ms| ms == 0 || ms > LONGEST_MS) || snake.hold_ms > LONGEST_MS {
             return Err(format!(
-                "the snake's move and fades take 1-{LONGEST_MS} ms and its hold up to {LONGEST_MS} ms"
+                "the snake's hold takes up to {LONGEST_MS} ms and its other timings 1-{LONGEST_MS} ms"
             ));
         }
         Ok(())
@@ -340,14 +372,16 @@ mod tests {
         assert!(
             with(|config| config.snake.tail = 1.5)
                 .unwrap_err()
-                .contains("nose and tail")
+                .contains("between 0 and 1")
         );
-        assert!(with(|config| config.snake.nose = f64::NAN).is_err());
+        assert!(with(|config| config.snake.head[0] = f64::NAN).is_err());
+        assert!(with(|config| config.snake.crunch = -0.1).is_err());
         assert!(
             with(|config| config.snake.move_ms = 0)
                 .unwrap_err()
-                .contains("move")
+                .contains("timings")
         );
+        assert!(with(|config| config.snake.spring_ms = 6000).is_err());
         assert_eq!(with(|config| config.snake.hold_ms = 0), Ok(()));
     }
 

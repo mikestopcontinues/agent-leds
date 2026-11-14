@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { DEFAULT_MODEL, appearance, appearanceHex, deviceColorFor, fromHex, type RGB } from "./color";
+import { LINEAR_MODEL, appearance, appearanceHex, deviceColorFor, fromHex, type RGB } from "./color";
 
-const look = (hex: string, model = DEFAULT_MODEL) => appearanceHex(fromHex(hex)!, model);
+const look = (hex: string, model = LINEAR_MODEL) => appearanceHex(fromHex(hex)!, model);
 
 function distance(a: string, b: string): number {
   const [x, y] = [fromHex(a)!, fromHex(b)!];
@@ -18,7 +18,7 @@ test("equal values are neutral, and half the value is far brighter than on a scr
 test("a single die is shown at the edge of the display's gamut", () => {
   for (const die of [[255, 0, 0], [0, 255, 0], [0, 0, 255]] as RGB[]) {
     for (const gamut of ["srgb", "p3"] as const) {
-      const shown = appearance(die, DEFAULT_MODEL, gamut);
+      const shown = appearance(die, LINEAR_MODEL, gamut);
       expect(Math.min(...shown)).toBe(0);
       expect(Math.max(...shown)).toBeCloseTo(1, 5);
     }
@@ -38,7 +38,7 @@ test("the response curve is what separates the device from a screen", () => {
 
 test("picking a look returns the value that produces it", () => {
   for (const wanted of ["#FF8000", "#00C8A0", "#FF4080", "#808080", "#3050C0"]) {
-    const sent = deviceColorFor(wanted, DEFAULT_MODEL)!;
-    expect(distance(appearanceHex(sent, DEFAULT_MODEL), wanted)).toBeLessThanOrEqual(2);
+    const sent = deviceColorFor(wanted, LINEAR_MODEL)!;
+    expect(distance(appearanceHex(sent, LINEAR_MODEL), wanted)).toBeLessThanOrEqual(2);
   }
 });

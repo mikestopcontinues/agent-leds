@@ -26,7 +26,11 @@ export type Model = {
   exposure: number;
 };
 
-export const DEFAULT_MODEL: Model = { response: 1, exposure: 1 };
+/** The response the hardware has by its datasheet. */
+export const LINEAR_MODEL: Model = { response: 1, exposure: 1 };
+
+/** What matched the device by eye: dim values look brighter still than their share of the light. */
+export const DEFAULT_MODEL: Model = { response: 0.6, exposure: 1 };
 
 const D65: XY = [0.3127, 0.329];
 

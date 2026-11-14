@@ -8,7 +8,8 @@ type NamedPalette = { name: string; about: string; colors: Palette };
 
 const MAX_BYTES = 512;
 const DEVICE_HOLD_SECONDS = 10;
-const DEFAULT_DIFFUSION = 0.35;
+// Matched against the device by eye, like the default color model.
+const DEFAULT_DIFFUSION = 0.2;
 
 const GAMUT: Gamut =
   window.matchMedia("(color-gamut: p3)").matches && CSS.supports("color", "color(display-p3 1 0 0)") ? "p3" : "srgb";
@@ -40,16 +41,6 @@ const PRESETS: Record<string, State[]> = {
     ...Array<State>(5).fill("working"),
   ],
 };
-
-/** The snake's settings: what each is called, what it does and the range worth trying. */
-const SNAKE_SETTINGS: { key: keyof Snake; label: string; about: string; min: number; max: number; step: number }[] = [
-  { key: "nose", label: "Nose", about: "brightness of the leading light", min: 0, max: 1, step: 0.05 },
-  { key: "tail", label: "Tail", about: "brightness of the queue while it is pulled in", min: 0, max: 1, step: 0.05 },
-  { key: "hold_ms", label: "Hold ms", about: "how long each step stays still", min: 0, max: 400, step: 10 },
-  { key: "move_ms", label: "Move ms", about: "how long the move to the next light takes", min: 10, max: 400, step: 10 },
-  { key: "fade_out_ms", label: "Fade out ms", about: "how long the old queue takes to go dark", min: 10, max: 1500, step: 10 },
-  { key: "fade_in_ms", label: "Fade in ms", about: "how long the new queue takes to rise to full", min: 10, max: 1500, step: 10 },
-];
 
 let nextId = 1;
 const item = (state: State): Item => ({ id: nextId++, state });
@@ -156,10 +147,13 @@ export function App() {
   const setBalance = (die: number, value: number) =>
     set({ balance: config.balance.map((old, index) => (index === die ? value : old)) as Config["balance"] });
   // A change to the snake replays it, so each adjustment is seen at once.
-  function setSnake(key: keyof Snake, value: number) {
+  function setSnake(change: Partial<Snake>) {
     playChange.current = true;
-    set({ snake: { ...config!.snake, [key]: value } });
+    set({ snake: { ...config!.snake, ...change } });
   }
+  const snake = config.snake;
+  const setHead = (light: number, level: number) =>
+    setSnake({ head: snake.head.map((old, index) => (index === light ? level : old)) as Snake["head"] });
 
   async function act(action: () => Promise<string>) {
     try {
@@ -256,13 +250,40 @@ export function App() {
         <section>
           <h2>Change animation</h2>
           <p className="note">
-            The lights fade out. A head in the new state's color crosses the strip toward the front of the queue: a nose,
-            a bright light, then a dark one. It pulls the new queue in as its tail, and the queue then rises to full.
+            The lights fade out. A head in the new state's color crosses the strip toward the front of the queue and
+            pulls the new queue in as its tail. The queue can crunch against the front end, then it rises to full.
           </p>
-          {SNAKE_SETTINGS.map((setting) => (
-            <Slider key={setting.key} label={setting.label} title={setting.about} value={config.snake[setting.key]}
-              min={setting.min} max={setting.max} step={setting.step} onChange={(value) => setSnake(setting.key, value)} />
+          <h3>Head</h3>
+          {["Front", "Middle", "Back"].map((light, index) => (
+            <Slider key={light} label={light} value={snake.head[index]!} min={0} max={1} step={0.05}
+              title={index === 1 ? "brightness of the head's middle light" : `brightness of the head's ${light.toLowerCase()} light; at 0 the head has no ${light.toLowerCase()} light`}
+              onChange={(level) => setHead(index, level)} />
           ))}
+          <label className="toggle">
+            <input type="checkbox" checked={snake.gap} onChange={(event) => setSnake({ gap: event.target.checked })} />
+            Blank space between head and tail
+          </label>
+          <h3>Tail</h3>
+          <Slider label="Brightness" title="brightness of the queue while it is pulled in" value={snake.tail}
+            min={0} max={1} step={0.05} onChange={(tail) => setSnake({ tail })} />
+          <h3>Timing</h3>
+          <Slider label="Hold ms" title="how long each step stays still" value={snake.hold_ms}
+            min={0} max={400} step={10} onChange={(hold_ms) => setSnake({ hold_ms })} />
+          <Slider label="Move ms" title="how long the move to the next light takes" value={snake.move_ms}
+            min={10} max={400} step={10} onChange={(move_ms) => setSnake({ move_ms })} />
+          <Slider label="Fade out ms" title="how long the old queue takes to go dark" value={snake.fade_out_ms}
+            min={10} max={1500} step={10} onChange={(fade_out_ms) => setSnake({ fade_out_ms })} />
+          <Slider label="Fade in ms" title="how long the new queue takes to rise to full" value={snake.fade_in_ms}
+            min={10} max={1500} step={10} onChange={(fade_in_ms) => setSnake({ fade_in_ms })} />
+          <h3>Crunch</h3>
+          <Slider label="Amount" title="how far the queue squeezes toward the front end when it arrives; 0 is no crunch"
+            value={snake.crunch} min={0} max={1} step={0.05} onChange={(crunch) => setSnake({ crunch })} />
+          <Slider label="Squeeze ms" title="how long the squeeze takes" value={snake.crunch_ms}
+            min={10} max={600} step={10} onChange={(crunch_ms) => setSnake({ crunch_ms })} />
+          <Slider label="Bounce" title="how far past its resting length the queue springs back, as a share of the squeeze; 0 returns straight to rest"
+            value={snake.bounce} min={0} max={1} step={0.05} onChange={(bounce) => setSnake({ bounce })} />
+          <Slider label="Spring ms" title="how long the queue takes to spring back and come to rest" value={snake.spring_ms}
+            min={10} max={1500} step={10} onChange={(spring_ms) => setSnake({ spring_ms })} />
           <p className="note">
             {change
               ? `The change takes ${(changeMs / 1000).toFixed(2)} s in ${rendering?.steps.length ?? 0} programs.`
@@ -346,14 +367,14 @@ export function App() {
           </label>
           <Slider label="Exposure" value={model.exposure} min={0.25} max={4} step={0.05} disabled={!trueColor}
             onChange={(exposure) => setModel({ ...model, exposure })} />
-          <Slider label="Response" value={model.response} min={0.6} max={2.4} step={0.05} disabled={!trueColor}
+          <Slider label="Response" value={model.response} min={0.2} max={2.4} step={0.05} disabled={!trueColor}
             onChange={(response) => setModel({ ...model, response })} />
           <Slider label="Diffusion" value={diffusion} min={0} max={1} step={0.05} disabled={!trueColor}
             onChange={setDiffusion} />
           <button disabled={!trueColor} onClick={() => { setModel(DEFAULT_MODEL); setDiffusion(DEFAULT_DIFFUSION); }}>Reset</button>
           <p className="note">
             {trueColor
-              ? "How this page draws the lights; nothing here is saved to the service. True color models the Pro's WS2816 LEDs: light linear in the value, near single-wavelength dies, white-balanced by the firmware. The model comes from the datasheet, so tune it against the device."
+              ? "How this page draws the lights; nothing here is saved to the service. The defaults were matched against the device by eye. True color models the Pro's WS2816 LEDs: light linear in the value, near single-wavelength dies, white-balanced by the firmware. The model comes from the datasheet, so tune it against the device."
               : "Showing each value as the screen color with the same hex. On the device, dim values are much brighter and mixed colors lean toward their weaker die."}
           </p>
         </section>

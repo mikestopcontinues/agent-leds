@@ -82,14 +82,17 @@ pub fn steady(slots: &[State], config: &Config) -> String {
     format!("{}{queue} ease", settings(config))
 }
 
+/// A line of a program and how long it runs.
+type Line = (String, u32);
+
 /// The programs for a session entering `state`, to be written one after
 /// another: the snake.
 ///
 /// The lights fade out. A head in the state's color enters at the end
-/// furthest from the front of the queue: a dimmer nose, a bright light, then
-/// a dark one. It pulls the new queue in behind it as a dimmed tail and runs
-/// off the front end, which leaves the queue in place, and the queue then
-/// rises to full brightness.
+/// furthest from the front of the queue and pulls the new queue in behind it
+/// as a dimmed tail. The head runs off the front end, which leaves the queue
+/// in place. The queue can then crunch against that end and spring back, and
+/// it rises to full brightness.
 ///
 /// Every step is a full row of colors, so the whole animation does not fit
 /// in one program.
@@ -97,11 +100,25 @@ pub fn announce(state: State, slots: &[State], config: &Config) -> Vec<Step> {
     let colors = balanced(config);
     let snake = &config.snake;
     let color = colors.of(state);
-    let head = [color.scaled(snake.nose), color, Color::OFF];
-    // With the nose `nose` lights in, queue item k trails the head at nose - head.len() - k.
-    let frame = |nose: usize| {
+
+    // The head from its front back, then the dark light that sets it apart
+    // from the tail. A front or back light with no brightness is left out.
+    let [front, middle, back] = snake.head;
+    let mut head = vec![color.scaled(middle)];
+    if front > 0.0 {
+        head.insert(0, color.scaled(front));
+    }
+    if back > 0.0 {
+        head.push(color.scaled(back));
+    }
+    if snake.gap {
+        head.push(Color::OFF);
+    }
+
+    // With the head's front `reach` lights in, queue item k trails the head at reach - head.len() - k.
+    let frame = |reach: usize| {
         row(config, |position| {
-            match nose.checked_sub(LEDS - 1 - position) {
+            match reach.checked_sub(LEDS - 1 - position) {
                 None => Color::OFF,
                 Some(behind) if behind < head.len() => head[behind],
                 Some(behind) => queue_color(slots, &colors, behind - head.len(), snake.tail),
@@ -115,43 +132,122 @@ pub fn announce(state: State, slots: &[State], config: &Config) -> Vec<Step> {
         ms => format!(" {ms}ms"),
     };
 
-    let mut lines = vec![(
+    // The fade and the snake's steps can be split between programs anywhere.
+    let mut groups: Vec<Vec<Line>> = vec![vec![(
         format!("off {}ms ease", snake.fade_out_ms),
         snake.fade_out_ms,
-    )];
+    )]];
     // The last step has the whole head past the front end and the queue in place.
-    lines.extend((0..LEDS + head.len()).map(|nose| {
-        (
-            format!("{} {}ms linear{hold}", frame(nose), snake.move_ms),
+    groups.extend((0..LEDS + head.len()).map(|reach| {
+        vec![(
+            format!("{} {}ms linear{hold}", frame(reach), snake.move_ms),
             snake.hold_ms + snake.move_ms,
-        )
+        )]
     }));
+    // The arrival is quick, so it is kept in one program: a write in the
+    // middle of the crunch would show as a hitch.
+    let mut arrival = crunch(slots, &colors, config);
     let queue = row(config, |position| {
         queue_color(slots, &colors, position, 1.0)
     });
-    lines.push((
+    arrival.push((
         format!("{queue} {}ms ease", snake.fade_in_ms),
         snake.fade_in_ms,
     ));
-    packed(&lines, config)
+    groups.push(arrival);
+    packed(&groups, config)
+}
+
+/// The lines for the dimmed queue crunching against the front end as it
+/// arrives: it squeezes toward that end, springs back a little past its
+/// resting length if it bounces, and comes to rest.
+fn crunch(slots: &[State], colors: &Palette, config: &Config) -> Vec<Line> {
+    let snake = &config.snake;
+    if snake.crunch == 0.0 {
+        return Vec::new();
+    }
+    let line = |length: f64, ms: u32, easing: &str| {
+        let lights = squeezed(slots, colors, length, snake.tail);
+        let colors = row(config, |position| lights[position]);
+        (format!("{colors} {ms}ms {easing}"), ms)
+    };
+    let mut lines = vec![line(1.0 - snake.crunch, snake.crunch_ms, "ease-out")];
+    let mut rest_ms = snake.spring_ms;
+    if snake.bounce > 0.0 {
+        let out_ms = (snake.spring_ms * 3 / 5).max(1);
+        rest_ms = (snake.spring_ms - out_ms).max(1);
+        lines.push(line(
+            1.0 + snake.crunch * snake.bounce,
+            out_ms,
+            "ease-in-out",
+        ));
+    }
+    lines.push(line(1.0, rest_ms, "ease-in-out"));
+    lines
+}
+
+/// The queue at a share of its brightness with its length scaled from the
+/// front end, as the color at each position along the strip.
+///
+/// Item k sits `k * length` lights from the front and its light is shared
+/// between the two lights nearest that point. Where items share a light their
+/// light adds up, so a squeezed queue is brightest at the end it is pressed
+/// against. At a length of 1 this is the queue as it rests.
+fn squeezed(slots: &[State], colors: &Palette, length: f64, level: f64) -> [Color; LEDS] {
+    let mut light = [[0.0_f64; 3]; LEDS];
+    for (item, &state) in slots.iter().enumerate() {
+        let color = colors.of(state);
+        let at = item as f64 * length;
+        let share = at.fract();
+        for (position, weight) in [(at as usize, 1.0 - share), (at as usize + 1, share)] {
+            if position < LEDS {
+                for (sum, value) in light[position].iter_mut().zip([color.0, color.1, color.2]) {
+                    *sum += f64::from(value) * level * weight;
+                }
+            }
+        }
+    }
+    light.map(|dies| {
+        let [red, green, blue] = dies.map(|value| value.round().clamp(0.0, 255.0) as u8);
+        Color(red, green, blue)
+    })
 }
 
 /// Packs an animation's lines into as few programs as the device accepts.
-fn packed(lines: &[(String, u32)], config: &Config) -> Vec<Step> {
+///
+/// The lines of a group stay in one program when one can hold them: a group
+/// that does not fit in what is left of the last program starts a new one.
+fn packed(groups: &[Vec<Line>], config: &Config) -> Vec<Step> {
     let mut steps: Vec<Step> = Vec::new();
-    for (line, ms) in lines {
-        if let Some(last) = steps.last_mut() {
-            let longer = format!("{}\n{line}", last.program);
-            if device::check(&longer).is_ok() {
-                last.program = longer;
-                last.ms += u64::from(*ms);
-                continue;
+    for group in groups {
+        let together = group
+            .iter()
+            .map(|(line, _)| line.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let fits_last = steps
+            .last()
+            .is_some_and(|last| device::check(&format!("{}\n{together}", last.program)).is_ok());
+        let fits_alone = device::check(&format!("{}{together}", settings(config))).is_ok();
+        let mut start_new = !fits_last && fits_alone;
+        for (line, ms) in group {
+            let longer = match steps.last() {
+                Some(last) if !start_new => Some(format!("{}\n{line}", last.program))
+                    .filter(|longer| device::check(longer).is_ok()),
+                _ => None,
+            };
+            match (longer, steps.last_mut()) {
+                (Some(longer), Some(last)) => {
+                    last.program = longer;
+                    last.ms += u64::from(*ms);
+                }
+                _ => steps.push(Step {
+                    program: format!("{}{line}", settings(config)),
+                    ms: u64::from(*ms),
+                }),
             }
+            start_new = false;
         }
-        steps.push(Step {
-            program: format!("{}{line}", settings(config)),
-            ms: u64::from(*ms),
-        });
     }
     steps
 }
@@ -189,6 +285,7 @@ fn settings(config: &Config) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Snake;
     use State::*;
 
     /// One letter per light.
@@ -319,24 +416,78 @@ mod tests {
     #[test]
     fn the_snake_follows_its_settings() {
         let mut config = plain(7);
-        config.snake = crate::config::Snake {
-            nose: 1.0,
+        config.snake = Snake {
+            head: [0.0, 1.0, 0.5],
+            gap: false,
             tail: 0.5,
             hold_ms: 0,
             move_ms: 40,
             fade_out_ms: 100,
             fade_in_ms: 200,
+            ..Snake::default()
         };
         let steps = announce(Error, &slots(&[Error]), &config);
         let lines = lines(&steps);
+        // A front light at 0 is left out and there is no gap, so the head is two lights: ten steps.
+        assert_eq!(lines.len(), 12);
         assert_eq!(lines[0], "off 100ms ease");
         // No hold, so no delay is written.
         assert_eq!(
             lines[1],
             "#FF0000 #000000 #000000 #000000 #000000 #000000 #000000 #000000 40ms linear"
         );
-        assert!(lines[4].starts_with("#800000 #000000 #FF0000 #FF0000 "));
-        assert!(lines[12].ends_with("#FF0000 200ms ease"));
+        // The bright light, the back light at half, then the queue at half with nothing between.
+        assert!(lines[4].starts_with("#000000 #800000 #800000 #FF0000 #000000 "));
+        assert!(lines[11].ends_with("#FF0000 200ms ease"));
+    }
+
+    #[test]
+    fn a_head_can_be_three_lights_with_no_gap() {
+        let mut config = plain(7);
+        config.snake.head = [0.2, 1.0, 0.6];
+        config.snake.gap = false;
+        let steps = announce(Stopped, &slots(&[Error]), &config);
+        assert_eq!(
+            lines(&steps)[5],
+            "#000000 #4D0000 #009900 #00FF00 #003300 #000000 #000000 #000000 90ms linear 60ms"
+        );
+    }
+
+    #[test]
+    fn the_queue_crunches_against_the_front_end_then_springs_back() {
+        let mut config = plain(7);
+        config.snake = Snake {
+            tail: 1.0,
+            crunch: 0.5,
+            crunch_ms: 120,
+            bounce: 0.5,
+            spring_ms: 300,
+            ..Snake::default()
+        };
+        let steps = announce(Working, &slots(&[Error, Stopped, Working]), &config);
+        let arrival: Vec<&str> = lines(&steps).split_off(12);
+        assert_eq!(
+            arrival,
+            [
+                // Squeezed to half its length: the items pile up on the two lights at the front.
+                "#000000 #000000 #000000 #000000 #000000 #000000 #0080FF #FF8000 120ms ease-out",
+                // Sprung back a quarter past its resting length.
+                "#000000 #000000 #000000 #000000 #000080 #004080 #00BF00 #FF0000 180ms ease-in-out",
+                "#000000 #000000 #000000 #000000 #000000 #0000FF #00FF00 #FF0000 120ms ease-in-out",
+                "#000000 #000000 #000000 #000000 #000000 #0000FF #00FF00 #FF0000 500ms ease",
+            ]
+        );
+        // The arrival is one program, so no write falls in the middle of the crunch.
+        let last = steps.last().unwrap();
+        assert_eq!(last.program, arrival.join("\n"));
+        assert_eq!(last.ms, 120 + 180 + 120 + 500);
+
+        // Without a bounce the queue returns straight to rest.
+        config.snake.bounce = 0.0;
+        let steps = announce(Working, &slots(&[Error, Stopped, Working]), &config);
+        let arrival: Vec<&str> = lines(&steps).split_off(12);
+        assert_eq!(arrival.len(), 3);
+        assert!(arrival[1].ends_with("#FF0000 300ms ease-in-out"));
     }
 
     #[test]
@@ -355,11 +506,19 @@ mod tests {
                 brightness,
                 ..Config::default()
             };
-            config.snake.hold_ms = 5000;
-            config.snake.move_ms = 5000;
+            config.snake = Snake {
+                head: [1.0, 1.0, 1.0],
+                hold_ms: 5000,
+                move_ms: 5000,
+                crunch: 1.0,
+                crunch_ms: 5000,
+                bounce: 1.0,
+                spring_ms: 5000,
+                ..config.snake
+            };
             device::check(&steady(&crowded, &config)).unwrap();
             let steps = announce(Error, &crowded, &config);
-            // Thirteen lines of full rows cannot fit in fewer than three programs.
+            // Seventeen lines of full rows cannot fit in fewer than three programs.
             assert!(steps.len() >= 3);
             for step in &steps {
                 device::check(&step.program).unwrap();
