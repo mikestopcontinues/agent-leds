@@ -9,6 +9,7 @@ mod claude;
 mod codex;
 mod cursor;
 mod grok;
+mod junie;
 
 use std::fs;
 use std::path::Path;
@@ -17,6 +18,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use crate::config::state_dir;
 use crate::daemon::Request;
 use crate::state::{State, Update};
 
@@ -31,14 +33,16 @@ pub enum Harness {
     Codex,
     Grok,
     Cursor,
+    Junie,
 }
 
 impl Harness {
-    pub const ALL: [Harness; 4] = [
+    pub const ALL: [Harness; 5] = [
         Harness::Claude,
         Harness::Codex,
         Harness::Grok,
         Harness::Cursor,
+        Harness::Junie,
     ];
 
     /// What the harness is called on the command line and in the queue.
@@ -48,6 +52,7 @@ impl Harness {
             Harness::Codex => "codex",
             Harness::Grok => "grok",
             Harness::Cursor => "cursor",
+            Harness::Junie => "junie",
         }
     }
 
@@ -58,6 +63,7 @@ impl Harness {
             Harness::Codex => "Codex",
             Harness::Grok => "Grok",
             Harness::Cursor => "Cursor",
+            Harness::Junie => "Junie",
         }
     }
 
@@ -69,6 +75,7 @@ impl Harness {
             Harness::Codex => ".codex",
             Harness::Grok => ".grok",
             Harness::Cursor => ".cursor",
+            Harness::Junie => ".junie",
         }
     }
 
@@ -91,6 +98,7 @@ impl Harness {
             Harness::Codex => codex::event(payload),
             Harness::Grok => grok::event(payload),
             Harness::Cursor => cursor::event(payload),
+            Harness::Junie => junie::event(payload, &state_dir()),
         }
     }
 
@@ -100,6 +108,7 @@ impl Harness {
             Harness::Codex => codex::install(home, exe),
             Harness::Grok => grok::install(home, exe),
             Harness::Cursor => cursor::install(home, exe),
+            Harness::Junie => junie::install(home, exe),
         }
     }
 
@@ -109,6 +118,7 @@ impl Harness {
             Harness::Codex => codex::uninstall(home),
             Harness::Grok => grok::uninstall(home),
             Harness::Cursor => cursor::uninstall(home),
+            Harness::Junie => junie::uninstall(home),
         }
     }
 }
