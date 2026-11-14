@@ -91,8 +91,8 @@ type Line = (String, u32);
 /// The lights fade out. A head in the state's color enters at the end
 /// furthest from the front of the queue and pulls the new queue in behind it
 /// as a dimmed tail. The head runs off the front end, which leaves the queue
-/// in place. The queue can then crunch against that end and spring back, and
-/// it rises to full brightness.
+/// in place. The queue then rises to full brightness, and can crunch against
+/// that end and spring back while it does.
 ///
 /// Every step is a full row of colors, so the whole animation does not fit
 /// in one program.
@@ -146,63 +146,75 @@ pub fn announce(state: State, slots: &[State], config: &Config) -> Vec<Step> {
     }));
     // The arrival is quick, so it is kept in one program: a write in the
     // middle of the crunch would show as a hitch.
-    let mut arrival = crunch(slots, &colors, config);
-    let queue = row(config, |position| {
-        queue_color(slots, &colors, position, 1.0)
-    });
-    arrival.push((
-        format!("{queue} {}ms ease", snake.fade_in_ms),
-        snake.fade_in_ms,
-    ));
-    groups.push(arrival);
+    groups.push(arrival(slots, &colors, config));
     packed(&groups, config)
 }
 
-/// The lines for the dimmed queue crunching against the front end as it
-/// arrives: it squeezes toward that end, springs back a little past its
-/// resting length if it bounces, and comes to rest.
-fn crunch(slots: &[State], colors: &Palette, config: &Config) -> Vec<Line> {
+/// The lines for the dimmed queue arriving at the front end: it rises to
+/// full brightness, and if it crunches it meanwhile squeezes toward that end,
+/// springs back a little past its resting length if it bounces, and comes to
+/// rest.
+fn arrival(slots: &[State], colors: &Palette, config: &Config) -> Vec<Line> {
     let snake = &config.snake;
-    if snake.crunch == 0.0 {
-        return Vec::new();
+    // Each stage: the queue's length, how long it takes to get there, and the easing.
+    let mut stages = Vec::new();
+    if snake.crunch > 0.0 {
+        stages.push((1.0 - snake.crunch, snake.crunch_ms, "ease-out"));
+        let mut rest_ms = snake.spring_ms;
+        if snake.bounce > 0.0 {
+            let out_ms = (snake.spring_ms * 3 / 5).max(1);
+            rest_ms = (snake.spring_ms - out_ms).max(1);
+            stages.push((1.0 + snake.crunch * snake.bounce, out_ms, "ease-in-out"));
+        }
+        stages.push((1.0, rest_ms, "ease-in-out"));
+        // Whatever is left of the rise once the queue is at rest.
+        let crunch_ms: u32 = stages.iter().map(|&(_, ms, _)| ms).sum();
+        if crunch_ms < snake.fade_in_ms {
+            stages.push((1.0, snake.fade_in_ms - crunch_ms, "ease-out"));
+        }
+    } else {
+        stages.push((1.0, snake.fade_in_ms, "ease"));
     }
-    let line = |length: f64, ms: u32, easing: &str| {
-        let lights = squeezed(slots, colors, length, snake.tail);
-        let colors = row(config, |position| lights[position]);
-        (format!("{colors} {ms}ms {easing}"), ms)
-    };
-    let mut lines = vec![line(1.0 - snake.crunch, snake.crunch_ms, "ease-out")];
-    let mut rest_ms = snake.spring_ms;
-    if snake.bounce > 0.0 {
-        let out_ms = (snake.spring_ms * 3 / 5).max(1);
-        rest_ms = (snake.spring_ms - out_ms).max(1);
-        lines.push(line(
-            1.0 + snake.crunch * snake.bounce,
-            out_ms,
-            "ease-in-out",
-        ));
-    }
-    lines.push(line(1.0, rest_ms, "ease-in-out"));
-    lines
+
+    // The rise starts with the crunch, so each stage is as bright as the rise
+    // has got by the time that stage ends.
+    let mut elapsed = 0;
+    stages
+        .into_iter()
+        .map(|(length, ms, easing)| {
+            elapsed += ms;
+            let risen = (f64::from(elapsed) / f64::from(snake.fade_in_ms)).min(1.0);
+            let level = snake.tail + (1.0 - snake.tail) * risen;
+            let lights = stretched(slots, colors, length, level);
+            let colors = row(config, |position| lights[position]);
+            (format!("{colors} {ms}ms {easing}"), ms)
+        })
+        .collect()
 }
 
 /// The queue at a share of its brightness with its length scaled from the
 /// front end, as the color at each position along the strip.
 ///
-/// Item k sits `k * length` lights from the front and its light is shared
-/// between the two lights nearest that point. Where items share a light their
-/// light adds up, so a squeezed queue is brightest at the end it is pressed
+/// Each item covers `length` lights, centered `length` apart, and a light
+/// shows the items that cover it, in proportion. A stretched queue is as
+/// bright as it is at rest and simply reaches further; what reaches past the
+/// last light is not shown. A squeezed queue keeps all its light, so its
+/// items add up on fewer lights and it is brightest at the end it is pressed
 /// against. At a length of 1 this is the queue as it rests.
-fn squeezed(slots: &[State], colors: &Palette, length: f64, level: f64) -> [Color; LEDS] {
+fn stretched(slots: &[State], colors: &Palette, length: f64, level: f64) -> [Color; LEDS] {
+    // A queue squeezed to nothing still sits on the front light.
+    let length = length.max(0.01);
+    let density = level / length.min(1.0);
     let mut light = [[0.0_f64; 3]; LEDS];
     for (item, &state) in slots.iter().enumerate() {
         let color = colors.of(state);
-        let at = item as f64 * length;
-        let share = at.fract();
-        for (position, weight) in [(at as usize, 1.0 - share), (at as usize + 1, share)] {
-            if position < LEDS {
-                for (sum, value) in light[position].iter_mut().zip([color.0, color.1, color.2]) {
-                    *sum += f64::from(value) * level * weight;
+        let center = item as f64 * length;
+        for (position, sums) in light.iter_mut().enumerate() {
+            let covered = (center + length / 2.0).min(position as f64 + 0.5)
+                - (center - length / 2.0).max(position as f64 - 0.5);
+            if covered > 0.0 {
+                for (sum, value) in sums.iter_mut().zip([color.0, color.1, color.2]) {
+                    *sum += f64::from(value) * covered * density;
                 }
             }
         }
@@ -471,16 +483,17 @@ mod tests {
             [
                 // Squeezed to half its length: the items pile up on the two lights at the front.
                 "#000000 #000000 #000000 #000000 #000000 #000000 #0080FF #FF8000 120ms ease-out",
-                // Sprung back a quarter past its resting length.
-                "#000000 #000000 #000000 #000000 #000080 #004080 #00BF00 #FF0000 180ms ease-in-out",
+                // Sprung back a quarter past its resting length: as bright, reaching a light further.
+                "#000000 #000000 #000000 #000000 #00009F #00609F #20DF00 #FF0000 180ms ease-in-out",
                 "#000000 #000000 #000000 #000000 #000000 #0000FF #00FF00 #FF0000 120ms ease-in-out",
-                "#000000 #000000 #000000 #000000 #000000 #0000FF #00FF00 #FF0000 500ms ease",
+                // The rest of the 500 ms rise, which this tail at full brightness does not show.
+                "#000000 #000000 #000000 #000000 #000000 #0000FF #00FF00 #FF0000 80ms ease-out",
             ]
         );
         // The arrival is one program, so no write falls in the middle of the crunch.
         let last = steps.last().unwrap();
         assert_eq!(last.program, arrival.join("\n"));
-        assert_eq!(last.ms, 120 + 180 + 120 + 500);
+        assert_eq!(last.ms, 500);
 
         // Without a bounce the queue returns straight to rest.
         config.snake.bounce = 0.0;
@@ -488,6 +501,53 @@ mod tests {
         let arrival: Vec<&str> = lines(&steps).split_off(12);
         assert_eq!(arrival.len(), 3);
         assert!(arrival[1].ends_with("#FF0000 300ms ease-in-out"));
+    }
+
+    #[test]
+    fn the_queue_rises_while_it_crunches() {
+        let mut config = plain(7);
+        config.snake = Snake {
+            tail: 0.5,
+            fade_in_ms: 400,
+            crunch: 0.5,
+            crunch_ms: 100,
+            bounce: 0.5,
+            spring_ms: 300,
+            ..Snake::default()
+        };
+        let steps = announce(Error, &slots(&[Error]), &config);
+        // A quarter of the way up after the squeeze, 70% after springing back, full at rest.
+        assert_eq!(
+            lines(&steps).split_off(12),
+            [
+                "#000000 #000000 #000000 #000000 #000000 #000000 #000000 #9F0000 100ms ease-out",
+                "#000000 #000000 #000000 #000000 #000000 #000000 #1B0000 #D90000 180ms ease-in-out",
+                "#000000 #000000 #000000 #000000 #000000 #000000 #000000 #FF0000 120ms ease-in-out",
+            ]
+        );
+        // A rise shorter than the crunch is over before the queue is at rest.
+        config.snake.fade_in_ms = 100;
+        let steps = announce(Error, &slots(&[Error]), &config);
+        assert!(lines(&steps)[12].ends_with("#FF0000 100ms ease-out"));
+    }
+
+    #[test]
+    fn a_full_strip_stays_lit_when_the_queue_springs_past_its_end() {
+        let mut config = plain(7);
+        config.snake = Snake {
+            tail: 1.0,
+            crunch: 0.5,
+            bounce: 1.0,
+            ..Snake::default()
+        };
+        let full = slots(&[[Error; 4].as_slice(), &[Working; 4]].concat());
+        let steps = announce(Error, &full, &config);
+        // One and a half times its length: every light is still fully lit, the errors reach
+        // into a sixth light and most of the workers are past the end.
+        assert_eq!(
+            lines(&steps)[13],
+            "#0000FF #0000FF #BF0040 #FF0000 #FF0000 #FF0000 #FF0000 #FF0000 210ms ease-in-out"
+        );
     }
 
     #[test]

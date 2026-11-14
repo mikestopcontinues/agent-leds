@@ -145,6 +145,23 @@ test("a crunch: the arriving queue piles up at the front end, springs back past 
   expect(at(arrived + 120 + 300)).toEqual(at(arrived));
 });
 
+test("the queue rises to full while it crunches", async () => {
+  const snake: Snake = { ...SNAKE, fade_in_ms: 400, crunch: 0.5, crunch_ms: 100, bounce: 0.5, spring_ms: 300 };
+  const rendering = await render(scene(["error"], "error", { snake }));
+  const arrived = snake.fade_out_ms + 11 * (snake.hold_ms + snake.move_ms);
+  const front = (ms: number) => {
+    play("off", 100);
+    return during(rendering, ms)[7]![0];
+  };
+  const full = rgb(rendering.lit.error)[0];
+  // The front light climbs through the squeeze and the spring back, and is full as the queue comes to rest.
+  const levels = [front(arrived), front(arrived + 100), front(arrived + 280), front(arrived + 400)];
+  expect(levels[0]).toBe(Math.round(full * snake.tail));
+  expect(levels).toEqual([...levels].sort((a, b) => a - b));
+  expect(new Set(levels).size).toBe(4);
+  expect(levels[3]).toBe(full);
+});
+
 test("every change is accepted by the firmware and ends on the queue, in the hardest cases", async () => {
   const snakes: Snake[] = [
     SNAKE,

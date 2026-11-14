@@ -188,7 +188,8 @@ pub struct Snake {
     pub move_ms: u32,
     /// How long the old queue takes to fade out before the snake enters.
     pub fade_out_ms: u32,
-    /// How long the new queue takes to rise to full brightness once it is in place.
+    /// How long the new queue takes to rise to full brightness once it is in
+    /// place. The rise and the crunch start together.
     pub fade_in_ms: u32,
     /// How far the queue squeezes toward the front end when it arrives, as a
     /// share of its length. 0 is no crunch.
