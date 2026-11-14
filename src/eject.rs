@@ -39,7 +39,7 @@ pub fn guard() {
     // SAFETY: the mode is a constant of CoreFoundation's.
     let mode = unsafe { kCFRunLoopDefaultMode };
     let (Some(session), Some(run_loop), Some(mode)) = (session, CFRunLoop::current(), mode) else {
-        eprintln!("leds: no session with Disk Arbitration; the card can be ejected");
+        eprintln!("agent-leds: no session with Disk Arbitration; the card can be ejected");
         return;
     };
     let unmounted = Unmounted::default();
@@ -63,7 +63,9 @@ pub fn guard() {
         // and is asked nothing by the one that replaces it. launchd starts
         // this daemon again, which makes a session with the new one.
         if arbitration.is_some() && self::arbitration() != arbitration {
-            eprintln!("leds: Disk Arbitration restarted; restarting to keep hold of the card");
+            eprintln!(
+                "agent-leds: Disk Arbitration restarted; restarting to keep hold of the card"
+            );
             std::process::exit(0);
         }
         if retried.elapsed() >= RETRY {
@@ -92,12 +94,12 @@ unsafe extern "C-unwind" fn refuse(
         return ptr::null();
     }
     let name = bsd_name(disk);
-    eprintln!("leds: refused to eject the card ({name})");
+    eprintln!("agent-leds: refused to eject the card ({name})");
     let mut unmounted = unmounted.borrow_mut();
     if !unmounted.iter().any(|card| bsd_name(card) == name) {
         unmounted.push(disk.retain());
     }
-    let reason = CFString::from_str("leds keeps the SidePulse card mounted");
+    let reason = CFString::from_str("agent-leds keeps the SidePulse card mounted");
     // SAFETY: creating a dissenter has no preconditions.
     let dissenter = unsafe { DADissenter::new(None, kDAReturnNotPermitted, Some(&reason)) };
     // Disk Arbitration releases the dissenter it is handed.

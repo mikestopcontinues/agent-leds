@@ -1,4 +1,4 @@
-// Serves the workshop page and bridges it to the installed `leds` CLI, so the
+// Serves the workshop page and bridges it to the installed `agent-leds` CLI, so the
 // page shows exactly what the service renders, can preview on the device and
 // can save its settings to the service.
 
@@ -9,13 +9,13 @@ import index from "./index.html";
 process.chdir(import.meta.dir);
 
 async function leds(args: string[], stdin = ""): Promise<string> {
-  const child = Bun.spawn(["leds", ...args], { stdin: new Blob([stdin]), stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn(["agent-leds", ...args], { stdin: new Blob([stdin]), stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
     child.exited,
   ]);
-  if (code !== 0) throw new Error(err.replace(/^Error: /, "").trim() || `leds exited with ${code}`);
+  if (code !== 0) throw new Error(err.replace(/^Error: /, "").trim() || `agent-leds exited with ${code}`);
   return out;
 }
 
@@ -58,4 +58,4 @@ const server = Bun.serve({
   },
 });
 
-console.log(`leds workshop: ${server.url}`);
+console.log(`agent-leds workshop: ${server.url}`);

@@ -86,7 +86,7 @@ impl Harness {
 
     /// Whether a hook command is one this harness's install wrote.
     fn owns(self, command: &Value) -> bool {
-        let ours = format!("leds hook {}", self.name());
+        let ours = format!("agent-leds hook {}", self.name());
         command
             .as_str()
             .is_some_and(|command| command.ends_with(&ours))
@@ -265,7 +265,7 @@ fn edit_hooks(path: &Path, edit: impl FnOnce(&mut Map<String, Value>) -> Result<
 /// file. The file stays as private as it was: a config can hold secrets.
 fn replace(path: &Path, text: &str) -> Result<()> {
     let mut staged = path.as_os_str().to_owned();
-    staged.push(".leds-tmp");
+    staged.push(".agent-leds-tmp");
     fs::write(&staged, text)?;
     if let Ok(metadata) = fs::metadata(path) {
         fs::set_permissions(&staged, metadata.permissions())?;
@@ -321,7 +321,8 @@ mod tests {
 
     impl Home {
         pub fn new(test: &str) -> Home {
-            let home = std::env::temp_dir().join(format!("leds-{test}-{}", std::process::id()));
+            let home =
+                std::env::temp_dir().join(format!("agent-leds-{test}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&home);
             fs::create_dir_all(&home).unwrap();
             Home(home)
@@ -392,9 +393,9 @@ mod tests {
     #[test]
     fn only_harnesses_that_have_been_used_are_registered() {
         let home = Home::new("used");
-        assert!(install(&home, Path::new("/bin/leds")).is_empty());
+        assert!(install(&home, Path::new("/bin/agent-leds")).is_empty());
         fs::create_dir(home.join(".claude")).unwrap();
-        let installed = install(&home, Path::new("/bin/leds"));
+        let installed = install(&home, Path::new("/bin/agent-leds"));
         assert!(matches!(installed[..], [(Harness::Claude, Ok(()))]));
         assert!(home.join(".claude/settings.json").exists());
     }

@@ -1,4 +1,4 @@
-//! leds: shows a queue of agent sessions on a SidePulse Pro.
+//! agent-leds: shows a queue of agent sessions on a SidePulse Pro.
 
 mod config;
 mod daemon;
@@ -12,7 +12,7 @@ mod settings;
 mod state;
 
 #[cfg(not(target_os = "macos"))]
-compile_error!("leds runs only on macOS: the card sits in a MacBook's SD slot");
+compile_error!("agent-leds runs only on macOS: the card sits in a MacBook's SD slot");
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -33,7 +33,7 @@ use state::State;
     about = "Shows a queue of agent sessions on a SidePulse Pro, the eight-light card in a \
              MacBook's SD slot: red for an error, orange for a question, blue for stopped and \
              unread, green for working",
-    after_help = "Run `leds install` once to start the service and register its hooks with \
+    after_help = "Run `agent-leds install` once to start the service and register its hooks with \
                   Claude Code, Codex, Grok, Cursor and Junie."
 )]
 struct Cli {
@@ -48,7 +48,7 @@ enum Command {
         after_help = "A harness is in use when its folder is in your home directory: ~/.claude, \
                       ~/.codex, ~/.grok, ~/.cursor or ~/.junie. Other hooks are left as they are. \
                       Run it again after you start using another harness, or after you move or \
-                      upgrade the leds binary; running it twice changes nothing."
+                      upgrade the agent-leds binary; running it twice changes nothing."
     )]
     Install,
     /// Stop the service and remove its hooks, and nothing else
@@ -61,7 +61,7 @@ enum Command {
     },
     /// Clear every light that is not working, or one session's
     Dismiss {
-        /// The session to clear, by the start of its id as `leds status` shows it
+        /// The session to clear, by the start of its id as `agent-leds status` shows it
         session: Option<String>,
     },
     /// List the palettes, or switch to one
@@ -216,7 +216,7 @@ fn registered(outcomes: Vec<(Harness, Result<()>)>) -> Result<Vec<&'static str>>
         match outcome {
             Ok(()) => registered.push(harness.title()),
             Err(error) => {
-                eprintln!("leds: {}: {error:#}", harness.title());
+                eprintln!("agent-leds: {}: {error:#}", harness.title());
                 failed.push(harness.title());
             }
         }
@@ -296,7 +296,7 @@ fn configure(key: Option<&str>, values: &[String]) -> Result<()> {
         .collect();
     if shown.is_empty() {
         anyhow::bail!(
-            "no setting named {:?}; see `leds config -h`",
+            "no setting named {:?}; see `agent-leds config -h`",
             key.unwrap_or_default()
         );
     }

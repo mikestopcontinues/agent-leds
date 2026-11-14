@@ -1,4 +1,4 @@
-// What the installed `leds` service takes and renders, as the workshop sees it.
+// What the installed `agent-leds` service takes and renders, as the workshop sees it.
 
 export const STATES = ["error", "question", "stopped", "working"] as const;
 export type State = (typeof STATES)[number];
@@ -38,7 +38,7 @@ export type Scene = { states: State[]; announce: State | null; from: State[]; co
 /** One program of an animation and how long it runs before the next is written. */
 export type Step = { program: string; ms: number };
 
-/** What `leds render` returns for a scene. */
+/** What `agent-leds render` returns for a scene. */
 export type Rendering = {
   /** The state shown by each lit light, front of the queue first. */
   slots: State[];

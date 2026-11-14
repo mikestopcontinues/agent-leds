@@ -1,0 +1,13 @@
+[workspace]
+members = ["cargo:."]
+
+# Releases are built and published by dist: `dist plan` shows what a tag would release.
+[dist]
+cargo-dist-version = "0.34.0"
+ci = "github"
+installers = ["homebrew"]
+tap = "mikestopcontinues/homebrew-tap"
+publish-jobs = ["homebrew"]
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+install-path = "CARGO_HOME"
+install-updater = false

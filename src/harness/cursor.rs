@@ -183,7 +183,7 @@ mod tests {
         let home = Home::new("cursor");
         home.write(HOOKS, &theirs.to_string());
 
-        install(&home, Path::new("/bin/leds")).unwrap();
+        install(&home, Path::new("/bin/agent-leds")).unwrap();
         let installed = home.json(HOOKS);
         assert_eq!(installed["version"], 1);
         assert_eq!(
@@ -193,9 +193,9 @@ mod tests {
         assert_eq!(installed["hooks"]["stop"][0], theirs["hooks"]["stop"][0]);
         assert_eq!(
             installed["hooks"]["stop"][1],
-            json!({ "command": "/bin/leds hook cursor", "timeout": 5 })
+            json!({ "command": "/bin/agent-leds hook cursor", "timeout": 5 })
         );
-        install(&home, Path::new("/bin/leds")).unwrap();
+        install(&home, Path::new("/bin/agent-leds")).unwrap();
         assert_eq!(home.json(HOOKS), installed);
 
         uninstall(&home).unwrap();
@@ -206,7 +206,7 @@ mod tests {
     fn a_first_hooks_file_says_which_version_it_is() {
         let home = Home::new("cursor-first");
         fs::create_dir(home.join(".cursor")).unwrap();
-        install(&home, Path::new("/bin/leds")).unwrap();
+        install(&home, Path::new("/bin/agent-leds")).unwrap();
         let installed = home.json(HOOKS);
         assert_eq!(installed["version"], 1);
         assert_eq!(installed["hooks"].as_object().unwrap().len(), EVENTS.len());

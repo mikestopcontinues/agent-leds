@@ -1,49 +1,87 @@
-# leds
+# agent-leds
 
-`leds` shows a queue of agent sessions on a SidePulse Pro, the eight-light card in a MacBook's SD slot. Each session that is doing something or needs something gets one light: red for an error, orange for a question, blue for stopped and unread, green for working. The queue is sorted in that order with its front on the light furthest from you, and the lights are off when there is nothing to show.
+`agent-leds` replaces the SidePulse Pro's own software with a status light for every coding agent session: Claude Code, Codex, Grok, Cursor and Junie. The Pro is the eight-light card in a MacBook's SD slot. All sessions share one queue, most urgent at the front, which is the light furthest from you and the right end of the pictures below: red for an error, orange for a question, blue for a finished turn you have not read, green for working. The lights are off when there is nothing to show.
 
-It works with Claude Code, Codex, Grok, Cursor and Junie, and runs on macOS only. It replaces SidePulse's own software, which must not drive the same card.
+What sets it apart:
+
+- Every agent and every session on one strip, sorted by what needs you most.
+- Lights clear themselves. A finished Claude Code session goes dark once you have looked at it in the desktop app, and nothing stays lit forever.
+- A change that needs you is announced by a snake that runs to the front of the queue; anything else settles in quietly.
+- Every color looks equally bright on the card.
+- The card stays mounted through sleep and locked-screen wakes, which otherwise leave it dark until it is reseated.
+
+| On the card | |
+| --- | --- |
+| A session stops: the snake brings its light to the front | <img src="docs/previews/stopped.webp" height="40" alt="A blue snake crosses the strip and two green lights rise in behind it with a blue one at the front"> |
+| A session asks a question | <img src="docs/previews/question.webp" height="40" alt="An orange snake crosses the strip; the queue rises with orange at the front"> |
+| A session fails | <img src="docs/previews/error.webp" height="40" alt="A red snake crosses the strip; the queue rises with red at the front"> |
+| You read a finished session: its light leaves quietly | <img src="docs/previews/read.webp" height="40" alt="A wave runs along the queue and the blue light is gone"> |
+
+It runs on macOS only. It is unofficial and not affiliated with SidePulse.
 
 ## Install
 
-You need a Mac with an SD slot, a SidePulse Pro in it, and Rust (from [rustup](https://rustup.rs)). From a checkout of this repository:
+You need a Mac with an SD slot, a SidePulse Pro in it, and [Homebrew](https://brew.sh).
 
 ```sh
-cargo install --path .
-leds install
+brew install mikestopcontinues/tap/agent-leds
+agent-leds install
 ```
 
-`cargo install` builds `leds` into `~/.cargo/bin`. `leds install` starts the service, which runs at login from then on, and registers its hooks with every harness whose folder is in your home directory (`~/.claude`, `~/.codex`, `~/.grok`, `~/.cursor`, `~/.junie`). It says which. It leaves every hook that is not its own as it is, and running it twice changes nothing. Sessions that start after it report to the lights.
+`agent-leds install` starts the service, which runs at login from then on, and registers its hooks with every harness whose folder is in your home directory (`~/.claude`, `~/.codex`, `~/.grok`, `~/.cursor`, `~/.junie`). It says which. It leaves every hook that is not its own as it is, and running it twice changes nothing. Sessions that start after it report to the lights.
 
-Run `leds install` again after you start using another harness, and after every upgrade: it restarts the service with the new binary and points the hooks at it.
-
-If SidePulse's own software is installed, remove it first: its hooks, its service and its eject prevention helper. Two programs writing to the card would overwrite each other, and `leds` does all that SidePulse's helper did.
-
-To remove `leds`:
+Run `agent-leds install` again after you start using another harness, and after every upgrade, which it needs to restart the service on the new binary:
 
 ```sh
-leds uninstall
-cargo uninstall leds
+brew upgrade agent-leds && agent-leds install
 ```
 
-`leds uninstall` stops the service and removes its LaunchAgent and its own hooks, and nothing else. Settings stay in `~/.config/leds/`, and the queue, socket and log in `~/.local/state/leds/`.
+If SidePulse's own software is installed, remove it first: its hooks, its service and its eject prevention helper. Two programs writing to the card would overwrite each other, and `agent-leds` does all that SidePulse's helper did. Firmware updates for the card still need SidePulse's tools.
+
+To remove `agent-leds`:
+
+```sh
+agent-leds uninstall
+brew uninstall agent-leds
+```
+
+`agent-leds uninstall` stops the service and removes its LaunchAgent and its own hooks, and nothing else. Settings stay in `~/.config/agent-leds/`, and the queue, socket and log in `~/.local/state/agent-leds/`.
+
+To build it yourself instead, with Rust from [rustup](https://rustup.rs): `cargo install --path .` in a checkout, then `agent-leds install`.
 
 ## Use
 
 ```sh
-leds status                        # the queue: state, age, session, harness, folder
-leds dismiss                       # clear every light that is not working
-leds palette                       # list the palettes; `leds palette bright` switches
-leds config                        # every setting
-leds config snake.step_ms 150      # change one
-leds config colors.question ff7000
+agent-leds status                        # the queue: state, age, session, harness, folder
+agent-leds dismiss                       # clear every light that is not working
+agent-leds palette                       # list the palettes; `agent-leds palette bright` switches
+agent-leds config                        # every setting
+agent-leds config snake.step_ms 150      # change one
+agent-leds config colors.question ff7000
 ```
 
-Every command takes `-h`. `leds config -h` lists the settings with their ranges and defaults. The settings decide the colors, overall brightness, which end of the card is the front, the die balance that keeps the states equally bright, when lights clear, and how the snake that announces a change looks and moves. [How it works](#how-it-works) and [When lights clear](#when-lights-clear) explain what they do.
+Every command takes `-h`. `agent-leds config -h` lists the settings with their ranges and defaults. The settings decide the colors, overall brightness, which end of the card is the front, the die balance that keeps the states equally bright, when lights clear, and how the snake that announces a change looks and moves. [How it works](#how-it-works) and [When lights clear](#when-lights-clear) explain what they do.
 
-The service keeps its settings in `~/.config/leds/config.toml` and reads the file only when it starts, so change them with `leds config`, which applies them at once. A key the service does not know is ignored, so a config from an older version still loads; a value it cannot use stops the service with a message in its log, `~/.local/state/leds/daemon.log`.
+The service keeps its settings in `~/.config/agent-leds/config.toml` and reads the file only when it starts, so change them with `agent-leds config`, which applies them at once. A key the service does not know is ignored, so a config from an older version still loads; a value it cannot use stops the service with a message in its log, `~/.local/state/agent-leds/daemon.log`.
 
-`leds play` shows a program of your own, written in the card's LEDS.LED language, for a few seconds.
+`agent-leds palette <name>` switches the four colors at once:
+
+| Palette | Working, stopped, question, error | |
+| --- | --- | --- |
+| `default` | <img src="docs/previews/palette-default.webp" height="40" alt="The default palette"> | Red, orange, blue, green: what the service starts with. |
+| `signal` | <img src="docs/previews/palette-signal.webp" height="40" alt="The signal palette"> | Red, orange, green, blue: one die each, orange the only mix. |
+| `bright` | <img src="docs/previews/palette-bright.webp" height="40" alt="The bright palette"> | Signal with a yellower orange and a lighter blue. |
+| `terminal` | <img src="docs/previews/palette-terminal.webp" height="40" alt="The terminal palette"> | Red, yellow, green, cyan, like a terminal's colors. |
+| `neon` | <img src="docs/previews/palette-neon.webp" height="40" alt="The neon palette"> | Pink, amber, mint, violet. |
+| `vapor` | <img src="docs/previews/palette-vapor.webp" height="40" alt="The vapor palette"> | Pink, yellow, cyan, purple: the widest spread of hues. |
+| `candy` | <img src="docs/previews/palette-candy.webp" height="40" alt="The candy palette"> | Pink-red, orange, lime, cyan: no deep blue, so it runs brighter. |
+| `sunset` | <img src="docs/previews/palette-sunset.webp" height="40" alt="The sunset palette"> | Red, yellow, magenta, violet: no green states. |
+| `ice` | <img src="docs/previews/palette-ice.webp" height="40" alt="The ice palette"> | Magenta, white, cyan, violet: cool, with white for questions. |
+| `colorblind` | <img src="docs/previews/palette-colorblind.webp" height="40" alt="The colorblind palette"> | Pink, yellow, white, blue: told apart without comparing red to green. |
+| `soft` | <img src="docs/previews/palette-soft.webp" height="40" alt="The soft palette"> | Signal with a little of every die in each color, less saturated. |
+| `pastel` | <img src="docs/previews/palette-pastel.webp" height="40" alt="The pastel palette"> | Washed-out red, yellow, green, blue: the brightest and gentlest. |
+
+`agent-leds play` shows a program of your own, written in the card's LEDS.LED language, for a few seconds.
 
 ## How it works
 
@@ -51,15 +89,15 @@ A small daemon owns the queue and the device. Each harness reports to it through
 
 The device runs whatever program is written to its `LEDS.LED` file, in SidePulse's own animation language, limited to 512 bytes and 20 lines. The daemon writes programs only when the queue changes, so a steady display costs nothing on the Mac:
 
-- **Every state is equally bright.** A state's color sets its hue only. The renderer scales the four colors to the brightness of the dimmest hue at full strength, using the `balance` setting: how bright the red, green and blue dies look relative to each other. The default balance is an estimate; tune it by eye with `leds config balance`.
+- **Every state is equally bright.** A state's color sets its hue only. The renderer scales the four colors to the brightness of the dimmest hue at full strength, using the `balance` setting: how bright the red, green and blue dies look relative to each other. The default balance is an estimate; tune it by eye with `agent-leds config balance`.
 - **A session that comes to want you** (stopped, a question, an error) is announced by a snake. The lights fade out. A head in the color of the state a session just entered crosses the strip toward the front of the queue: up to three lights, then a dark one if wanted. It pulls the new queue in behind it as a dimmed tail and runs off the front end. The queue then rises to full brightness in a wave from its front to its back. One setting, `step_ms`, paces everything after the fade out: the head moves on a light every step, and so does the crest of the wave. Each light, the front one included, goes dark in the step before the wave reaches it, so the crest always stands against a dark light, and then rises at an even pace over seven steps. A queue of n lights therefore rises in n + 7 steps. The whole change takes two to three seconds and spans one to three programs, which the daemon writes one after another, each when the one before it ends.
 
   To fit more lines in a program, a line names only the lights that change, or gives a row cut off after its last lit light, whichever is shorter. The rise is kept in one program where it fits, so that no write falls in the middle of it.
 - **More than eight items** are cut to fit. Every state present keeps at least one light and the rest go to states in queue order. Nothing marks the items that are hidden.
 - **Any other change** settles in quietly: a session going back to work, or a light leaving because its session was read, went silent, ended or was dismissed. The wave alone runs from the front of the queue to the back, with no fade out and no snake. Each light holds its old color until the wave reaches it, goes dark for a step, and rises in its new color. A quiet change never interrupts a snake; the snake ends on the queue as it is by then.
-- **A played program or shown scene** (`leds play`, or the workshop's "Show on device") holds the lights for a few seconds, then the queue returns.
+- **A played program or shown scene** (`agent-leds play`, or the workshop's "Show on device") holds the lights for a few seconds, then the queue returns.
 
-The daemon saves the queue to `~/.local/state/leds/queue.json` on every change and reloads it when it starts, so restarting it loses nothing.
+The daemon saves the queue to `~/.local/state/agent-leds/queue.json` on every change and reloads it when it starts, so restarting it loses nothing.
 
 The daemon reads the card's uptime every 15 seconds. The read keeps the SD reader from powering the card down, and an uptime that went backwards means the card restarted, so the queue is rewritten.
 
@@ -70,7 +108,7 @@ The daemon also keeps the card mounted. macOS ejects a disk that appears while t
 
 ## Harness states
 
-`leds install` registers `leds hook <harness>` with each harness, for the events listed below. The hook reads one event, tells the daemon what it means, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked.
+`agent-leds install` registers `agent-leds hook <harness>` with each harness, for the events listed below. The hook reads one event, tells the daemon what it means, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked.
 
 The harnesses took their hook events from Claude Code, so most of the names agree. Each harness reads only its own spelling. Grok also runs the hooks in `~/.claude/settings.json`, with its own payloads, and those are not taken for Claude Code sessions.
 
@@ -97,7 +135,7 @@ Events from subagents never say what the session needs, but they do say that wor
 
 ### Codex
 
-Hooks are `[[hooks.<Event>]]` groups in `~/.codex/config.toml`, after the groups that are there. Codex runs a hook only once its hash is recorded under `[hooks.state]`, so the install asks `codex app-server` for the hash of each and records it. That needs `codex` on the `PATH`. Codex finds a hook's hash by the hook's place among the groups of its event, so if another tool reorders the groups, run `leds install` again.
+Hooks are `[[hooks.<Event>]]` groups in `~/.codex/config.toml`, after the groups that are there. Codex runs a hook only once its hash is recorded under `[hooks.state]`, so the install asks `codex app-server` for the hash of each and records it. That needs `codex` on the `PATH`. Codex finds a hook's hash by the hook's place among the groups of its event, so if another tool reorders the groups, run `agent-leds install` again.
 
 | Hook event | Session becomes |
 | --- | --- |
@@ -115,7 +153,7 @@ Subagents are treated as Claude Code's are. Codex also runs agents of its own, s
 
 ### Grok
 
-Hooks are a file of their own, `~/.grok/hooks/leds.json`.
+Hooks are a file of their own, `~/.grok/hooks/agent-leds.json`.
 
 | Hook event | Session becomes |
 | --- | --- |
@@ -163,7 +201,7 @@ Hooks are groups in `~/.junie/config.json`.
 The gaps:
 
 - No strong question. Junie reads a hook that succeeds on `PermissionRequest` as approval, and one that says nothing on `PreToolUse` as allowing the tool, so neither is hooked.
-- Junie names the session only in `UserPromptSubmit`. The hook keeps the last one in `~/.local/state/leds/junie-session.json` and takes every other event to belong to it. With two Junie sessions at once, an event goes to the one that submitted a prompt last.
+- Junie names the session only in `UserPromptSubmit`. The hook keeps the last one in `~/.local/state/agent-leds/junie-session.json` and takes every other event to belong to it. With two Junie sessions at once, an event goes to the one that submitted a prompt last.
 
 ### When lights clear
 
@@ -176,11 +214,11 @@ The lights have to mean something, so every one of them has a way out:
 | Question, weak: the turn ended on a question | The same as stopped. You may read it and leave it unanswered. |
 | Question, strong: a permission request, `AskUserQuestion` or an elicitation | When it is answered. The agent is blocked on it. |
 | Error | At the next prompt. |
-| Any | When the session ends, at `leds dismiss`, or after `abandon_days` without a word from the session. |
+| Any | When the session ends, at `agent-leds dismiss`, or after `abandon_days` without a word from the session. |
 
 A turn that ends again in a session that had already stopped counts as new: the light is unread again and the change is announced.
 
-No harness has a hook for a session being read. For Claude Code the daemon reads the desktop app's own session files, under `~/Library/Application Support/Claude/claude-code-sessions/`. Each records the session id the hooks report and when the session was last opened. A session counts as read when it was opened after its turn ended, or when you are using the app with that session open: it is the session opened last, the app is the frontmost one (the daemon asks `lsappinfo`), and you touched the keyboard, mouse or trackpad in the last five seconds. The app being in front is not enough, since you may be away from the screen. The daemon looks when a turn ends and every 3 seconds while a session is unread. `leds status` shows when each was read.
+No harness has a hook for a session being read. For Claude Code the daemon reads the desktop app's own session files, under `~/Library/Application Support/Claude/claude-code-sessions/`. Each records the session id the hooks report and when the session was last opened. A session counts as read when it was opened after its turn ended, or when you are using the app with that session open: it is the session opened last, the app is the frontmost one (the daemon asks `lsappinfo`), and you touched the keyboard, mouse or trackpad in the last five seconds. The app being in front is not enough, since you may be away from the screen. The daemon looks when a turn ends and every 3 seconds while a session is unread. `agent-leds status` shows when each was read.
 
 The files are undocumented. If the app changes them, or a session runs in a terminal or in another harness, the session is never read: its light stays until its next prompt, until the session ends, or until `abandon_days` pass. If the daemon cannot tell which session is open, because the newest file is half written or is not a Claude Code session, it marks none.
 
@@ -190,20 +228,20 @@ The files are undocumented. If the app changes them, or a session runs in a term
 
 ### Workshop
 
-`prototype/` is a page for tuning the service's settings against the device. It is not part of the package: it needs [Bun](https://bun.sh) and `leds` on the `PATH`, and talks to the running service. The colors that reach your eye have not been measured, so its "true color" view is a datasheet model to tune against the device.
+`prototype/` is a page for tuning the service's settings against the device. It is not part of the package: it needs [Bun](https://bun.sh) and `agent-leds` on the `PATH`, and talks to the running service. The colors that reach your eye have not been measured, so its "true color" view is a datasheet model to tune against the device.
 
 ```sh
 cd prototype && bun install && bun run dev
 ```
 
-- The lights on the page are what the installed `leds` binary renders for a test queue, run in the firmware's own interpreter (`vendor/sdled.wasm`, from the SidePulse project). So the page shows what the device will do.
+- The lights on the page are what the installed `agent-leds` binary renders for a test queue, run in the firmware's own interpreter (`vendor/sdled.wasm`, from the SidePulse project). So the page shows what the device will do.
 - Every setting is on the page: the snake, when lights clear, the state colors and palettes, overall brightness, the front light and the die balance. Changes apply to the page only until "Save to the service", which replaces the service's settings at once. "Revert" returns to what the service has.
 - Changing the test queue plays the change the service would: the snake for a session that comes to want you, the quiet wave for anything else.
 - "Show on device" plays the page's queue and unsaved settings on the real card for ten seconds, then the real queue returns.
 - "Equal brightness" shows the three dies side by side, on the page or the device, so the balance can be set by eye.
 - "Preview look" is how the page draws the lights and is not saved. "True color" shows how a value looks on the Pro's WS2816 LEDs rather than as the same hex on a screen; `src/color.ts` explains the model and its assumptions. Its defaults (response 0.6, diffusion 0.2) were matched against the device by eye.
 
-`bun test` checks the color model and runs what the installed service renders through the firmware interpreter.
+`bun test` checks the color model and runs what the installed service renders through the firmware interpreter. `bun run previews` redraws the README's pictures in `docs/previews/` the same way; run it after changing how the service renders, its defaults or its palettes.
 
 ## Open questions
 

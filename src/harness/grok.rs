@@ -10,7 +10,7 @@ use super::{Event, Harness, ends_on_question, replace, text};
 
 /// Grok reads every JSON file in the folder, so this one holds nothing but
 /// what an install wrote.
-const HOOKS: &str = ".grok/hooks/leds.json";
+const HOOKS: &str = ".grok/hooks/agent-leds.json";
 
 /// The hook events the daemon needs, in the order a turn produces them,
 /// each with what it must match. Grok names the kind of a notification
@@ -216,18 +216,18 @@ mod tests {
     fn installing_writes_a_file_of_its_own_and_uninstalling_removes_only_that() {
         let home = Home::new("grok");
         home.write(".grok/hooks/sidepulse.json", "{}");
-        install(&home, Path::new("/bin/leds")).unwrap();
+        install(&home, Path::new("/bin/agent-leds")).unwrap();
         let installed = home.json(HOOKS);
         assert_eq!(
             installed["hooks"]["Stop"][0]["hooks"][0]["command"],
-            "/bin/leds hook grok"
+            "/bin/agent-leds hook grok"
         );
         assert_eq!(
             installed["hooks"]["Notification"][0]["matcher"],
             "permission_prompt"
         );
         assert_eq!(installed["hooks"].as_object().unwrap().len(), EVENTS.len());
-        install(&home, Path::new("/bin/leds")).unwrap();
+        install(&home, Path::new("/bin/agent-leds")).unwrap();
         assert_eq!(home.json(HOOKS), installed);
 
         uninstall(&home).unwrap();

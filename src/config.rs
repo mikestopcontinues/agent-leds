@@ -309,12 +309,12 @@ pub fn home() -> PathBuf {
 }
 
 fn config_file() -> PathBuf {
-    home().join(".config/leds/config.toml")
+    home().join(".config/agent-leds/config.toml")
 }
 
 /// Where the daemon keeps its socket and log.
 pub fn state_dir() -> PathBuf {
-    home().join(".local/state/leds")
+    home().join(".local/state/agent-leds")
 }
 
 #[cfg(test)]

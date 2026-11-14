@@ -70,7 +70,7 @@ pub fn install(home: &Path, exe: &Path) -> Result<()> {
     edit(&config, |config| register(config, &command))?;
     let hashes = hashes(home).context(
         "the hooks are in config.toml, but Codex will not run them until it is told to trust \
-         them; run `leds install` again once `codex` works",
+         them; run `agent-leds install` again once `codex` works",
     )?;
     edit(&config, |config| trust(config, &hashes))
 }
@@ -286,7 +286,7 @@ fn list_hooks(codex: &mut Child, home: &Path) -> Result<Value> {
             return Ok(reply["result"].take());
         }
     };
-    let client = json!({ "name": "leds", "version": env!("CARGO_PKG_VERSION") });
+    let client = json!({ "name": "agent-leds", "version": env!("CARGO_PKG_VERSION") });
     call(1, "initialize", json!({ "clientInfo": client }))?;
     call(2, "hooks/list", json!({ "cwds": [home] }))
 }
@@ -449,7 +449,10 @@ trusted_hash = "sha256:271070a9"
             (format!("{PATH}:stop:{place}:0"), "sha256:0d1f".to_owned()),
             (format!("{PATH}:interrupt:0:0"), "sha256:9c2e".to_owned()),
         ];
-        edit(config, |config| register(config, "/bin/leds hook codex")).unwrap();
+        edit(config, |config| {
+            register(config, "/bin/agent-leds hook codex")
+        })
+        .unwrap();
         edit(config, |config| trust(config, &hashes)).unwrap();
     }
 
@@ -478,7 +481,7 @@ trusted_hash = "sha256:271070a9"
         assert_eq!(stop.len(), 2);
         assert_eq!(
             stop[1]["hooks"][0]["command"].as_str(),
-            Some("/bin/leds hook codex")
+            Some("/bin/agent-leds hook codex")
         );
         assert_eq!(
             parsed["hooks"]["state"][format!("{PATH}:stop:1:0").as_str()]["trusted_hash"].as_str(),

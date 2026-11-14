@@ -1,11 +1,12 @@
 {
-  "name": "leds-prototype",
+  "name": "agent-leds-workshop",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "bun --hot server.ts",
     "test": "bun test",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "previews": "bun previews.ts"
   },
   "dependencies": {
     "react": "^19.3.1",

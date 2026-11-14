@@ -133,7 +133,7 @@ mod tests {
         let home = Home::new("junie");
         home.write(CONFIG, &theirs.to_string());
 
-        install(&home, Path::new("/bin/leds")).unwrap();
+        install(&home, Path::new("/bin/agent-leds")).unwrap();
         let installed = home.json(CONFIG);
         assert_eq!(installed["model"], "sonnet");
         assert_eq!(
@@ -142,7 +142,7 @@ mod tests {
         );
         assert_eq!(
             installed["hooks"]["Stop"][0]["hooks"][0]["command"],
-            "/bin/leds hook junie"
+            "/bin/agent-leds hook junie"
         );
         // A hook on either of these would decide for the user.
         assert!(installed["hooks"]["PermissionRequest"].is_null());
@@ -150,7 +150,7 @@ mod tests {
             installed["hooks"]["PreToolUse"].as_array().unwrap().len(),
             1
         );
-        install(&home, Path::new("/bin/leds")).unwrap();
+        install(&home, Path::new("/bin/agent-leds")).unwrap();
         assert_eq!(home.json(CONFIG), installed);
 
         uninstall(&home).unwrap();

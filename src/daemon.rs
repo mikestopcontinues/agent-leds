@@ -66,7 +66,7 @@ pub fn socket_path() -> PathBuf {
 /// Sends one request to the running daemon without waiting for its reply.
 pub fn send(request: &Request) -> Result<UnixStream> {
     let mut stream = UnixStream::connect(socket_path())
-        .context("the leds daemon is not running; run `leds install`")?;
+        .context("the agent-leds daemon is not running; run `agent-leds install`")?;
     stream.write_all(format!("{}\n", serde_json::to_string(request)?).as_bytes())?;
     Ok(stream)
 }
@@ -93,7 +93,7 @@ fn saved_queue() -> Queue {
         return Queue::default();
     };
     serde_json::from_slice(&saved).unwrap_or_else(|error| {
-        eprintln!("leds: ignoring the saved queue: {error}");
+        eprintln!("agent-leds: ignoring the saved queue: {error}");
         Queue::default()
     })
 }
@@ -130,7 +130,7 @@ pub fn run() -> Result<()> {
     let path = socket_path();
     std::fs::create_dir_all(state_dir())?;
     if UnixStream::connect(&path).is_ok() {
-        bail!("a leds daemon is already running");
+        bail!("an agent-leds daemon is already running");
     }
     let _ = std::fs::remove_file(&path);
     let listener =
@@ -402,7 +402,7 @@ impl Daemon {
     fn save_queue(&self) {
         let saved = serde_json::to_vec(&self.queue).expect("a queue is plain data");
         if let Err(error) = std::fs::write(queue_path(), saved) {
-            eprintln!("leds: could not save the queue: {error}");
+            eprintln!("agent-leds: could not save the queue: {error}");
         }
     }
 
@@ -471,7 +471,7 @@ impl Daemon {
     fn write(&mut self, program: &str) {
         if let Err(error) = device::write(program) {
             if self.uptime.is_some() {
-                eprintln!("leds: could not write to the device: {error}");
+                eprintln!("agent-leds: could not write to the device: {error}");
             }
             // The next device check rewrites the queue once the device is back.
             self.uptime = None;

@@ -66,7 +66,7 @@ pub fn help() -> String {
         })
         .collect();
     format!(
-        "Settings:\n{}\n\nExamples:\n  leds config snake.step_ms 150\n  leds config colors.question ff7000\n  leds config balance 0.32 0.54 0.14",
+        "Settings:\n{}\n\nExamples:\n  agent-leds config snake.step_ms 150\n  agent-leds config colors.question ff7000\n  agent-leds config balance 0.32 0.54 0.14",
         lines.join("\n")
     )
 }
@@ -107,7 +107,7 @@ pub fn set(config: &Config, key: &str, values: &[String]) -> Result<Config> {
             Value::Object(fields) => fields.get_mut(name),
             _ => None,
         }
-        .with_context(|| format!("no setting named {key:?}; see `leds config -h`"))?;
+        .with_context(|| format!("no setting named {key:?}; see `agent-leds config -h`"))?;
     }
     *setting = match &*setting {
         Value::Object(fields) => bail!("name one of {key}'s settings: {}", names(key, fields)),

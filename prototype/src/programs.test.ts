@@ -33,7 +33,7 @@ function scene(states: State[], announce: State | null = null, config: Partial<C
 }
 
 async function render(input: Scene): Promise<Rendering> {
-  const child = Bun.spawn(["leds", "render"], { stdin: new Blob([JSON.stringify(input)]), stdout: "pipe" });
+  const child = Bun.spawn(["agent-leds", "render"], { stdin: new Blob([JSON.stringify(input)]), stdout: "pipe" });
   return JSON.parse(await new Response(child.stdout).text());
 }
 
@@ -209,7 +209,7 @@ test("every change is accepted by the firmware and ends on the queue, in the har
 });
 
 test("the service refuses settings it cannot render", async () => {
-  const child = Bun.spawn(["leds", "render"], {
+  const child = Bun.spawn(["agent-leds", "render"], {
     stdin: new Blob([JSON.stringify(scene(["error"], "error", { snake: { ...SNAKE, step_ms: 0 } }))]),
     stdout: "pipe",
     stderr: "pipe",

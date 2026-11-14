@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::config::{home, state_dir};
 
-const LABEL: &str = "local.leds";
+const LABEL: &str = "io.github.mikestopcontinues.agent-leds";
 
 fn plist_path() -> PathBuf {
     home().join(format!("Library/LaunchAgents/{LABEL}.plist"))

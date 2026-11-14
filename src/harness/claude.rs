@@ -207,19 +207,19 @@ mod tests {
         let home = Home::new("claude");
         home.write(SETTINGS, &theirs.to_string());
 
-        install(&home, Path::new("/bin/leds")).unwrap();
+        install(&home, Path::new("/bin/agent-leds")).unwrap();
         let installed = home.json(SETTINGS);
         assert_eq!(installed["model"], theirs["model"]);
         assert_eq!(installed["hooks"]["Stop"][0], theirs["hooks"]["Stop"][0]);
         assert_eq!(
             installed["hooks"]["Stop"][1]["hooks"][0]["command"],
-            "/bin/leds hook claude"
+            "/bin/agent-leds hook claude"
         );
         assert_eq!(
             installed["hooks"]["PermissionRequest"][0]["hooks"][0]["async"],
             true
         );
-        install(&home, Path::new("/bin/leds")).unwrap();
+        install(&home, Path::new("/bin/agent-leds")).unwrap();
         assert_eq!(home.json(SETTINGS), installed);
 
         uninstall(&home).unwrap();

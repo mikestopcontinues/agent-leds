@@ -179,7 +179,8 @@ mod tests {
 
     impl Sessions {
         fn new(name: &str) -> Sessions {
-            let root = std::env::temp_dir().join(format!("leds-{name}-{}", std::process::id()));
+            let root =
+                std::env::temp_dir().join(format!("agent-leds-{name}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&root);
             fs::create_dir_all(root.join("account/organization")).unwrap();
             Sessions(root)

@@ -195,7 +195,7 @@ export function App() {
   return (
     <main>
       <header>
-        <h1>leds workshop</h1>
+        <h1>agent-leds workshop</h1>
         <p>
           Tune the service's settings against the device. The lights below are what the service renders, run in the
           firmware's own interpreter. {GAMUT === "p3" ? "This display shows Display P3." : "This display is limited to sRGB."}
