@@ -1,10 +1,10 @@
 //! leds: shows a queue of agent sessions on a SidePulse Pro.
 
-mod claude;
 mod config;
 mod daemon;
 mod desktop;
 mod device;
+mod harness;
 mod launchd;
 mod render;
 mod state;
@@ -13,12 +13,13 @@ use std::io::Read;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use config::{Color, Config, PALETTES};
+use config::{Color, Config, PALETTES, home};
 use daemon::Request;
+use harness::Harness;
 use state::State;
 
 #[derive(Parser)]
@@ -32,7 +33,7 @@ struct Cli {
 enum Command {
     /// Run the service in the foreground (launchd runs this)
     Daemon,
-    /// Start the service at login and register the Claude Code hooks
+    /// Start the service at login and register the hooks of every agent harness in use
     Install,
     /// Stop the service and remove the hooks
     Uninstall,
@@ -75,12 +76,7 @@ enum Command {
     },
     /// Receive one agent hook event on stdin
     #[command(hide = true)]
-    Hook { agent: Agent },
-}
-
-#[derive(Clone, ValueEnum)]
-enum Agent {
-    Claude,
+    Hook { harness: Harness },
 }
 
 /// A queue to render as the service would, with the saved config unless one is given.
@@ -111,16 +107,18 @@ fn main() -> Result<()> {
         Command::Install => {
             let exe = std::env::current_exe()?;
             launchd::install(&exe)?;
-            claude::install(&exe)?;
+            let registered = registered(harness::install(&home(), &exe))?;
             println!(
-                "The service is running and starts at login. New Claude Code sessions report to it."
+                "The service is running and starts at login. New sessions report to it from: {}.",
+                registered.join(", ")
             );
             Ok(())
         }
         Command::Uninstall => {
-            claude::uninstall()?;
+            let removed = registered(harness::uninstall(&home()));
             launchd::uninstall()?;
-            println!("The service is stopped and the Claude Code hooks are removed.");
+            removed?;
+            println!("The service is stopped and its hooks are removed.");
             Ok(())
         }
         Command::Status { json } => status(json),
@@ -170,20 +168,38 @@ fn main() -> Result<()> {
             })
             .map(drop)
         }
-        Command::Hook {
-            agent: Agent::Claude,
-        } => {
+        Command::Hook { harness } => {
             // A hook must never disturb the agent: stay silent and succeed whatever happens.
             if let Some(report) = stdin()
                 .ok()
                 .and_then(|text| serde_json::from_str(&text).ok())
-                .and_then(|event| claude::report(&event))
+                .and_then(|payload| harness::report(harness, &payload))
             {
                 let _ = daemon::send(&report);
             }
             Ok(())
         }
     }
+}
+
+/// The harnesses an install or uninstall went through for, after saying
+/// what went wrong with the others.
+fn registered(outcomes: Vec<(Harness, Result<()>)>) -> Result<Vec<&'static str>> {
+    let mut registered = Vec::new();
+    let mut failed = Vec::new();
+    for (harness, outcome) in outcomes {
+        match outcome {
+            Ok(()) => registered.push(harness.title()),
+            Err(error) => {
+                eprintln!("leds: {}: {error:#}", harness.title());
+                failed.push(harness.title());
+            }
+        }
+    }
+    if !failed.is_empty() {
+        anyhow::bail!("the hooks of {} need attention", failed.join(", "));
+    }
+    Ok(registered)
 }
 
 fn stdin() -> Result<String> {
@@ -214,7 +230,7 @@ fn status(json: bool) -> Result<()> {
             at => format!("  read {} ago", age(at)),
         };
         println!(
-            "{:<9} {:>6}  {}  {}{weak}{read}",
+            "{:<9} {:>6}  {}  {:<6}  {}{weak}{read}",
             item["state"].as_str().unwrap_or_default(),
             age(&item["since"]),
             item["session"]
@@ -223,6 +239,7 @@ fn status(json: bool) -> Result<()> {
                 .chars()
                 .take(8)
                 .collect::<String>(),
+            item["harness"].as_str().unwrap_or_default(),
             item["label"].as_str().unwrap_or_default(),
         );
     }

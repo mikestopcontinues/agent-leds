@@ -4,6 +4,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::harness::Harness;
+
 /// What a session is doing, in queue order: the first variant sits at the front.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, clap::ValueEnum,
@@ -43,6 +45,9 @@ pub enum Update {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Item {
+    /// The harness the session runs in.
+    #[serde(default)]
+    pub harness: Harness,
     pub session: String,
     pub label: String,
     pub state: State,
@@ -89,7 +94,14 @@ pub struct Queue {
 }
 
 impl Queue {
-    pub fn apply(&mut self, session: &str, label: &str, update: Update, now: u64) -> Change {
+    pub fn apply(
+        &mut self,
+        harness: Harness,
+        session: &str,
+        label: &str,
+        update: Update,
+        now: u64,
+    ) -> Change {
         let position = self.items.iter().position(|item| item.session == session);
         let (state, weak) = match (update, position) {
             (Update::Enter(state), _) => (state, false),
@@ -110,6 +122,7 @@ impl Queue {
         };
         let Some(index) = position else {
             self.items.push(Item {
+                harness,
                 session: session.to_owned(),
                 label: label.to_owned(),
                 state,
@@ -226,6 +239,10 @@ mod tests {
         }
     }
 
+    fn apply(queue: &mut Queue, session: &str, label: &str, update: Update, now: u64) -> Change {
+        queue.apply(Harness::Claude, session, label, update, now)
+    }
+
     fn states(queue: &Queue) -> Vec<(&str, State)> {
         queue
             .items()
@@ -237,11 +254,11 @@ mod tests {
     #[test]
     fn orders_by_state_then_age() {
         let mut queue = Queue::default();
-        queue.apply("a", "a", Update::Enter(State::Working), 1);
-        queue.apply("b", "b", Update::Enter(State::Stopped), 2);
-        queue.apply("c", "c", Update::Enter(State::Error), 3);
-        queue.apply("d", "d", Update::Enter(State::Stopped), 4);
-        queue.apply("e", "e", Update::Enter(State::Question), 5);
+        apply(&mut queue, "a", "a", Update::Enter(State::Working), 1);
+        apply(&mut queue, "b", "b", Update::Enter(State::Stopped), 2);
+        apply(&mut queue, "c", "c", Update::Enter(State::Error), 3);
+        apply(&mut queue, "d", "d", Update::Enter(State::Stopped), 4);
+        apply(&mut queue, "e", "e", Update::Enter(State::Question), 5);
         assert_eq!(
             states(&queue),
             [
@@ -257,30 +274,33 @@ mod tests {
     #[test]
     fn reports_only_real_changes() {
         let mut queue = Queue::default();
-        assert_eq!(queue.apply("a", "a", Update::Background, 1), Change::None);
-        assert_eq!(queue.apply("a", "a", Update::Leave, 1), Change::None);
         assert_eq!(
-            queue.apply("a", "a", Update::Enter(State::Working), 1),
+            apply(&mut queue, "a", "a", Update::Background, 1),
+            Change::None
+        );
+        assert_eq!(apply(&mut queue, "a", "a", Update::Leave, 1), Change::None);
+        assert_eq!(
+            apply(&mut queue, "a", "a", Update::Enter(State::Working), 1),
             Change::Entered(State::Working)
         );
         assert_eq!(
-            queue.apply("a", "a", Update::Enter(State::Working), 2),
+            apply(&mut queue, "a", "a", Update::Enter(State::Working), 2),
             Change::None
         );
         assert_eq!(
-            queue.apply("a", "a", Update::Enter(State::Stopped), 3),
+            apply(&mut queue, "a", "a", Update::Enter(State::Stopped), 3),
             Change::Entered(State::Stopped)
         );
-        assert_eq!(queue.apply("a", "a", Update::Leave, 4), Change::Left);
+        assert_eq!(apply(&mut queue, "a", "a", Update::Leave, 4), Change::Left);
         assert!(queue.items().is_empty());
     }
 
     #[test]
     fn dismiss_keeps_working_sessions() {
         let mut queue = Queue::default();
-        queue.apply("a", "a", Update::Enter(State::Working), 1);
-        queue.apply("b", "b", Update::Enter(State::Stopped), 1);
-        queue.apply("c", "c", Update::Enter(State::Error), 1);
+        apply(&mut queue, "a", "a", Update::Enter(State::Working), 1);
+        apply(&mut queue, "b", "b", Update::Enter(State::Stopped), 1);
+        apply(&mut queue, "c", "c", Update::Enter(State::Error), 1);
         assert!(queue.dismiss(None));
         assert_eq!(states(&queue), [("a", State::Working)]);
         assert!(queue.dismiss(Some("a")));
@@ -290,19 +310,25 @@ mod tests {
     #[test]
     fn background_work_resumes_a_stopped_session_only() {
         let mut queue = Queue::default();
-        queue.apply("done", "done", Update::Enter(State::Stopped), 1);
-        queue.apply("asks", "asks", Update::Enter(State::Question), 1);
-        queue.apply("fails", "fails", Update::Enter(State::Error), 1);
+        apply(&mut queue, "done", "done", Update::Enter(State::Stopped), 1);
+        apply(
+            &mut queue,
+            "asks",
+            "asks",
+            Update::Enter(State::Question),
+            1,
+        );
+        apply(&mut queue, "fails", "fails", Update::Enter(State::Error), 1);
         assert_eq!(
-            queue.apply("done", "done", Update::Background, 2),
+            apply(&mut queue, "done", "done", Update::Background, 2),
             Change::Entered(State::Working)
         );
         assert_eq!(
-            queue.apply("asks", "asks", Update::Background, 2),
+            apply(&mut queue, "asks", "asks", Update::Background, 2),
             Change::None
         );
         assert_eq!(
-            queue.apply("fails", "fails", Update::Background, 2),
+            apply(&mut queue, "fails", "fails", Update::Background, 2),
             Change::None
         );
         assert_eq!(
@@ -318,8 +344,8 @@ mod tests {
     #[test]
     fn a_saved_queue_reloads_as_it_was() {
         let mut queue = Queue::default();
-        queue.apply("a", "alpha", Update::Enter(State::Working), 5);
-        queue.apply("b", "beta", Update::Enter(State::Stopped), 6);
+        apply(&mut queue, "a", "alpha", Update::Enter(State::Working), 5);
+        apply(&mut queue, "b", "beta", Update::Enter(State::Stopped), 6);
         let mut reloaded: Queue =
             serde_json::from_str(&serde_json::to_string(&queue).unwrap()).unwrap();
         assert_eq!(states(&reloaded), states(&queue));
@@ -329,11 +355,31 @@ mod tests {
     }
 
     #[test]
+    fn a_queue_saved_before_sessions_recorded_their_harness_holds_claude_code_sessions() {
+        let saved = r#"[{"session":"a","label":"alpha","state":"working","since":5,"seen":5,"weak":false,"read":null}]"#;
+        let queue: Queue = serde_json::from_str(saved).unwrap();
+        assert_eq!(queue.items()[0].harness, Harness::Claude);
+        assert_eq!(states(&queue), [("a", State::Working)]);
+    }
+
+    #[test]
     fn a_stopped_session_leaves_a_while_after_it_is_read() {
         let looked_at = |session: &str, at: u64| HashMap::from([(session.to_owned(), at)]);
         let mut queue = Queue::default();
-        queue.apply("done", "done", Update::Enter(State::Stopped), 100);
-        queue.apply("asks", "asks", Update::Enter(State::Question), 100);
+        apply(
+            &mut queue,
+            "done",
+            "done",
+            Update::Enter(State::Stopped),
+            100,
+        );
+        apply(
+            &mut queue,
+            "asks",
+            "asks",
+            Update::Enter(State::Question),
+            100,
+        );
         assert_eq!(queue.unread_since(), Some(100));
         // Looking at it before it stopped does not count, and unread it stays.
         assert!(!queue.mark_read(&looked_at("done", 99)));
@@ -354,17 +400,29 @@ mod tests {
         let looked_at = HashMap::from([("offer".to_owned(), 20), ("prompt".to_owned(), 20)]);
         let mut queue = Queue::default();
         assert_eq!(
-            queue.apply("offer", "offer", Update::Asked, 10),
+            apply(&mut queue, "offer", "offer", Update::Asked, 10),
             Change::Entered(State::Question)
         );
-        queue.apply("prompt", "prompt", Update::Enter(State::Question), 10);
+        apply(
+            &mut queue,
+            "prompt",
+            "prompt",
+            Update::Enter(State::Question),
+            10,
+        );
         assert!(queue.mark_read(&looked_at));
         assert!(queue.expire(20, keep(0)));
         assert_eq!(states(&queue), [("prompt", State::Question)]);
         // A prompt in a session that had only asked in passing is the stronger signal.
-        queue.apply("offer", "offer", Update::Asked, 30);
+        apply(&mut queue, "offer", "offer", Update::Asked, 30);
         assert_eq!(
-            queue.apply("offer", "offer", Update::Enter(State::Question), 31),
+            apply(
+                &mut queue,
+                "offer",
+                "offer",
+                Update::Enter(State::Question),
+                31
+            ),
             Change::Entered(State::Question)
         );
         assert_eq!(queue.unread_since(), None);
@@ -373,11 +431,11 @@ mod tests {
     #[test]
     fn a_session_that_stops_again_is_unread_again() {
         let mut queue = Queue::default();
-        queue.apply("a", "a", Update::Enter(State::Stopped), 1);
+        apply(&mut queue, "a", "a", Update::Enter(State::Stopped), 1);
         assert!(queue.mark_read(&HashMap::from([("a".to_owned(), 2)])));
         // Its turn ends again with nothing reported in between: there is something new to read.
         assert_eq!(
-            queue.apply("a", "a", Update::Enter(State::Stopped), 4),
+            apply(&mut queue, "a", "a", Update::Enter(State::Stopped), 4),
             Change::Entered(State::Stopped)
         );
         assert_eq!(queue.unread_since(), Some(4));
@@ -391,10 +449,22 @@ mod tests {
             abandon_ms: 3 * DAY_MS,
         };
         let mut queue = Queue::default();
-        queue.apply("error", "error", Update::Enter(State::Error), 0);
-        queue.apply("prompt", "prompt", Update::Enter(State::Question), 0);
-        queue.apply("done", "done", Update::Enter(State::Stopped), 0);
-        queue.apply("later", "later", Update::Enter(State::Stopped), DAY_MS);
+        apply(&mut queue, "error", "error", Update::Enter(State::Error), 0);
+        apply(
+            &mut queue,
+            "prompt",
+            "prompt",
+            Update::Enter(State::Question),
+            0,
+        );
+        apply(&mut queue, "done", "done", Update::Enter(State::Stopped), 0);
+        apply(
+            &mut queue,
+            "later",
+            "later",
+            Update::Enter(State::Stopped),
+            DAY_MS,
+        );
         assert!(!queue.expire(3 * DAY_MS, expiry));
         assert!(queue.expire(3 * DAY_MS + 1, expiry));
         assert_eq!(states(&queue), [("later", State::Stopped)]);
@@ -403,8 +473,8 @@ mod tests {
     #[test]
     fn working_sessions_are_not_blamed_for_silence_while_nobody_was_watching() {
         let mut queue = Queue::default();
-        queue.apply("busy", "busy", Update::Enter(State::Working), 0);
-        queue.apply("done", "done", Update::Enter(State::Stopped), 0);
+        apply(&mut queue, "busy", "busy", Update::Enter(State::Working), 0);
+        apply(&mut queue, "done", "done", Update::Enter(State::Stopped), 0);
         // The Mac slept for a day. Working sessions get the full silence again.
         queue.woke(DAY_MS);
         assert!(!queue.expire(DAY_MS + WORKING_SILENCE_MS, keep(0)));
@@ -415,10 +485,22 @@ mod tests {
     #[test]
     fn silent_working_sessions_expire_unless_seen() {
         let mut queue = Queue::default();
-        queue.apply("quiet", "quiet", Update::Enter(State::Working), 0);
-        queue.apply("busy", "busy", Update::Enter(State::Working), 0);
-        queue.apply("done", "done", Update::Enter(State::Stopped), 0);
-        queue.apply("busy", "busy", Update::Background, WORKING_SILENCE_MS);
+        apply(
+            &mut queue,
+            "quiet",
+            "quiet",
+            Update::Enter(State::Working),
+            0,
+        );
+        apply(&mut queue, "busy", "busy", Update::Enter(State::Working), 0);
+        apply(&mut queue, "done", "done", Update::Enter(State::Stopped), 0);
+        apply(
+            &mut queue,
+            "busy",
+            "busy",
+            Update::Background,
+            WORKING_SILENCE_MS,
+        );
         assert!(queue.expire(WORKING_SILENCE_MS + 1, keep(0)));
         assert_eq!(
             states(&queue),

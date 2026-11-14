@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use crate::config::{Color, Config, PALETTES, state_dir};
 use crate::desktop::Desktop;
 use crate::device;
+use crate::harness::Harness;
 use crate::render::{self, Step};
 use crate::state::{Change, Expiry, Queue, State, Update};
 
@@ -23,6 +24,7 @@ use crate::state::{Change, Expiry, Queue, State, Update};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
     Report {
+        harness: Harness,
         session: String,
         label: String,
         update: Update,
@@ -220,11 +222,15 @@ impl Daemon {
     fn handle(&mut self, request: Request) -> Reply {
         match request {
             Request::Report {
+                harness,
                 session,
                 label,
                 update,
             } => {
-                match self.queue.apply(&session, &label, update, now_ms()) {
+                match self
+                    .queue
+                    .apply(harness, &session, &label, update, now_ms())
+                {
                     Change::Entered(state) => {
                         if matches!(state, State::Stopped | State::Question) {
                             // A session whose turn ends while the user is looking at it is read already.
