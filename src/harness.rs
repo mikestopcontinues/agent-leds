@@ -6,6 +6,7 @@
 //! vocabulary and knows where the harness keeps its hooks.
 
 mod claude;
+mod codex;
 
 use std::fs;
 use std::path::Path;
@@ -25,15 +26,17 @@ pub enum Harness {
     /// harness holds only Claude Code's.
     #[default]
     Claude,
+    Codex,
 }
 
 impl Harness {
-    pub const ALL: [Harness; 1] = [Harness::Claude];
+    pub const ALL: [Harness; 2] = [Harness::Claude, Harness::Codex];
 
     /// What the harness is called on the command line and in the queue.
     fn name(self) -> &'static str {
         match self {
             Harness::Claude => "claude",
+            Harness::Codex => "codex",
         }
     }
 
@@ -41,6 +44,7 @@ impl Harness {
     pub fn title(self) -> &'static str {
         match self {
             Harness::Claude => "Claude Code",
+            Harness::Codex => "Codex",
         }
     }
 
@@ -49,6 +53,7 @@ impl Harness {
     fn folder(self) -> &'static str {
         match self {
             Harness::Claude => ".claude",
+            Harness::Codex => ".codex",
         }
     }
 
@@ -68,18 +73,21 @@ impl Harness {
     fn event(self, payload: &Value) -> Option<Event> {
         match self {
             Harness::Claude => claude::event(payload),
+            Harness::Codex => codex::event(payload),
         }
     }
 
     fn install(self, home: &Path, exe: &Path) -> Result<()> {
         match self {
             Harness::Claude => claude::install(home, exe),
+            Harness::Codex => codex::install(home, exe),
         }
     }
 
     fn uninstall(self, home: &Path) -> Result<()> {
         match self {
             Harness::Claude => claude::uninstall(home),
+            Harness::Codex => codex::uninstall(home),
         }
     }
 }
