@@ -2,11 +2,11 @@
 
 `leds` shows a queue of agent sessions on a SidePulse Pro, the eight-light card in the MacBook's SD slot. Each session that is doing something or needs something gets one light: red for an error, orange for a question, green for stopped and unread, blue for working. The queue is sorted in that order with its front on the light furthest from you, and the lights are off when there is nothing to show.
 
-It works with Claude Code today. The colors that reach your eye have not been measured, so the workshop's "true color" view is a datasheet model to tune against the device.
+It works with Claude Code, Codex, Grok, Cursor and Junie. The colors that reach your eye have not been measured, so the workshop's "true color" view is a datasheet model to tune against the device.
 
 ## How it works
 
-A small daemon owns the queue and the device. Claude Code reports to it through a hook, and the CLI and the workshop talk to it over a Unix socket.
+A small daemon owns the queue and the device. Each harness reports to it through a hook, and the CLI and the workshop talk to it over a Unix socket.
 
 The device runs whatever program is written to its `LEDS.LED` file, in SidePulse's own animation language, limited to 512 bytes and 20 lines. The daemon writes programs only when the queue changes, so a steady display costs nothing on the Mac:
 
@@ -21,11 +21,19 @@ The daemon saves the queue to `~/.local/state/leds/queue.json` on every change a
 
 The daemon reads the card's uptime every 15 seconds. The read keeps the SD reader from powering the card down, and an uptime that went backwards means the card restarted, so the queue is rewritten.
 
-## Claude Code states
+## Harness states
+
+`leds install` registers `leds hook <harness>` with each harness, for the events listed below. The hook reads one event, tells the daemon what it means, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked.
+
+The harnesses took their hook events from Claude Code, so most of the names agree. Each harness reads only its own spelling. Grok also runs the hooks in `~/.claude/settings.json`, with its own payloads, and those are not taken for Claude Code sessions.
+
+### Claude Code
+
+Hooks are groups in `~/.claude/settings.json`.
 
 | Hook event | Session becomes |
 | --- | --- |
-| `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `ElicitationResult` | working |
+| `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `ElicitationResult` | working |
 | `PreToolUse` for `AskUserQuestion`, `PermissionRequest`, `Elicitation` | question |
 | `Stop` whose last line ends in a question mark | question, as a weak signal |
 | `Stop` otherwise | stopped |
@@ -36,6 +44,75 @@ Events from subagents never say what the session needs, but they do say that wor
 
 - A subagent's permission request does not turn the session orange, because nothing after it says which agent was answered.
 - Claude Code fires no hook when you interrupt a turn between tool calls, so that session stays blue until its next prompt, or for 30 minutes of silence. Time the Mac spent asleep, or the daemon spent stopped, does not count as silence.
+
+### Codex
+
+Hooks are `[[hooks.<Event>]]` groups in `~/.codex/config.toml`, after the groups that are there. Codex runs a hook only once its hash is recorded under `[hooks.state]`, so the install asks `codex app-server` for the hash of each and records it. That needs `codex` on the `PATH`. Codex finds a hook's hash by the hook's place among the groups of its event, so if another tool reorders the groups, run `leds install` again.
+
+| Hook event | Session becomes |
+| --- | --- |
+| `UserPromptSubmit`, `PreToolUse`, `PostToolUse` | working |
+| `PermissionRequest`, `PreToolUse` for `request_user_input` or `request_user_input_async` | question |
+| `Stop` whose last line ends in a question mark, or that is a `<proposed_plan>` to review | question, as a weak signal |
+| `Stop` otherwise | stopped |
+| `SessionEnd`, `Interrupt` | removed |
+
+Subagents are treated as Claude Code's are. Codex also runs agents of its own, such as the one that consolidates its memories, as sessions it keeps no transcript of. Those are ignored, as is any session Codex keeps no transcript of. The gaps:
+
+- Codex has no event for a turn that fails, so there is no error state. A session whose request fails stays blue until its next prompt, or for 30 minutes of silence.
+- `request_user_input_async` does not stop the agent. The session is orange until the agent's next tool call, not until you answer.
+- A plan is recognized only when Codex passes it as the turn's last message.
+
+### Grok
+
+Hooks are a file of their own, `~/.grok/hooks/leds.json`.
+
+| Hook event | Session becomes |
+| --- | --- |
+| `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure` | working |
+| `Notification` of a `permission_prompt`, `PreToolUse` for `ask_user_question` | question |
+| `Stop` whose last line ends in a question mark | question, as a weak signal |
+| `Stop` otherwise, or `StopCancelled` when Grok gave the turn up by itself | stopped |
+| `StopFailure` | error |
+| `SessionEnd`, or `StopCancelled` by the user | removed |
+
+Grok fires `Stop` again when the session closes; only the one with reason `end_turn` counts. A subagent runs as a session of its own and says so, which is treated as Claude Code's subagents are. The gaps:
+
+- Grok reports a cancelled turn off to the side, so the report can arrive after the next prompt and remove a session that is working again. Its next tool call brings it back.
+- A turn that reports nothing, such as one you rewind, stays blue until the next prompt, or for 30 minutes of silence.
+
+### Cursor
+
+Hooks are commands in `~/.cursor/hooks.json`.
+
+| Hook event | Session becomes |
+| --- | --- |
+| `beforeSubmitPrompt`, `postToolUse`, `postToolUseFailure` | working |
+| `stop` with status `completed` | stopped |
+| `stop` with status `error` | error |
+| `sessionEnd`, `stop` with status `aborted`, or a tool aborted by an interrupt | removed |
+
+The gaps:
+
+- No question state. Cursor expects the hooks that run before a tool to say whether the tool may run, so those are not hooked, and it has no event for a permission request. `stop` does not carry the agent's last message.
+- A session waiting for approval of a tool stays blue.
+
+### Junie
+
+Hooks are groups in `~/.junie/config.json`.
+
+| Hook event | Session becomes |
+| --- | --- |
+| `UserPromptSubmit`, `PostToolUse` | working |
+| `Stop` whose last line ends in a question mark | question, as a weak signal |
+| `Stop` otherwise | stopped |
+| `StopFailure` | error |
+| `SessionEnd` | removed |
+
+The gaps:
+
+- No strong question. Junie reads a hook that succeeds on `PermissionRequest` as approval, and one that says nothing on `PreToolUse` as allowing the tool, so neither is hooked.
+- Junie names the session only in `UserPromptSubmit`. The hook keeps the last one in `~/.local/state/leds/junie-session.json` and takes every other event to belong to it. With two Junie sessions at once, an event goes to the one that submitted a prompt last.
 
 ### When lights clear
 
@@ -52,16 +129,16 @@ The lights have to mean something, so every one of them has a way out:
 
 A turn that ends again in a session that had already stopped counts as new: the light is unread again and the change is announced.
 
-Claude Code has no hook for a session being read, so the daemon reads the desktop app's own session files, under `~/Library/Application Support/Claude/claude-code-sessions/`. Each records the session id the hooks report and when the session was last opened. A session counts as read when it was opened after its turn ended, or when it is the session open in the app while the app is the frontmost one, which the daemon asks `lsappinfo`. It checks when a turn ends and every 15 seconds while a session is unread. `leds status` shows when each was read.
+No harness has a hook for a session being read. For Claude Code the daemon reads the desktop app's own session files, under `~/Library/Application Support/Claude/claude-code-sessions/`. Each records the session id the hooks report and when the session was last opened. A session counts as read when it was opened after its turn ended, or when it is the session open in the app while the app is the frontmost one, which the daemon asks `lsappinfo`. It checks when a turn ends and every 15 seconds while a session is unread. `leds status` shows when each was read.
 
-The files are undocumented. If the app changes them, or a session runs in a terminal, the session is never read: its light stays until its next prompt or until `abandon_days` pass. If the daemon cannot tell which session is open, because the newest file is half written or is not a Claude Code session, it marks none.
+The files are undocumented. If the app changes them, or a session runs in a terminal or in another harness, the session is never read: its light stays until its next prompt, until the session ends, or until `abandon_days` pass. If the daemon cannot tell which session is open, because the newest file is half written or is not a Claude Code session, it marks none.
 
 ## Use
 
 ```sh
 cargo install --path .
-leds install          # LaunchAgent plus hooks in ~/.claude/settings.json
-leds status
+leds install          # LaunchAgent plus the hooks of every harness in use
+leds status           # the queue: state, age, session, harness, folder
 leds dismiss          # clear everything that is not working
 leds palette          # list palettes; `leds palette bright` switches
 leds color question ff7000
@@ -70,7 +147,7 @@ leds balance 0.32 0.54 0.14   # how bright the red, green and blue dies look
 leds front 0          # light 7, the default, is the far end of the card in the MacBook's slot
 ```
 
-`leds uninstall` removes the LaunchAgent and the hooks. Settings live in `~/.config/leds/config.toml`; the socket and log are in `~/.local/state/leds/`.
+`leds install` registers the hook with each harness that has its folder in your home directory (`~/.claude`, `~/.codex`, `~/.grok`, `~/.cursor`, `~/.junie`) and says which. Run it again after you start using another harness. It leaves every hook that is not its own as it is, and running it twice changes nothing. `leds uninstall` removes the LaunchAgent and its own hooks, and nothing else. Settings live in `~/.config/leds/config.toml`; the socket and log are in `~/.local/state/leds/`.
 
 `keep_read_minutes` and `abandon_days` set when lights clear; see [When lights clear](#when-lights-clear).
 
@@ -106,6 +183,9 @@ cd prototype && bun install && bun run dev
 
 ## Open questions
 
+- Only Claude Code and Codex 0.153.2 have been checked against real sessions. Grok's events are taken from its bundled hooks guide (1.0.13), Cursor's from the code of `cursor-agent` 2026.05.28, and Junie's from its documentation; Grok does list the registered hooks in `grok inspect`.
+- Whether Grok sends its own camelCase payloads to the hooks it reads from `~/.claude/settings.json`. If it sent Claude Code's spelling there, a Grok session would be reported twice.
+- Whether Codex's desktop app runs other sessions of its own that do keep a transcript. Those would show as lights.
 - Whether the desktop app records a session as opened when its window comes back to the front with that session already showing. If it does not, the session is read at the daemon's next check, up to 15 seconds later.
 - "The app is in front" does not mean you are at the screen, or on the Code tab. A session that stops in the open tab while you are away is read at once and leaves after `keep_read_minutes`.
 - Whether "the last line ends in a question mark" is the right weak signal. SidePulse's own software uses a narrower rule: the line must open with a question word or an offer such as "want me to", and casual closers such as "anything else?" do not count.
