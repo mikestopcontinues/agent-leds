@@ -153,6 +153,9 @@ struct Event {
     asks: bool,
     /// Whether something other than the main agent sent the event.
     subagent: bool,
+    /// Whether the turn ended with work of the session's still running in
+    /// the background, which wakes the session when it finishes.
+    unfinished: bool,
 }
 
 impl Event {
@@ -164,6 +167,7 @@ impl Event {
             cwd: text(payload, "cwd").unwrap_or_default().to_owned(),
             asks: ends_on_question(text(payload, "last_assistant_message").unwrap_or_default()),
             subagent: payload.get("agent_id").is_some(),
+            unfinished: false,
         })
     }
 
@@ -184,6 +188,8 @@ impl Event {
             "PreToolUse" => Update::Enter(State::Working),
             "PermissionRequest" | "Elicitation" => Update::Enter(State::Question),
             "Stop" if self.asks => Update::Asked,
+            // The session goes on by itself, so there is nothing to come back to yet.
+            "Stop" if self.unfinished => Update::Enter(State::Working),
             "Stop" => Update::Enter(State::Stopped),
             "StopFailure" => Update::Enter(State::Error),
             "SessionEnd" | "Interrupt" => Update::Leave,

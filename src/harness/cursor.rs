@@ -52,6 +52,7 @@ pub fn event(payload: &Value) -> Option<Event> {
         // Cursor does not pass the agent's last message to a hook.
         asks: false,
         subagent: false,
+        unfinished: false,
     })
 }
 

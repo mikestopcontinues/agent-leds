@@ -37,9 +37,12 @@ Hooks are groups in `~/.claude/settings.json`.
 | `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `ElicitationResult` | working |
 | `PreToolUse` for `AskUserQuestion`, `PermissionRequest`, `Elicitation` | question |
 | `Stop` whose last line ends in a question mark | question, as a weak signal |
+| `Stop` with a subagent or a workflow still running | working |
 | `Stop` otherwise | stopped |
 | `StopFailure` | error |
 | `SessionEnd`, or a tool aborted by an interrupt | removed |
+
+A turn that ends with a subagent or a workflow running in the background is not the session's last word: Claude Code starts a new turn when one finishes, so the session stays green until a turn ends with none running. `Stop` lists monitors and background shell commands as running tasks too. Those do not hold the session as working, because one can run for as long as the session does, and the session would never show that it had stopped.
 
 Events from subagents never say what the session needs, but they do say that work is going on. A stopped session whose background subagent runs a tool goes back to working; a session with a question or an error stays as it is. Two gaps follow from what Claude Code reports:
 
@@ -97,6 +100,7 @@ The gaps:
 
 - No question state. Cursor expects the hooks that run before a tool to say whether the tool may run, so those are not hooked, and it has no event for a permission request. `stop` does not carry the agent's last message.
 - A session waiting for approval of a tool stays blue.
+- Run without its interface (`cursor-agent -p`), Cursor sends neither `beforeSubmitPrompt` nor `stop`. Such a run shows as working from its first tool and is removed when it ends.
 
 ### Junie
 
@@ -121,7 +125,7 @@ The lights have to mean something, so every one of them has a way out:
 
 | Light | Clears |
 | --- | --- |
-| Working | When the turn ends, or after 30 minutes of silence. |
+| Working | When the turn ends with no subagent or workflow left running, or after 30 minutes of silence. |
 | Stopped | At the next prompt, or `keep_read_minutes` after you have looked at the session (15 by default, 0 to 1440). |
 | Question, weak: the turn ended on a question | The same as stopped. You may read it and leave it unanswered. |
 | Question, strong: a permission request, `AskUserQuestion` or an elicitation | When it is answered. The agent is blocked on it. |
@@ -164,7 +168,7 @@ The snake's settings are the `[snake]` table of the config. Levels run from 0 to
 
 The workshop is the way to tune them. The daemon reads the file only when it starts, so change settings through the CLI or the workshop. A key the service does not know is ignored, so a config from an older version still loads; a value it cannot use stops the daemon with a message in its log.
 
-SidePulse's own software must not drive the same card: set the device to `custom` display in its settings, or stop its service. Its eject prevention helper is still needed to keep the card mounted through sleep.
+SidePulse's own software must not drive the same card, and none of it is needed but one piece: its eject prevention helper, the launch agent `io.sidepulse.sdejectguard`. macOS ejects a card that reappears while the screen is locked, as this one does when the Mac wakes from hibernation, and the helper refuses the eject. It runs apart from the rest of SidePulse's software, which can be removed.
 
 ## Workshop
 

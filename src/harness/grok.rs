@@ -60,6 +60,7 @@ pub fn event(payload: &Value) -> Option<Event> {
         },
         // A subagent runs as a session of its own and says what kind it is.
         subagent: payload.get("subagentType").is_some(),
+        unfinished: false,
     })
 }
 

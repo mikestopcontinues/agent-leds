@@ -24,12 +24,26 @@ const EVENTS: [&str; 10] = [
 pub fn event(payload: &Value) -> Option<Event> {
     let mut event = Event::read(payload)?;
     event.asks |= text(payload, "tool_name") == Some("AskUserQuestion");
+    event.unfinished = event.name == "Stop" && has_work_running(payload);
     // An aborted tool means the user interrupted the turn.
     if event.name == "PostToolUseFailure" && payload.get("is_interrupt") == Some(&Value::Bool(true))
     {
         event.name = "Interrupt".into();
     }
     Some(event)
+}
+
+/// Whether a turn ended with a subagent or a workflow still running. Claude
+/// Code starts a new turn when one finishes. It lists monitors and shell
+/// commands as background tasks too, but those can run for as long as the
+/// session does, and a session held as working for one would never show
+/// that it had stopped.
+fn has_work_running(payload: &Value) -> bool {
+    let tasks = payload.get("background_tasks").and_then(Value::as_array);
+    tasks.into_iter().flatten().any(|task| {
+        matches!(text(task, "type"), Some("subagent" | "workflow"))
+            && text(task, "status") == Some("running")
+    })
 }
 
 const SETTINGS: &str = ".claude/settings.json";
@@ -118,6 +132,51 @@ mod tests {
             event("Stop", json!({})),
             Some(Update::Enter(State::Stopped))
         );
+    }
+
+    #[test]
+    fn a_turn_that_leaves_work_running_has_not_stopped() {
+        let stop = |message: &str, tasks: Value| {
+            event(
+                "Stop",
+                json!({ "last_assistant_message": message, "background_tasks": tasks }),
+            )
+        };
+        let task = |kind: &str, status: &str| json!({ "id": "t1", "type": kind, "status": status });
+        let working = Some(Update::Enter(State::Working));
+        let stopped = Some(Update::Enter(State::Stopped));
+        assert_eq!(
+            stop(
+                "The review is running.",
+                json!([task("subagent", "running")])
+            ),
+            working
+        );
+        assert_eq!(
+            stop(
+                "Started.",
+                json!([task("monitor", "running"), task("workflow", "running")])
+            ),
+            working
+        );
+        // A question is put to the user whatever else is going on.
+        assert_eq!(
+            stop("Which one?", json!([task("workflow", "running")])),
+            Some(Update::Asked)
+        );
+        // A monitor or a shell command may never finish.
+        assert_eq!(
+            stop(
+                "Done.",
+                json!([task("monitor", "running"), task("shell", "running")])
+            ),
+            stopped
+        );
+        assert_eq!(
+            stop("Done.", json!([task("subagent", "completed")])),
+            stopped
+        );
+        assert_eq!(stop("Done.", json!([])), stopped);
     }
 
     #[test]
