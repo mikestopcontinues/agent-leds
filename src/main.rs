@@ -310,7 +310,7 @@ fn palettes(json: bool) {
     if json {
         let list: Vec<Value> = PALETTES
             .iter()
-            .map(|palette| json!({ "name": palette.name, "about": palette.about, "colors": palette.colors }))
+            .map(|palette| json!({ "name": palette.name, "colors": palette.colors }))
             .collect();
         println!("{}", json!(list));
         return;
@@ -319,7 +319,7 @@ fn palettes(json: bool) {
         let colors = State::ALL
             .map(|state| palette.colors.of(state).to_string())
             .join(" ");
-        println!("{:<11} {colors}  {}", palette.name, palette.about);
+        println!("{:<11} {colors}", palette.name);
     }
 }
 

@@ -39,22 +39,12 @@ function covered(px: number, py: number, x: number, y: number, size: number, rad
   return Math.min(1, Math.max(0, radius - Math.hypot(dx, dy) + 0.5));
 }
 
-/** Per light, how much of its light reaches each pixel: its face, and a glow around it. */
-const reach = Array.from({ length: LED_COUNT }, (_, led) => {
+/** Per light, how much of each pixel its face covers. */
+const faces = Array.from({ length: LED_COUNT }, (_, led) => {
   const x = PAD + led * (LIGHT + GAP);
-  const face = new Float32Array(WIDTH * HEIGHT);
-  const glow = new Float32Array(WIDTH * HEIGHT);
-  const sigma = 6 * SCALE;
-  for (let py = 0; py < HEIGHT; py++) {
-    for (let px = 0; px < WIDTH; px++) {
-      const at = py * WIDTH + px;
-      face[at] = covered(px + 0.5, py + 0.5, x, PAD, LIGHT, 4 * SCALE);
-      const dx = Math.max(Math.abs(px + 0.5 - (x + LIGHT / 2)) - LIGHT / 2, 0);
-      const dy = Math.max(Math.abs(py + 0.5 - (PAD + LIGHT / 2)) - LIGHT / 2, 0);
-      glow[at] = 0.45 * Math.exp(-(dx * dx + dy * dy) / (2 * sigma * sigma));
-    }
-  }
-  return { face, glow };
+  return Float32Array.from({ length: WIDTH * HEIGHT }, (_, at) =>
+    covered((at % WIDTH) + 0.5, Math.floor(at / WIDTH) + 0.5, x, PAD, LIGHT, 4 * SCALE),
+  );
 });
 
 /** How much of the card covers a pixel: its rounded corners are left clear. */
@@ -74,11 +64,10 @@ function draw(frame: RGB[]): Uint8Array {
   for (let at = 0; at < WIDTH * HEIGHT; at++) {
     const value = [BACKGROUND, BACKGROUND, BACKGROUND];
     for (let led = 0; led < LED_COUNT; led++) {
-      const { face, glow } = reach[led]!;
+      const face = faces[led]![at]!;
       const shown = light[led]!;
       for (let channel = 0; channel < 3; channel++) {
-        const lit = shown[channel]!;
-        value[channel]! += face[at]! * Math.max(lit, UNLIT - BACKGROUND) + glow[at]! * lit;
+        value[channel]! += face * Math.max(shown[channel]!, UNLIT - BACKGROUND);
       }
     }
     for (let channel = 0; channel < 3; channel++) {

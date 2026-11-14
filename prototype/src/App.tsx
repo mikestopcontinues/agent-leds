@@ -4,7 +4,7 @@ import { Engine, LED_COUNT } from "./engine";
 import { STATES, scaled, type Config, type Palette, type Rendering, type Scene, type Snake, type State } from "./service";
 
 type Item = { id: number; state: State };
-type NamedPalette = { name: string; about: string; colors: Palette };
+type NamedPalette = { name: string; colors: Palette };
 
 const MAX_BYTES = 512;
 const DEVICE_HOLD_SECONDS = 10;
@@ -335,7 +335,7 @@ export function App() {
           </p>
           <div className="row">
             {palettes.map((palette) => (
-              <button key={palette.name} title={palette.about} className={same(palette.colors, config.colors) ? "chosen" : ""}
+              <button key={palette.name} className={same(palette.colors, config.colors) ? "chosen" : ""}
                 onClick={() => set({ colors: palette.colors })}>
                 {STATES.map((state) => <Swatch key={state} color={palette.colors[state]} trueColor={trueColor} model={model} />)} {palette.name}
               </button>

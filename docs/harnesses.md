@@ -1,0 +1,98 @@
+# Harnesses
+
+What each agent harness reports to the service and where it falls short. [design.md](design.md) covers what the service does with the reports.
+
+`agent-leds install` registers `agent-leds hook <harness>` with each harness, for the events listed below. The hook reads one event, tells the daemon what it means, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked.
+
+The harnesses took their hook events from Claude Code, so most of the names agree. Each harness reads only its own spelling. Grok also runs the hooks in `~/.claude/settings.json`, with its own payloads, and those are not taken for Claude Code sessions.
+
+## Claude Code
+
+Hooks are groups in `~/.claude/settings.json`.
+
+| Hook event | Session becomes |
+| --- | --- |
+| `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `ElicitationResult` | working |
+| `PreToolUse` for `AskUserQuestion`, `PermissionRequest`, `Elicitation` | question |
+| `Stop` whose last line ends in a question mark | question, as a weak signal |
+| `Stop` with a subagent or a workflow still running | working |
+| `Stop` otherwise | stopped |
+| `StopFailure` | error |
+| `SessionEnd`, or a tool aborted by an interrupt | removed |
+
+A turn that ends with a subagent or a workflow running in the background is not the session's last word: Claude Code starts a new turn when one finishes, so the session stays green until a turn ends with none running. `Stop` lists monitors and background shell commands as running tasks too. Those do not hold the session as working, because one can run for as long as the session does, and the session would never show that it had stopped.
+
+Events from subagents never say what the session needs, but they do say that work is going on. A stopped session whose background subagent runs a tool goes back to working; a session with a question or an error stays as it is. Two gaps follow from what Claude Code reports:
+
+- A subagent's permission request does not turn the session orange, because nothing after it says which agent was answered.
+- Claude Code fires no hook when you interrupt a turn between tool calls, so that session stays green until its next prompt, or for 30 minutes of silence. Time the Mac spent asleep, or the daemon spent stopped, does not count as silence.
+
+## Codex
+
+Hooks are `[[hooks.<Event>]]` groups in `~/.codex/config.toml`, after the groups that are there. Codex runs a hook only once its hash is recorded under `[hooks.state]`, so the install asks `codex app-server` for the hash of each and records it. That needs `codex` on the `PATH`. Codex finds a hook's hash by the hook's place among the groups of its event, so if another tool reorders the groups, run `agent-leds install` again.
+
+| Hook event | Session becomes |
+| --- | --- |
+| `UserPromptSubmit`, `PreToolUse`, `PostToolUse` | working |
+| `PermissionRequest`, `PreToolUse` for `request_user_input` or `request_user_input_async` | question |
+| `Stop` whose last line ends in a question mark, or that is a `<proposed_plan>` to review | question, as a weak signal |
+| `Stop` otherwise | stopped |
+| `SessionEnd`, `Interrupt` | removed |
+
+Subagents are treated as Claude Code's are. Codex also runs agents of its own, such as the one that consolidates its memories, as sessions it keeps no transcript of. Those are ignored, as is any session Codex keeps no transcript of. The gaps:
+
+- Codex has no event for a turn that fails, so there is no error state. A session whose request fails stays green until its next prompt, or for 30 minutes of silence.
+- `request_user_input_async` does not stop the agent. The session is orange until the agent's next tool call, not until you answer.
+- A plan is recognized only when Codex passes it as the turn's last message.
+
+## Grok
+
+Hooks are a file of their own, `~/.grok/hooks/agent-leds.json`.
+
+| Hook event | Session becomes |
+| --- | --- |
+| `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure` | working |
+| `Notification` of a `permission_prompt`, `PreToolUse` for `ask_user_question` | question |
+| `Stop` whose last line ends in a question mark | question, as a weak signal |
+| `Stop` otherwise, or `StopCancelled` when Grok gave the turn up by itself | stopped |
+| `StopFailure` | error |
+| `SessionEnd`, or `StopCancelled` by the user | removed |
+
+Grok fires `Stop` again when the session closes; only the one with reason `end_turn` counts. A subagent runs as a session of its own and says so, which is treated as Claude Code's subagents are. The gaps:
+
+- Grok reports a cancelled turn off to the side, so the report can arrive after the next prompt and remove a session that is working again. Its next tool call brings it back.
+- A turn that reports nothing, such as one you rewind, stays green until the next prompt, or for 30 minutes of silence.
+
+## Cursor
+
+Hooks are commands in `~/.cursor/hooks.json`.
+
+| Hook event | Session becomes |
+| --- | --- |
+| `beforeSubmitPrompt`, `postToolUse`, `postToolUseFailure` | working |
+| `stop` with status `completed` | stopped |
+| `stop` with status `error` | error |
+| `sessionEnd`, `stop` with status `aborted`, or a tool aborted by an interrupt | removed |
+
+The gaps:
+
+- No question state. Cursor expects the hooks that run before a tool to say whether the tool may run, so those are not hooked, and it has no event for a permission request. `stop` does not carry the agent's last message.
+- A session waiting for approval of a tool stays green.
+- Run without its interface (`cursor-agent -p`), Cursor sends neither `beforeSubmitPrompt` nor `stop`. Such a run shows as working from its first tool and is removed when it ends.
+
+## Junie
+
+Hooks are groups in `~/.junie/config.json`.
+
+| Hook event | Session becomes |
+| --- | --- |
+| `UserPromptSubmit`, `PostToolUse` | working |
+| `Stop` whose last line ends in a question mark | question, as a weak signal |
+| `Stop` otherwise | stopped |
+| `StopFailure` | error |
+| `SessionEnd` | removed |
+
+The gaps:
+
+- No strong question. Junie reads a hook that succeeds on `PermissionRequest` as approval, and one that says nothing on `PreToolUse` as allowing the tool, so neither is hooked.
+- Junie names the session only in `UserPromptSubmit`. The hook keeps the last one in `~/.local/state/agent-leds/junie-session.json` and takes every other event to belong to it. With two Junie sessions at once, an event goes to the one that submitted a prompt last.
