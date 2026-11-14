@@ -141,11 +141,11 @@ export const DESIGNS: Design[] = [
     id: "pull",
     name: "Pull the queue in",
     about:
-      "The lights fade out. A three-light head in the new state's color enters at the near end, its nose a little dimmer than the two lights behind it, and pulls the new queue in as a dimmed tail. The head runs off the far end, and once the queue is in place it rises to full brightness.",
+      "The lights fade out. A head in the new state's color enters at the near end: a dimmer nose, a bright light, then a dark gap. It pulls the new queue in behind the gap as a dimmed tail. The head runs off the far end, and once the queue is in place it rises to full brightness.",
     adapt: announcing((_state, color, scene, service) => {
       const stepMs = 150;
-      // The head's brightness from the nose back, then the queue's while it is the tail.
-      const head = [0.6, 1, 1];
+      // The head's brightness from the nose back, ending in a dark gap, then the queue's while it is the tail.
+      const head = [0.6, 1, 0];
       const tail = 0.3;
       // With the nose at `nose`, queue item k trails the head at distance nose - head.length - k.
       const frame = (nose: number) =>
