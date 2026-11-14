@@ -63,13 +63,15 @@ export function App() {
   // Whether the next render plays the change; set by whatever should show it, consumed once.
   const playChange = useRef(false);
   const lastEntered = useRef<State | null>(null);
+  // The queue before the last change made on this page.
+  const before = useRef<State[] | null>(null);
 
   useEffect(() => {
     fetch("/sdled.wasm")
       .then((response) => response.arrayBuffer())
       .then(Engine.load)
       .then(setEngine);
-    api<Rendering>("/api/render", { states: [], announce: null })
+    api<Rendering>("/api/render", { states: [], announce: null, from: [] })
       .then((service) => {
         setSaved(service.config);
         setConfig(service.config);
@@ -95,7 +97,7 @@ export function App() {
     const timers: number[] = [];
     const states = items.map((entry) => entry.state);
     // Always render the change, so its programs and timing are on hand; play it only when asked.
-    const scene: Scene = { states, announce: changeIn(states), config };
+    const scene: Scene = { ...changeTo(states), config };
     const play = playChange.current;
     playChange.current = false;
     api<Rendering>("/api/render", scene)
@@ -118,22 +120,23 @@ export function App() {
     };
   }, [engine, config, items, replays]);
 
-  /** The change to show for a queue: the last state entered if it is still queued, else the newest item's. */
-  function changeIn(states: State[]): State | null {
-    return lastEntered.current && states.includes(lastEntered.current) ? lastEntered.current : (states.at(-1) ?? null);
+  /** The change to show for a queue: the last one made on this page, or until then the newest item arriving from dark. */
+  function changeTo(states: State[]): Omit<Scene, "config"> {
+    return before.current
+      ? { states, announce: lastEntered.current, from: before.current }
+      : { states, announce: states.at(-1) ?? null, from: [] };
   }
 
   if (!engine || !config || !saved) return <p className="loading">{message?.text ?? "Loading…"}</p>;
 
   const queued = items.map((entry) => entry.state);
-  const change = changeIn(queued);
+  const change = changeTo(queued);
   const unsaved = !same(config, saved);
 
   function changeQueue(next: Item[], entered: State | null) {
-    if (entered) {
-      lastEntered.current = entered;
-      playChange.current = true;
-    }
+    before.current = queued;
+    lastEntered.current = entered;
+    playChange.current = true;
     setItems(next);
   }
 
@@ -165,7 +168,7 @@ export function App() {
 
   const showOnDevice = () =>
     act(async () => {
-      await api("/api/show", { scene: { states: queued, announce: change, config }, seconds: DEVICE_HOLD_SECONDS });
+      await api("/api/show", { scene: { ...change, config }, seconds: DEVICE_HOLD_SECONDS });
       return `Showing these settings on the device for ${DEVICE_HOLD_SECONDS} seconds, then the real queue returns.`;
     });
 

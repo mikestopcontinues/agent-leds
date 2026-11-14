@@ -108,7 +108,7 @@ type Line = (String, u32);
 /// After the fade out one setting paces all of it: the time to move on one
 /// light. The head advances a light in that time, and so does the crest of
 /// the wave.
-pub fn announce(state: State, slots: &[State], config: &Config) -> Vec<Step> {
+fn announce(state: State, slots: &[State], config: &Config) -> Vec<Step> {
     let colors = balanced(config);
     let snake = &config.snake;
 
@@ -133,46 +133,92 @@ pub fn announce(state: State, slots: &[State], config: &Config) -> Vec<Step> {
     packed(&groups, config)
 }
 
+/// The animation for a change from one queue to another. A session that
+/// has come to want the user is announced; any other change settles in.
+pub fn change(entered: Option<State>, from: &[State], to: &[State], config: &Config) -> Vec<Step> {
+    match entered {
+        Some(state @ (State::Error | State::Question | State::Stopped)) => {
+            announce(state, to, config)
+        }
+        Some(State::Working) | None => settle(from, to, config),
+    }
+}
+
+/// A change that asks nothing of the user, such as a session going back to
+/// work or a read session leaving: the wave alone takes the lights from one
+/// queue to the other, with no fade out and no snake.
+fn settle(from: &[State], to: &[State], config: &Config) -> Vec<Step> {
+    let colors = balanced(config);
+    let mut shown = queue(from, &colors, 1.0);
+    let to = queue(to, &colors, 1.0);
+    if shown == to {
+        // The change is to a session that has no light of its own.
+        return Vec::new();
+    }
+    let wave = wave(&shown, &to, config.snake.step_ms);
+    let lines = wave
+        .iter()
+        .map(|frame| {
+            let text = written(&shown, frame, config);
+            shown = frame.lights;
+            (text, frame.hold_ms + frame.move_ms)
+        })
+        .collect();
+    packed(&[lines], config)
+}
+
 /// The dimmed queue, in place, rising to full brightness as a wave from the
 /// front of the queue to the back.
-///
-/// The wave reaches the next light every step. Each light goes dark in the
-/// step before the wave reaches it, so the crest always stands against a
-/// dark light, and then rises at an even pace over seven steps, the time the
-/// wave takes to cross the rest of a full strip.
 fn rise(slots: &[State], colors: &Palette, snake: &Snake) -> Vec<Frame> {
+    wave(
+        &queue(slots, colors, snake.tail),
+        &queue(slots, colors, 1.0),
+        snake.step_ms,
+    )
+}
+
+/// A wave that takes the lights from one row to another, from the front of
+/// the queue to the back.
+///
+/// The wave reaches the next light every step. Each light holds what it
+/// showed until the step before the wave reaches it, goes dark in that step,
+/// so the crest always stands against a dark light, and then rises to its
+/// new color at an even pace over seven steps, the time the wave takes to
+/// cross the rest of a full strip.
+fn wave(from: &Lights, to: &Lights, step_ms: u32) -> Vec<Frame> {
     // How many steps a light takes to rise.
     const TAKES: usize = LEDS - 1;
-    // A light waits at the tail's brightness, goes dark during the step
-    // before its rise, and rises. The front light starts going dark at once.
-    let level = |item: usize, step: usize| {
-        if step <= item {
-            snake.tail
+    let light = |position: usize, step: usize| {
+        if step <= position {
+            from[position]
         } else {
-            ((step - item - 1) as f64 / TAKES as f64).min(1.0)
+            to[position].scaled(((step - position - 1) as f64 / TAKES as f64).min(1.0))
         }
     };
 
     // Every move is at an even pace, so a line is needed only where some
     // light goes dark or finishes; the firmware moves the lights in between.
-    let mut ends: Vec<usize> = (0..slots.len())
-        .flat_map(|item| [item + 1, item + 1 + TAKES])
+    // A light that is dark before and after takes no part, and one that ends
+    // dark has finished once it has gone dark.
+    let mut ends: Vec<usize> = (0..LEDS)
+        .filter(|&position| from[position] != Color::OFF || to[position] != Color::OFF)
+        .flat_map(|position| {
+            let rises = to[position] != Color::OFF;
+            [Some(position + 1), rises.then_some(position + 1 + TAKES)]
+        })
+        .flatten()
         .collect();
     ends.sort_unstable();
     ends.dedup();
-    let mut from = 0;
+    let mut last = 0;
     ends.into_iter()
         .map(|step| {
             let frame = Frame {
-                lights: std::array::from_fn(|position| {
-                    slots.get(position).map_or(Color::OFF, |&state| {
-                        colors.of(state).scaled(level(position, step))
-                    })
-                }),
+                lights: std::array::from_fn(|position| light(position, step)),
                 hold_ms: 0,
-                move_ms: snake.step_ms * (step - from) as u32,
+                move_ms: step_ms * (step - last) as u32,
             };
-            from = step;
+            last = step;
             frame
         })
         .collect()
@@ -622,6 +668,39 @@ mod tests {
                 queue(&vec![Working; items], &colors, 1.0)
             );
         }
+    }
+
+    #[test]
+    fn a_quiet_change_is_the_wave_from_the_old_queue_to_the_new() {
+        let colors = plain(7).colors;
+        let row = |states: &[State]| queue(states, &colors, 1.0);
+        // The stopped session at the front leaves: the working one moves up and the second light goes dark.
+        let frames = wave(&row(&[Stopped, Working]), &row(&[Working]), 20);
+        let lights: Vec<_> = frames
+            .iter()
+            .map(|frame| frame.lights[..3].to_vec())
+            .collect();
+        let times: Vec<u32> = frames.iter().map(|frame| frame.move_ms).collect();
+        // A line as each of the two lights goes dark, and one as the first finishes.
+        assert_eq!(times, [20, 20, 120]);
+        // The second light holds its old color until the wave reaches it.
+        assert_eq!(lights[0], [Color::OFF, Color(0, 0, 255), Color::OFF]);
+        assert_eq!(lights[1], [Color(0, 0, 36), Color::OFF, Color::OFF]);
+        assert_eq!(lights[2], [Color(0, 0, 255), Color::OFF, Color::OFF]);
+
+        // A light that appears rises from dark, a step after the one in front starts.
+        let frames = wave(&row(&[Stopped]), &row(&[Stopped, Working]), 20);
+        assert_eq!(frames.len(), 4);
+        assert_eq!(frames[1].lights[..2], [Color(0, 36, 0), Color::OFF]);
+        assert_eq!(frames[3].lights, row(&[Stopped, Working]));
+
+        // The whole change is one program for the daemon to write, as long as the wave takes.
+        let steps = settle(&[Stopped, Working], &[Working], &plain(7));
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].ms, 8 * u64::from(plain(7).snake.step_ms));
+        assert!(steps[0].program.starts_with("7:#000000 "));
+        // Nothing to show when the lights already match.
+        assert!(settle(&[Working], &[Working], &plain(7)).is_empty());
     }
 
     #[test]

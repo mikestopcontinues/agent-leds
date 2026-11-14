@@ -59,7 +59,6 @@ impl fmt::Display for Color {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Palette {
     pub error: Color,
     pub question: Color,
@@ -173,7 +172,7 @@ pub const PALETTES: [NamedPalette; 11] = [
 ///
 /// Brightness levels are shares from 0 to 1 and timings are milliseconds.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct Snake {
     /// How bright the head's front, middle and back lights are. A front or
     /// back light at 0 is left out, which makes the head shorter.
@@ -203,7 +202,7 @@ impl Default for Snake {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct Config {
     /// Overall brightness, 0-255.
     pub brightness: u8,

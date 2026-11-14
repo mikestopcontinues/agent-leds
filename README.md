@@ -11,10 +11,11 @@ A small daemon owns the queue and the device. Each harness reports to it through
 The device runs whatever program is written to its `LEDS.LED` file, in SidePulse's own animation language, limited to 512 bytes and 20 lines. The daemon writes programs only when the queue changes, so a steady display costs nothing on the Mac:
 
 - **Every state is equally bright.** A state's color sets its hue only. The renderer scales the four colors to the brightness of the dimmest hue at full strength, using the `balance` setting: how bright the red, green and blue dies look relative to each other. The default balance is an estimate and should be tuned by eye in the workshop.
-- **A change** is announced by a snake. The lights fade out. A head in the color of the state a session just entered crosses the strip toward the front of the queue: up to three lights, then a dark one if wanted. It pulls the new queue in behind it as a dimmed tail and runs off the front end. The queue then rises to full brightness in a wave from its front to its back. One setting, `step_ms`, paces everything after the fade out: the head moves on a light every step, and so does the crest of the wave. Each light, the front one included, goes dark in the step before the wave reaches it, so the crest always stands against a dark light, and then rises at an even pace over seven steps. A queue of n lights therefore rises in n + 7 steps. The whole change takes two to three seconds and spans one to three programs, which the daemon writes one after another, each when the one before it ends.
+- **A session that comes to want you** (stopped, a question, an error) is announced by a snake. The lights fade out. A head in the color of the state a session just entered crosses the strip toward the front of the queue: up to three lights, then a dark one if wanted. It pulls the new queue in behind it as a dimmed tail and runs off the front end. The queue then rises to full brightness in a wave from its front to its back. One setting, `step_ms`, paces everything after the fade out: the head moves on a light every step, and so does the crest of the wave. Each light, the front one included, goes dark in the step before the wave reaches it, so the crest always stands against a dark light, and then rises at an even pace over seven steps. A queue of n lights therefore rises in n + 7 steps. The whole change takes two to three seconds and spans one to three programs, which the daemon writes one after another, each when the one before it ends.
 
   To fit more lines in a program, a line names only the lights that change, or gives a row cut off after its last lit light, whichever is shorter. The rise is kept in one program where it fits, so that no write falls in the middle of it.
 - **More than eight items** are cut to fit. Every state present keeps at least one light and the rest go to states in queue order. Nothing marks the items that are hidden.
+- **Any other change** settles in quietly: a session going back to work, or a light leaving because its session was read, went silent, ended or was dismissed. The wave alone runs from the front of the queue to the back, with no fade out and no snake. Each light holds its old color until the wave reaches it, goes dark for a step, and rises in its new color. A quiet change never interrupts a snake; the snake ends on the queue as it is by then.
 - **A played program or shown scene** (`leds play`, or the workshop's "Show on device") holds the lights for a few seconds, then the queue returns.
 
 The daemon saves the queue to `~/.local/state/leds/queue.json` on every change and reloads it when it starts, so restarting it loses nothing.
@@ -129,7 +130,7 @@ The lights have to mean something, so every one of them has a way out:
 
 A turn that ends again in a session that had already stopped counts as new: the light is unread again and the change is announced.
 
-No harness has a hook for a session being read. For Claude Code the daemon reads the desktop app's own session files, under `~/Library/Application Support/Claude/claude-code-sessions/`. Each records the session id the hooks report and when the session was last opened. A session counts as read when it was opened after its turn ended, or when it is the session open in the app while the app is the frontmost one, which the daemon asks `lsappinfo`. It checks when a turn ends and every 15 seconds while a session is unread. `leds status` shows when each was read.
+No harness has a hook for a session being read. For Claude Code the daemon reads the desktop app's own session files, under `~/Library/Application Support/Claude/claude-code-sessions/`. Each records the session id the hooks report and when the session was last opened. A session counts as read when it was opened after its turn ended, or when you are using the app with that session open: it is the session opened last, the app is the frontmost one (the daemon asks `lsappinfo`), and you touched the keyboard, mouse or trackpad in the last five seconds. The app being in front is not enough, since you may be away from the screen. The daemon looks when a turn ends and every 3 seconds while a session is unread. `leds status` shows when each was read.
 
 The files are undocumented. If the app changes them, or a session runs in a terminal or in another harness, the session is never read: its light stays until its next prompt, until the session ends, or until `abandon_days` pass. If the daemon cannot tell which session is open, because the newest file is half written or is not a Claude Code session, it marks none.
 
@@ -161,7 +162,7 @@ The snake's settings are the `[snake]` table of the config. Levels run from 0 to
 | `fade_out_ms` | How long the old queue takes to go dark. |
 | `step_ms` | The pace of the rest: how long the head, and then the wave, takes to move on one light. Each step of the head is half hold, half move. |
 
-The workshop is the way to tune them. The daemon reads the file only when it starts, so change settings through the CLI or the workshop.
+The workshop is the way to tune them. The daemon reads the file only when it starts, so change settings through the CLI or the workshop. A key the service does not know is ignored, so a config from an older version still loads; a value it cannot use stops the daemon with a message in its log.
 
 SidePulse's own software must not drive the same card: set the device to `custom` display in its settings, or stop its service. Its eject prevention helper is still needed to keep the card mounted through sleep.
 
@@ -175,6 +176,7 @@ cd prototype && bun install && bun run dev
 
 - The lights on the page are what the installed `leds` binary renders for a test queue, run in the firmware's own interpreter (`vendor/sdled.wasm`, from the SidePulse project). So the page shows what the device will do.
 - Every setting is on the page: the snake, when lights clear, the state colors and palettes, overall brightness, the front light and the die balance. Changes apply to the page only until "Save to the service", which replaces the service's settings at once. "Revert" returns to what the service has.
+- Changing the test queue plays the change the service would: the snake for a session that comes to want you, the quiet wave for anything else.
 - "Show on device" plays the page's queue and unsaved settings on the real card for ten seconds, then the real queue returns.
 - "Equal brightness" shows the three dies side by side, on the page or the device, so the balance can be set by eye.
 - "Preview look" is how the page draws the lights and is not saved. "True color" shows how a value looks on the Pro's WS2816 LEDs rather than as the same hex on a screen; `src/color.ts` explains the model and its assumptions. Its defaults (response 0.6, diffusion 0.2) were matched against the device by eye.
@@ -186,8 +188,8 @@ cd prototype && bun install && bun run dev
 - Only Claude Code and Codex 0.153.2 have been checked against real sessions. Grok's events are taken from its bundled hooks guide (1.0.13), Cursor's from the code of `cursor-agent` 2026.05.28, and Junie's from its documentation; Grok does list the registered hooks in `grok inspect`.
 - Whether Grok sends its own camelCase payloads to the hooks it reads from `~/.claude/settings.json`. If it sent Claude Code's spelling there, a Grok session would be reported twice.
 - Whether Codex's desktop app runs other sessions of its own that do keep a transcript. Those would show as lights.
-- Whether the desktop app records a session as opened when its window comes back to the front with that session already showing. If it does not, the session is read at the daemon's next check, up to 15 seconds later.
-- "The app is in front" does not mean you are at the screen, or on the Code tab. A session that stops in the open tab while you are away is read at once and leaves after `keep_read_minutes`.
+- Input in the Claude app with a session open is taken as having looked at it. Typing in a second window, or in the Chat tab, would count too.
+- An approved permission prompt stays orange until its tool finishes. No hook reports the approval, and the desktop app's session file does not record it.
 - Whether "the last line ends in a question mark" is the right weak signal. SidePulse's own software uses a narrower rule: the line must open with a question word or an offer such as "want me to", and casual closers such as "anything else?" do not count.
 - How the snake looks on the card. Each program is written when the one before it should end, so a slow write shows as a short pause in the snake.
 - The default die balance (0.32, 0.54, 0.14) starts from the dies' luminance and allows for saturated red and blue looking brighter than their luminance. It has not been checked against the device.

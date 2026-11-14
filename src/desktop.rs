@@ -9,13 +9,15 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
 
 use crate::config::home;
 
 const APP: &str = "com.anthropic.claudefordesktop";
+/// The user is at the Mac if they touched it this recently.
+const ACTIVE: Duration = Duration::from_secs(5);
 
 /// What the app records about a session that matters here.
 #[derive(Clone, Deserialize)]
@@ -36,12 +38,14 @@ pub struct Desktop {
 
 impl Desktop {
     /// The sessions the user has looked at since `since`, with when: those
-    /// opened in the app since then, and the one that is open now if the app
-    /// is in front.
+    /// opened in the app since then, and the one that is open now if the user
+    /// is using the app. Being in front is not enough for that: the user may
+    /// be away from the screen.
     pub fn looked_at(&mut self, since: u64, now: u64) -> HashMap<String, u64> {
         let sessions = home().join("Library/Application Support/Claude/claude-code-sessions");
         let mut looked = self.opened(&sessions, since);
-        if app_in_front()
+        if idle() < ACTIVE
+            && app_in_front()
             && let Some(open) = self.open(&sessions)
         {
             looked.insert(open, now);
@@ -136,6 +140,21 @@ fn files(sessions: &Path) -> Vec<(SystemTime, PathBuf)> {
     files
 }
 
+/// How long ago the user last touched the keyboard, mouse or trackpad.
+fn idle() -> Duration {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGEventSourceSecondsSinceLastEventType(state: i32, event: u32) -> f64;
+    }
+    // The login session's combined event state.
+    const COMBINED_SESSION_STATE: i32 = 0;
+    const ANY_INPUT: u32 = u32::MAX;
+    // SAFETY: the function takes two plain values and returns one.
+    let seconds =
+        unsafe { CGEventSourceSecondsSinceLastEventType(COMBINED_SESSION_STATE, ANY_INPUT) };
+    Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX)
+}
+
 /// Whether the desktop app is the frontmost app. A daemon has no window, so
 /// it asks the system's own tool.
 fn app_in_front() -> bool {
@@ -182,6 +201,11 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn the_system_says_how_long_the_user_has_been_idle() {
+        assert!(idle() < Duration::MAX);
     }
 
     #[test]

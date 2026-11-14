@@ -84,8 +84,11 @@ enum Command {
 #[serde(deny_unknown_fields)]
 struct Scene {
     states: Vec<State>,
-    /// The state a session has just entered, to announce the change.
+    /// The state a session has just entered, if the change is one.
     announce: Option<State>,
+    /// The queue before the change.
+    #[serde(default)]
+    from: Vec<State>,
     config: Option<Config>,
 }
 
@@ -163,6 +166,7 @@ fn main() -> Result<()> {
             daemon::request(&Request::Show {
                 states: scene.states,
                 announce: scene.announce,
+                from: scene.from,
                 config,
                 seconds,
             })
@@ -272,9 +276,8 @@ fn palettes(json: bool) {
 fn render_scene() -> Result<()> {
     let (scene, config) = Scene::read()?;
     let slots = render::slots(&scene.states);
-    let steps = scene
-        .announce
-        .map_or_else(Vec::new, |state| render::announce(state, &slots, &config));
+    let from = render::slots(&scene.from);
+    let steps = render::change(scene.announce, &from, &slots, &config);
     let output = json!({
         "slots": slots,
         "steady": render::steady(&slots, &config),

@@ -28,8 +28,8 @@ const CONFIG: Config = {
 const BLACK: RGB = [0, 0, 0];
 const rgb = (hex: string) => fromHex(hex)!;
 
-function scene(states: State[], announce: State | null = null, config: Partial<Config> = {}): Scene {
-  return { states, announce, config: { ...CONFIG, ...config } };
+function scene(states: State[], announce: State | null = null, config: Partial<Config> = {}, from: State[] = []): Scene {
+  return { states, announce, from, config: { ...CONFIG, ...config } };
 }
 
 async function render(input: Scene): Promise<Rendering> {
@@ -126,7 +126,7 @@ test("a change: a dim nose, a bright light and a dark one lead the dimmed queue 
 
 test("the queue rises in a wave from its front, each light dark just before the wave reaches it", async () => {
   const snake: Snake = { ...SNAKE, tail: 0.5, step_ms: 40 };
-  const rendering = await render(scene(["error", "question", "stopped", "working"], "working", { snake }));
+  const rendering = await render(scene(["error", "question", "stopped", "working"], "stopped", { snake }));
   const arrived = snake.fade_out_ms + 11 * snake.step_ms;
   const full = play(rendering.steady, 1000)[0]!;
   /** How bright each of the four lights is, as a share of full, front of the queue first. */
@@ -155,6 +155,34 @@ test("the queue rises in a wave from its front, each light dark just before the 
   expect(riseMs(4, snake)).toBe(440);
   expect(levels(10)[3]).toBeLessThan(1);
   expect(levels(11)).toEqual([1, 1, 1, 1]);
+});
+
+test("a quiet change is the wave alone, from the old queue to the new", async () => {
+  // The stopped session at the front leaves; the question and the working session move up.
+  const old = await render(scene(["question", "stopped", "working"]));
+  const rendering = await render(scene(["question", "working"], null, {}, ["question", "stopped", "working"]));
+  const { lit } = rendering;
+  const before = [BLACK, BLACK, BLACK, BLACK, BLACK, rgb(lit.working), rgb(lit.stopped), rgb(lit.question)];
+  const after = [BLACK, BLACK, BLACK, BLACK, BLACK, BLACK, rgb(lit.working), rgb(lit.question)];
+  const at = (steps: number) => {
+    expect(play(old.steady, 1000)[0]).toEqual(before);
+    return during(rendering, steps * SNAKE.step_ms);
+  };
+  // The front light goes dark first while the others hold their old colors.
+  expect(at(1)).toEqual([...before.slice(0, 7), BLACK]);
+  // A step later the wave reaches the second light, and the third still holds.
+  const second = at(2);
+  expect(second[6]).toEqual(BLACK);
+  expect(second[5]).toEqual(before[5]!);
+  // The third light ends dark; the other two finish seven steps after they went dark.
+  expect(at(3)[5]).toEqual(BLACK);
+  expect(at(9)).toEqual(after);
+  expect(play(rendering.steady, 1000)[0]).toEqual(after);
+  // A session that goes back to work settles in the same way rather than being announced.
+  const working = await render(scene(["working"], "working", {}, ["stopped"]));
+  expect(working.steps.map((step) => step.program).join("\n")).not.toContain("off ");
+  // Nothing plays when the lights already match.
+  expect((await render(scene(["working"], null, {}, ["working"]))).steps).toEqual([]);
 });
 
 test("every change is accepted by the firmware and ends on the queue, in the hardest cases", async () => {

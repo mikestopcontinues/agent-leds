@@ -29,8 +29,11 @@ export type Config = {
   snake: Snake;
 };
 
-/** A queue to render, announcing a session entering `announce`. Without a config the service uses its saved one. */
-export type Scene = { states: State[]; announce: State | null; config?: Config };
+/**
+ * A queue to render, after a change from the queue `from` in which a session entered `announce`, if one did.
+ * Without a config the service uses its saved one.
+ */
+export type Scene = { states: State[]; announce: State | null; from: State[]; config?: Config };
 
 /** One program of an animation and how long it runs before the next is written. */
 export type Step = { program: string; ms: number };

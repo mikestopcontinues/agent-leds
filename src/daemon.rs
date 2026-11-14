@@ -58,11 +58,12 @@ pub enum Request {
         program: String,
         seconds: f64,
     },
-    /// Show a queue as these settings would, announcing a change first if
-    /// asked, for a while, then return to the real queue.
+    /// Show a queue as these settings would for a while, after the change
+    /// that led to it from another queue, then return to the real queue.
     Show {
         states: Vec<State>,
         announce: Option<State>,
+        from: Vec<State>,
         config: Config,
         seconds: f64,
     },
@@ -111,6 +112,8 @@ fn saved_queue() -> Queue {
 
 /// How often to read the device's uptime, which also keeps the SD reader awake.
 const DEVICE_CHECK: Duration = Duration::from_secs(15);
+/// How often to look for whether the user has read a session, while one is unread.
+const LOOK: Duration = Duration::from_secs(3);
 /// How long a check that falls in the middle of an animation waits before trying again.
 const ANIMATION_CHECK: Duration = Duration::from_secs(1);
 
@@ -126,6 +129,10 @@ struct Daemon {
     /// The device's last uptime, or None while it is missing or needs a rewrite.
     uptime: Option<u64>,
     next_check: Instant,
+    /// When to look next for whether the user has read a session.
+    next_look: Instant,
+    /// The queue the lights hold, or are on their way to.
+    shown: Vec<State>,
     /// When the last check ran, in Unix milliseconds. A long gap means the Mac slept.
     checked: u64,
     desktop: Desktop,
@@ -160,13 +167,22 @@ pub fn run() -> Result<()> {
         holding: false,
         uptime: None,
         next_check: Instant::now(),
+        next_look: Instant::now(),
+        shown: Vec::new(),
         checked: now_ms(),
         desktop: Desktop::default(),
     };
     loop {
-        let deadline = daemon
-            .settle_at
-            .map_or(daemon.next_check, |settle| settle.min(daemon.next_check));
+        let deadline = [
+            Some(daemon.next_check),
+            daemon.settle_at,
+            // Reading is only looked for while something is unread.
+            daemon.queue.unread_since().map(|_| daemon.next_look),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .expect("a check is always due");
         match inbox.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok((request, reply)) => {
                 let _ = reply.send(daemon.handle(request));
@@ -237,11 +253,15 @@ impl Daemon {
                             self.mark_read();
                         }
                         self.save_queue();
-                        self.announce(state);
+                        // Only a session that wants the user is announced.
+                        match state {
+                            State::Working => self.settle(),
+                            State::Error | State::Question | State::Stopped => self.announce(state),
+                        }
                     }
                     Change::Left => {
                         self.save_queue();
-                        self.refresh();
+                        self.settle();
                     }
                     Change::None => {}
                 }
@@ -257,7 +277,7 @@ impl Daemon {
             Request::Dismiss { session } => {
                 if self.queue.dismiss(session.as_deref()) {
                     self.save_queue();
-                    self.refresh();
+                    self.settle();
                 }
                 Ok(Value::Null)
             }
@@ -299,13 +319,21 @@ impl Daemon {
             Request::Show {
                 states,
                 announce,
+                from,
                 config,
                 seconds,
             } => {
                 config.check()?;
                 let slots = render::slots(&states);
-                let mut steps = announce
-                    .map_or_else(Vec::new, |state| render::announce(state, &slots, &config));
+                let mut steps = render::change(announce, &render::slots(&from), &slots, &config);
+                // The change starts from the queue it leaves.
+                steps.insert(
+                    0,
+                    Step {
+                        program: render::steady(&render::slots(&from), &config),
+                        ms: 400,
+                    },
+                );
                 steps.push(Step {
                     program: render::steady(&slots, &config),
                     ms: held_ms(seconds)?,
@@ -338,6 +366,13 @@ impl Daemon {
         if self.settle_at.is_some_and(|settle| settle <= now) {
             self.advance();
         }
+        if self.next_look <= now {
+            self.next_look = now + LOOK;
+            // Looking runs a system tool, which could delay an animation's next program.
+            if self.pending.is_empty() && self.mark_read() {
+                self.save_queue();
+            }
+        }
         if self.next_check <= now {
             // A check reads the card and the desktop app's files, which can
             // take long enough to delay the next program of an animation.
@@ -360,17 +395,14 @@ impl Daemon {
             self.queue.woke(now);
         }
         self.checked = now;
-        let read = self.mark_read();
         let expiry = Expiry {
             keep_read_ms: u64::from(self.config.keep_read_minutes) * 60_000,
             abandon_ms: u64::from(self.config.abandon_days) * 24 * 60 * 60_000,
         };
         let left = self.queue.expire(now, expiry);
-        if read || left {
-            self.save_queue();
-        }
         if left {
-            self.refresh();
+            self.save_queue();
+            self.settle();
         }
         match device::uptime_ms() {
             Ok(uptime) => {
@@ -410,7 +442,25 @@ impl Daemon {
         if self.holding {
             return;
         }
-        self.play(render::announce(state, &self.slots(), &self.config));
+        let slots = self.slots();
+        let steps = render::change(Some(state), &self.shown, &slots, &self.config);
+        self.shown = slots;
+        self.play(steps);
+    }
+
+    /// Shows a change that asks nothing of the user: the wave alone, from
+    /// the queue the lights hold to the queue as it is now.
+    fn settle(&mut self) {
+        // Whatever is playing ends on the queue as it is by then.
+        if self.holding || self.settle_at.is_some() {
+            return;
+        }
+        let slots = self.slots();
+        let steps = render::change(None, &self.shown, &slots, &self.config);
+        self.shown = slots;
+        if !steps.is_empty() {
+            self.play(steps);
+        }
     }
 
     /// Writes the programs one after another, each when the one before it ends, then the queue.
@@ -441,7 +491,8 @@ impl Daemon {
         self.holding = false;
         self.settle_at = None;
         self.pending.clear();
-        self.write(&render::steady(&self.slots(), &self.config));
+        self.shown = self.slots();
+        self.write(&render::steady(&self.shown, &self.config));
     }
 
     fn write(&mut self, program: &str) {
