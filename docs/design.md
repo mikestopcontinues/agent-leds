@@ -44,6 +44,25 @@ No harness has a hook for a session being read. For Claude Code the daemon reads
 
 The files are undocumented. If the app changes them, or a session runs in a terminal or in another harness, the session is never read: its light stays until its next prompt, until the session ends, or until `abandon_days` pass. If the daemon cannot tell which session is open, because the newest file is half written or is not a Claude Code session, it marks none.
 
+## The weak question
+
+A turn whose last line ends in a question mark shows as a question that reading settles. SidePulse's own software uses a narrower rule: the line must open with a question word or an offer such as "want me to", so that closers such as "anything else?" do not count. In 2,528 Claude Code turns on the author's Mac over 30 days, 132 ended on a question mark. None was a casual closer, and the narrower rule would have missed 64 of them, nearly all decisions put to the user ("Two decisions for you: should I start at step 1, and …?"). So the broad rule stays.
+
+## Code
+
+Each module owns one concern; the ones that touch the system are thin.
+
+- `main.rs`: the command line.
+- `daemon.rs`: the service's loop. Everything it reads or changes outside itself goes through its `World` trait, which tests replace.
+- `player.rs`: what the lights play and when, given the time. No I/O.
+- `render.rs`: a queue or a change, as LEDS.LED programs. No I/O.
+- `state.rs`: the queue and how each session's light changes and clears. No I/O.
+- `harness.rs` and `harness/`: each harness's payloads, turned into a shared `Hook` vocabulary and a `Report`; installing and removing hooks.
+- `ipc.rs`: the socket protocol between the command line, the hooks and the service.
+- `config.rs`, `settings.rs`: the settings, and reading and changing them by name.
+- `desktop.rs`: which sessions the user has looked at in the Claude desktop app.
+- `device.rs`, `eject.rs`, `launchd.rs`, `files.rs`: the card, keeping it mounted, the LaunchAgent, and writing shared files whole.
+
 ## Workshop
 
 `prototype/` is a page for tuning the service's settings against the device. It is not part of the package: it needs [Bun](https://bun.sh) and `agent-leds` on the `PATH`, and talks to the running service. The colors that reach your eye have not been measured, so its "true color" view is a datasheet model to tune against the device.
@@ -61,7 +80,6 @@ The files are undocumented. If the app changes them, or a session runs in a term
 - Claude Code, Codex 0.153.2, Grok 1.0.13 and `cursor-agent` 2026.05.28 have been checked against real sessions; Grok, Cursor and Codex's subagents only from the command line (`grok -p`, `cursor-agent -p`, `codex exec`). What Cursor sends from its interface is taken from its code, and Junie's events from its documentation.
 - Refusing an eject has been checked with `diskutil eject`: the eject fails and the card is mounted again within 5 seconds. A wake from hibernation with the screen locked has not been seen, nor has a restart of Disk Arbitration.
 - Input in the Claude app with a session open is taken as having looked at it. Typing in a second window, or in the Chat tab, would count too.
-- Whether "the last line ends in a question mark" is the right weak signal. SidePulse's own software uses a narrower rule: the line must open with a question word or an offer such as "want me to", and casual closers such as "anything else?" do not count.
 - How the snake looks on the card. Each program is written when the one before it should end, so a slow write shows as a short pause in the snake.
 - The default die balance (0.32, 0.54, 0.14) starts from the dies' luminance and allows for saturated red and blue looking brighter than their luminance. It has not been checked against the device.
 - The color model assumes the firmware's white balance lands on D65 and uses estimated die chromaticities. Its response was matched by eye at 0.6, below the 1 the datasheet's linear light gives, so dim values look brighter than their share of the light. Hue accuracy has not been checked the same way.
