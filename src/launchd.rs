@@ -22,40 +22,35 @@ fn domain() -> String {
     format!("gui/{}", unsafe { libc::getuid() })
 }
 
-fn escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+/// The LaunchAgent: run `exe daemon` at login, again whenever it stops,
+/// with its errors in `log`.
+fn agent(exe: &Path, log: &Path) -> Result<String> {
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct Agent<'a> {
+        label: &'a str,
+        program_arguments: [&'a Path; 2],
+        run_at_load: bool,
+        keep_alive: bool,
+        standard_error_path: &'a Path,
+    }
+    let agent = Agent {
+        label: LABEL,
+        program_arguments: [exe, Path::new("daemon")],
+        run_at_load: true,
+        keep_alive: true,
+        standard_error_path: log,
+    };
+    let mut xml = Vec::new();
+    plist::to_writer_xml(&mut xml, &agent)?;
+    Ok(String::from_utf8(xml)?)
 }
 
 /// Installs the LaunchAgent and (re)starts the daemon from `exe`.
 pub fn install(exe: &Path) -> Result<()> {
     fs::create_dir_all(state_dir())?;
     let log = state_dir().join("daemon.log");
-    let plist = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{exe}</string>
-        <string>daemon</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardErrorPath</key>
-    <string>{log}</string>
-</dict>
-</plist>
-"#,
-        exe = escape(&exe.to_string_lossy()),
-        log = escape(&log.to_string_lossy()),
-    );
+    let plist = agent(exe, &log)?;
     let path = plist_path();
     files::replace(&path, &plist)?;
 
@@ -92,5 +87,34 @@ fn stop() {
     let started = Instant::now();
     while loaded() && started.elapsed() < Duration::from_secs(10) {
         thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_agent_runs_the_daemon_at_login_and_keeps_it_running() {
+        let xml = agent(
+            Path::new("/opt/My & Tools/agent-leds"),
+            Path::new("/x/daemon.log"),
+        )
+        .unwrap();
+        let agent: plist::Dictionary = plist::from_bytes(xml.as_bytes()).unwrap();
+        assert_eq!(agent["Label"].as_string(), Some(LABEL));
+        let arguments: Vec<_> = agent["ProgramArguments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|argument| argument.as_string().unwrap())
+            .collect();
+        assert_eq!(arguments, ["/opt/My & Tools/agent-leds", "daemon"]);
+        assert_eq!(agent["RunAtLoad"].as_boolean(), Some(true));
+        assert_eq!(agent["KeepAlive"].as_boolean(), Some(true));
+        assert_eq!(
+            agent["StandardErrorPath"].as_string(),
+            Some("/x/daemon.log")
+        );
     }
 }

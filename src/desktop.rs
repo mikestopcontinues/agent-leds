@@ -175,19 +175,17 @@ mod tests {
     use super::*;
 
     /// A folder of session files as the app lays them out, removed when dropped.
-    struct Sessions(PathBuf);
+    struct Sessions(tempfile::TempDir);
 
     impl Sessions {
-        fn new(name: &str) -> Sessions {
-            let root =
-                std::env::temp_dir().join(format!("agent-leds-{name}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&root);
-            fs::create_dir_all(root.join("account/organization")).unwrap();
-            Sessions(root)
+        fn new() -> Sessions {
+            let sessions = Sessions(tempfile::tempdir().unwrap());
+            fs::create_dir_all(sessions.join("account/organization")).unwrap();
+            sessions
         }
 
         fn write(&self, name: &str, text: &str) {
-            fs::write(self.0.join("account/organization").join(name), text).unwrap();
+            fs::write(self.join("account/organization").join(name), text).unwrap();
         }
 
         fn session(&self, id: &str, focused: u64) {
@@ -198,9 +196,11 @@ mod tests {
         }
     }
 
-    impl Drop for Sessions {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+    impl std::ops::Deref for Sessions {
+        type Target = Path;
+
+        fn deref(&self) -> &Path {
+            self.0.path()
         }
     }
 
@@ -211,57 +211,57 @@ mod tests {
 
     #[test]
     fn a_session_opened_since_then_was_looked_at() {
-        let sessions = Sessions::new("opened");
+        let sessions = Sessions::new();
         sessions.session("before", 100);
         sessions.session("after", 300);
         let mut desktop = Desktop::default();
         assert_eq!(
-            desktop.opened(&sessions.0, 200),
+            desktop.opened(&sessions, 200),
             HashMap::from([("after".to_owned(), 300)])
         );
         // A file written before then is not even read.
-        let later = ms(files(&sessions.0)[0].0) + 1;
-        assert!(desktop.opened(&sessions.0, later).is_empty());
+        let later = ms(files(&sessions)[0].0) + 1;
+        assert!(desktop.opened(&sessions, later).is_empty());
     }
 
     #[test]
     fn the_open_session_is_the_one_opened_last() {
-        let sessions = Sessions::new("open");
+        let sessions = Sessions::new();
         let mut desktop = Desktop::default();
-        assert_eq!(desktop.open(&sessions.0), None);
+        assert_eq!(desktop.open(&sessions), None);
         sessions.session("first", 100);
         sessions.session("last", 300);
         sessions.session("middle", 200);
-        assert_eq!(desktop.open(&sessions.0).as_deref(), Some("last"));
+        assert_eq!(desktop.open(&sessions).as_deref(), Some("last"));
         // The app writes a file again when its session is opened.
         sessions.session("first", 400);
-        assert_eq!(desktop.open(&sessions.0).as_deref(), Some("first"));
+        assert_eq!(desktop.open(&sessions).as_deref(), Some("first"));
     }
 
     #[test]
     fn files_that_say_nothing_are_ignored() {
-        let sessions = Sessions::new("ignored");
+        let sessions = Sessions::new();
         sessions.session("opened", 100);
         sessions.write("local_other.json", r#"{"title":"never opened"}"#);
         sessions.write("archived-sessions.idx", "x");
         let mut desktop = Desktop::default();
-        assert_eq!(desktop.opened(&sessions.0, 0).len(), 1);
-        assert_eq!(desktop.open(&sessions.0).as_deref(), Some("opened"));
+        assert_eq!(desktop.opened(&sessions, 0).len(), 1);
+        assert_eq!(desktop.open(&sessions).as_deref(), Some("opened"));
         // A folder that is not there is no sessions at all.
-        assert!(desktop.opened(&sessions.0.join("missing"), 0).is_empty());
+        assert!(desktop.opened(&sessions.join("missing"), 0).is_empty());
     }
 
     #[test]
     fn no_session_is_named_open_when_that_cannot_be_told() {
-        let sessions = Sessions::new("unknown");
+        let sessions = Sessions::new();
         sessions.session("opened", 100);
         let mut desktop = Desktop::default();
         // The session opened last is not a Claude Code session.
         sessions.write("local_chat.json", r#"{"lastFocusedAt":200}"#);
-        assert_eq!(desktop.open(&sessions.0), None);
+        assert_eq!(desktop.open(&sessions), None);
         // A file caught half written might be the open session's.
         sessions.write("local_chat.json", r#"{"lastFocusedAt":2"#);
-        assert_eq!(desktop.open(&sessions.0), None);
-        assert_eq!(desktop.opened(&sessions.0, 0).len(), 1);
+        assert_eq!(desktop.open(&sessions), None);
+        assert_eq!(desktop.opened(&sessions, 0).len(), 1);
     }
 }

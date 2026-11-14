@@ -3,6 +3,7 @@
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 
 /// What the name of the card's volume starts with.
@@ -56,23 +57,46 @@ pub fn uptime_ms() -> io::Result<u64> {
     struct Sector([u8; 512]);
 
     let file = File::open(volume().ok_or_else(not_mounted)?.join("STATUS.TXT"))?;
-    let mut sector = Sector([0; 512]);
-    // SAFETY: the descriptor is open, and the buffer is valid for the 512 bytes requested.
-    let read = unsafe {
-        libc::fcntl(file.as_raw_fd(), libc::F_NOCACHE, 1);
-        libc::fcntl(file.as_raw_fd(), libc::F_RDAHEAD, 0);
-        libc::pread(
-            file.as_raw_fd(),
-            sector.0.as_mut_ptr().cast(),
-            sector.0.len(),
-            0,
-        )
-    };
-    if read < 0 {
+    let descriptor = file.as_raw_fd();
+    // SAFETY: the descriptor is open, and these commands take a number and
+    // touch no memory. A read served from the cache neither keeps the card
+    // awake nor shows its uptime, so that one must take.
+    if unsafe { libc::fcntl(descriptor, libc::F_NOCACHE, 1) } == -1 {
         return Err(io::Error::last_os_error());
     }
-    String::from_utf8_lossy(&sector.0[..read as usize])
+    // SAFETY: as above. Reading ahead only costs time.
+    unsafe { libc::fcntl(descriptor, libc::F_RDAHEAD, 0) };
+    let mut sector = Sector([0; 512]);
+    let read = file.read_at(&mut sector.0, 0)?;
+    uptime_in(&String::from_utf8_lossy(&sector.0[..read]))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "STATUS.TXT has no uptime_ms"))
+}
+
+/// The uptime that the card's STATUS.TXT reports.
+fn uptime_in(status: &str) -> Option<u64> {
+    status
         .lines()
         .find_map(|line| line.strip_prefix("uptime_ms ")?.trim().parse().ok())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "STATUS.TXT has no uptime_ms"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_program_must_fit_the_firmware() {
+        assert!(check("#FF0000").is_ok());
+        assert!(check("").is_err());
+        assert!(check(&"x".repeat(MAX_BYTES + 1)).is_err());
+        assert!(check(&"#000000\n".repeat(MAX_LINES)).is_ok());
+        let error = check(&"#000000\n".repeat(MAX_LINES + 1)).unwrap_err();
+        assert!(error.to_string().contains("21 lines"));
+    }
+
+    #[test]
+    fn the_uptime_is_read_from_its_own_line() {
+        assert_eq!(uptime_in("version 1.2\nuptime_ms 123456\n"), Some(123456));
+        assert_eq!(uptime_in("uptime_ms soon"), None);
+        assert_eq!(uptime_in(""), None);
+    }
 }
