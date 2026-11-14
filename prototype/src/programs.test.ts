@@ -102,7 +102,7 @@ test("every design is accepted by the firmware and ends on the queue, in the har
   }
 });
 
-test("pulling the queue in: a dim nose, a bright light and a faint white lead a dim queue, which then rises", async () => {
+test("pulling the queue in: a dim nose, a bright light and a bright white lead a dim queue, which then rises", async () => {
   const input = scene(["question", "stopped", "working"], "stopped");
   const rendered = await service(input);
   const { steps } = design("pull").adapt(input, rendered);
@@ -125,11 +125,11 @@ test("pulling the queue in: a dim nose, a bright light and a faint white lead a 
 
   // After the fade-out, the nose reaches light n at the end of frame n.
   const frame = (n: number) => at(300 + (n + 1) * 150);
-  // A white separates the head from the tail, and looks as bright as the tail does.
+  // A white separates the head from the tail, and looks as bright as the bright light.
   const white = frame(2)[0]!;
   expect(new Set(white).size).toBe(1);
   const brightness = (light: RGB) => light.reduce((sum, value, die) => sum + (value / 255) * [0.32, 0.54, 0.14][die]!, 0);
-  expect(brightness(white)).toBeCloseTo(0.3 * brightness(body), 2);
+  expect(brightness(white)).toBeCloseTo(brightness(body), 2);
   expect(frame(2)).toEqual([white, body, nose, BLACK, BLACK, BLACK, BLACK, BLACK]);
   expect(frame(5)).toEqual([dim("working"), dim("stopped"), dim("question"), white, body, nose, BLACK, BLACK]);
   // The head has left the far end and the dim queue is in place, then it rises to full.

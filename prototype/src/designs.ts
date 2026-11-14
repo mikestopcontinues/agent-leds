@@ -151,16 +151,16 @@ export const DESIGNS: Design[] = [
     id: "pull",
     name: "Pull the queue in",
     about:
-      "The lights fade out. A head in the new state's color enters at the near end: a dimmer nose, a bright light, then a faint white light. It pulls the new queue in behind the white as a dimmed tail. The head runs off the far end, and once the queue is in place it rises to full brightness.",
+      "The lights fade out. A head in the new state's color enters at the near end: a dimmer nose, a bright light, then a white light just as bright. It pulls the new queue in behind the white as a dimmed tail. The head runs off the far end, and once the queue is in place it rises to full brightness.",
     adapt: announcing((_state, color, scene, service) => {
       // Each step holds still, then moves. Without the hold a light is at its level only for an
       // instant, so the bright light never looks bright.
       const holdMs = 60;
       const moveMs = 90;
-      // The head from the nose back: dimmer, bright, then a faint white that sets it apart from the
-      // tail. The tail is the queue at this level.
+      // The head from the nose back: dimmer, bright, then a white as bright as the bright light,
+      // which sets the head apart from the tail. The tail is the queue at this level.
       const tail = 0.3;
-      const head = [scaled(color, 0.6), color, whiteAs(color, tail, scene)];
+      const head = [scaled(color, 0.6), color, whiteAs(color, 1, scene)];
       // With the nose at `nose`, queue item k trails the head at distance nose - head.length - k.
       const frame = (nose: number) =>
         row(scene, (distance) => {
