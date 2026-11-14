@@ -131,6 +131,8 @@ test("pulling the queue in: a dim nose, a bright light and a dark gap lead a dim
   // The head has left the far end and the dim queue is in place, then it rises to full.
   const inPlace = [BLACK, BLACK, BLACK, BLACK, BLACK, dim("working"), dim("stopped"), dim("question")];
   expect(frame(10)).toEqual(inPlace);
+  // Each step holds before the snake moves on, so the bright light and the gap are seen at their levels.
+  expect(at(300 + 6 * 150 + 50)).toEqual(frame(5));
   expect(at(300 + 11 * 150 + 500)).toEqual([BLACK, BLACK, BLACK, BLACK, BLACK, rgb(lit.working), rgb(lit.stopped), rgb(lit.question)]);
 });
 

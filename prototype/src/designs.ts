@@ -143,7 +143,10 @@ export const DESIGNS: Design[] = [
     about:
       "The lights fade out. A head in the new state's color enters at the near end: a dimmer nose, a bright light, then a dark gap. It pulls the new queue in behind the gap as a dimmed tail. The head runs off the far end, and once the queue is in place it rises to full brightness.",
     adapt: announcing((_state, color, scene, service) => {
-      const stepMs = 150;
+      // Each step holds still, then moves. Without the hold a light is at its level only for an
+      // instant, so the bright light never looks bright nor the gap dark.
+      const holdMs = 60;
+      const moveMs = 90;
       // The head's brightness from the nose back, ending in a dark gap, then the queue's while it is the tail.
       const head = [0.6, 1, 0];
       const tail = 0.3;
@@ -158,8 +161,8 @@ export const DESIGNS: Design[] = [
         });
       // The last frame has the whole head past the far end and the queue in place.
       const frames = Array.from({ length: LEDS + head.length }, (_, nose) => ({
-        text: `${frame(nose)} ${stepMs}ms linear`,
-        ms: stepMs,
+        text: `${frame(nose)} ${moveMs}ms linear ${holdMs}ms`,
+        ms: holdMs + moveMs,
       }));
       return packed(scene, [
         { text: FADE_OUT, ms: FADE_OUT_MS },
