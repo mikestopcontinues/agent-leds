@@ -4,6 +4,7 @@ mod config;
 mod daemon;
 mod desktop;
 mod device;
+mod doctor;
 mod eject;
 mod files;
 mod harness;
@@ -93,6 +94,8 @@ enum Command {
         #[arg(long, default_value_t = 5.0)]
         seconds: f64,
     },
+    /// Check the service, the card and the hooks, and say what needs fixing
+    Doctor,
     /// Run the service in the foreground; launchd runs this
     Daemon,
     /// Replace every setting with a config read from stdin as JSON; used by the workshop
@@ -135,6 +138,7 @@ impl Input {
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Daemon => daemon::run(),
+        Command::Doctor => doctor::run(),
         Command::Install => {
             let exe = std::env::current_exe()?;
             launchd::install(&exe)?;
@@ -346,6 +350,7 @@ mod tests {
             2 * minute,
         );
         let status = Status {
+            version: "0".into(),
             items: queue.items().into_iter().cloned().collect(),
             now: 3 * 3600 * 1000 + 5 * minute,
             config: Config::default(),
@@ -363,6 +368,7 @@ mod tests {
     #[test]
     fn status_says_when_nothing_is_there() {
         let status = Status {
+            version: "0".into(),
             items: Vec::new(),
             now: 0,
             config: Config::default(),

@@ -7,15 +7,15 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Event, Harness, Hook, edit_hooks, register, unregister};
+use super::{Event, Harness, Hook, commands, edit_hooks, read_hooks, register, unregister};
 use crate::files;
 
-const HOOKS: &str = ".cursor/hooks.json";
+pub const HOOKS: &str = ".cursor/hooks.json";
 
 /// The hook events the daemon needs, in the order a turn produces them.
 /// Cursor expects the hooks that run before a tool to say whether it may
 /// run, and this hook must not answer that, so none of those is here.
-const EVENTS: [&str; 5] = [
+pub const EVENTS: [&str; 5] = [
     "beforeSubmitPrompt",
     "postToolUse",
     "postToolUseFailure",
@@ -90,6 +90,10 @@ pub fn install(home: &Path, exe: &Path) -> Result<()> {
         }
         Ok(())
     })
+}
+
+pub fn hooks(home: &Path) -> Result<Vec<(String, String)>> {
+    Ok(commands(&read_hooks(&home.join(HOOKS))?, false))
 }
 
 pub fn uninstall(home: &Path) -> Result<()> {

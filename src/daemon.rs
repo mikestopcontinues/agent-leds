@@ -263,6 +263,7 @@ impl<W: World> Daemon<W> {
         match request {
             Request::Report(report) => self.report(report),
             Request::Status => Ok(json!(Status {
+                version: env!("CARGO_PKG_VERSION").into(),
                 items: self.queue.items().into_iter().cloned().collect(),
                 now: self.world.now_ms(),
                 config: self.config.clone(),

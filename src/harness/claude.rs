@@ -5,10 +5,13 @@ use std::path::Path;
 use anyhow::Result;
 use serde_json::{Value, json};
 
-use super::{Event, Harness, Hook, Payload, edit_hooks, owns_group, register_groups, unregister};
+use super::{
+    Event, Harness, Hook, Payload, commands, edit_hooks, owns_group, read_hooks, register_groups,
+    unregister,
+};
 
 /// The hook events the daemon needs, in the order a turn produces them.
-const EVENTS: [&str; 10] = [
+pub const EVENTS: [&str; 10] = [
     "UserPromptSubmit",
     "PreToolUse",
     "PermissionRequest",
@@ -44,7 +47,7 @@ fn has_work_running(payload: &Payload) -> bool {
     })
 }
 
-const SETTINGS: &str = ".claude/settings.json";
+pub const SETTINGS: &str = ".claude/settings.json";
 
 pub fn install(home: &Path, exe: &Path) -> Result<()> {
     let command = Harness::Claude.command(exe);
@@ -58,6 +61,10 @@ pub fn install(home: &Path, exe: &Path) -> Result<()> {
             handler
         })
     })
+}
+
+pub fn hooks(home: &Path) -> Result<Vec<(String, String)>> {
+    Ok(commands(&read_hooks(&home.join(SETTINGS))?, true))
 }
 
 pub fn uninstall(home: &Path) -> Result<()> {

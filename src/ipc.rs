@@ -48,6 +48,8 @@ pub enum Request {
 /// What the daemon says in answer to `Request::Status`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Status {
+    /// The daemon's version.
+    pub version: String,
     pub items: Vec<Item>,
     /// The daemon's clock, in Unix milliseconds, which the items' times are on.
     pub now: u64,

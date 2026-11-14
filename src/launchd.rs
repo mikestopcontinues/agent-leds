@@ -22,6 +22,24 @@ fn domain() -> String {
     format!("gui/{}", unsafe { libc::getuid() })
 }
 
+/// Where the daemon's errors go.
+pub fn log() -> PathBuf {
+    state_dir().join("daemon.log")
+}
+
+/// The binary the installed LaunchAgent runs, if one is installed.
+pub fn program() -> Result<Option<PathBuf>> {
+    let Some(xml) = files::read_optional(&plist_path())? else {
+        return Ok(None);
+    };
+    let agent: plist::Dictionary = plist::from_bytes(xml.as_bytes())?;
+    let program = agent
+        .get("ProgramArguments")
+        .and_then(plist::Value::as_array)
+        .and_then(|arguments| arguments.first()?.as_string());
+    Ok(program.map(PathBuf::from))
+}
+
 /// The LaunchAgent: run `exe daemon` at login, again whenever it stops,
 /// with its errors in `log`.
 fn agent(exe: &Path, log: &Path) -> Result<String> {
@@ -49,8 +67,7 @@ fn agent(exe: &Path, log: &Path) -> Result<String> {
 /// Installs the LaunchAgent and (re)starts the daemon from `exe`.
 pub fn install(exe: &Path) -> Result<()> {
     fs::create_dir_all(state_dir())?;
-    let log = state_dir().join("daemon.log");
-    let plist = agent(exe, &log)?;
+    let plist = agent(exe, &log())?;
     let path = plist_path();
     files::replace(&path, &plist)?;
 

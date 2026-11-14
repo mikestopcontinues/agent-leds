@@ -8,16 +8,19 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{Event, Harness, Payload, edit_hooks, owns_group, register_groups, unregister};
+use super::{
+    Event, Harness, Payload, commands, edit_hooks, owns_group, read_hooks, register_groups,
+    unregister,
+};
 use crate::files;
 
-const CONFIG: &str = ".junie/config.json";
+pub const CONFIG: &str = ".junie/config.json";
 
 /// The hook events the daemon needs, in the order a turn produces them.
 /// Two are left out because Junie reads a hook that succeeds as an answer:
 /// on PermissionRequest it approves the request, and on PreToolUse its
 /// documentation counts a hook that says nothing as allowing the tool.
-const EVENTS: [&str; 5] = [
+pub const EVENTS: [&str; 5] = [
     "UserPromptSubmit",
     "PostToolUse",
     "Stop",
@@ -66,6 +69,10 @@ pub fn install(home: &Path, exe: &Path) -> Result<()> {
             |_| json!({ "type": "command", "command": command, "timeout": 5 }),
         )
     })
+}
+
+pub fn hooks(home: &Path) -> Result<Vec<(String, String)>> {
+    Ok(commands(&read_hooks(&home.join(CONFIG))?, true))
 }
 
 pub fn uninstall(home: &Path) -> Result<()> {

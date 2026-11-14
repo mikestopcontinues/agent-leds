@@ -15,10 +15,10 @@ use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, val
 use super::{Event, Harness, Hook, Payload};
 use crate::files;
 
-const CONFIG: &str = ".codex/config.toml";
+pub const CONFIG: &str = ".codex/config.toml";
 
 /// The hook events the daemon needs, in the order a turn produces them.
-const EVENTS: [&str; 7] = [
+pub const EVENTS: [&str; 7] = [
     "UserPromptSubmit",
     "PreToolUse",
     "PermissionRequest",
@@ -88,10 +88,8 @@ pub fn uninstall(home: &Path) -> Result<()> {
 /// Rewrites the config through `edit`, leaving every line `edit` does not
 /// touch as it is. A config that `edit` leaves unchanged is not written.
 fn edit(path: &Path, edit: impl FnOnce(&mut DocumentMut) -> Result<()>) -> Result<()> {
-    let before = files::read_optional(path)?.unwrap_or_default();
-    let mut config: DocumentMut = before
-        .parse()
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let mut config = read(path)?;
+    let before = config.to_string();
     edit(&mut config)?;
     let after = config.to_string();
     if after == before {
@@ -108,33 +106,84 @@ fn implicit() -> Item {
     Item::Table(table)
 }
 
-fn hooks(config: &mut DocumentMut) -> Result<&mut Table> {
+fn hooks_table(config: &mut DocumentMut) -> Result<&mut Table> {
     let hooks = config.entry("hooks").or_insert_with(implicit);
     hooks.as_table_mut().context("hooks is not a table")
 }
 
-/// Whether a group of handlers is the one an install wrote.
-fn is_ours(group: &Table) -> bool {
-    let owns = |command: Option<&str>| command.is_some_and(|command| Harness::Codex.owns(command));
+/// The commands of a group's handlers, which are written inline or as tables.
+fn group_commands(group: &Table) -> Vec<&str> {
     match group.get("hooks") {
-        Some(Item::Value(handlers)) => handlers.as_array().is_some_and(|handlers| {
-            handlers.iter().any(|handler| {
-                let handler = handler.as_inline_table();
-                owns(handler.and_then(|handler| handler.get("command")?.as_str()))
-            })
-        }),
+        Some(Item::Value(handlers)) => handlers
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|handler| handler.as_inline_table()?.get("command")?.as_str())
+            .collect(),
         Some(Item::ArrayOfTables(handlers)) => handlers
             .iter()
-            .any(|handler| owns(handler.get("command").and_then(Item::as_str))),
-        _ => false,
+            .filter_map(|handler| handler.get("command")?.as_str())
+            .collect(),
+        _ => Vec::new(),
     }
+}
+
+/// Whether a group of handlers is the one an install wrote.
+fn is_ours(group: &Table) -> bool {
+    group_commands(group)
+        .into_iter()
+        .any(|command| Harness::Codex.owns(command))
+}
+
+/// The config, parsed.
+fn read(path: &Path) -> Result<DocumentMut> {
+    let text = files::read_optional(path)?.unwrap_or_default();
+    text.parse()
+        .with_context(|| format!("parsing {}", path.display()))
+}
+
+pub fn hooks(home: &Path) -> Result<Vec<(String, String)>> {
+    let config = read(&home.join(CONFIG))?;
+    let Some(hooks) = config.get("hooks").and_then(Item::as_table) else {
+        return Ok(Vec::new());
+    };
+    let mut found = Vec::new();
+    for (event, groups) in hooks.iter().filter(|(event, _)| *event != "state") {
+        for group in groups.as_array_of_tables().into_iter().flatten() {
+            for command in group_commands(group) {
+                found.push((event.to_owned(), command.to_owned()));
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Whether the config records Codex's trust in each hook as it is now.
+pub fn trusted(home: &Path) -> Result<()> {
+    let hashes = hashes(home).context("Codex could not say which hooks it runs")?;
+    let config = read(&home.join(CONFIG))?;
+    let state = config
+        .get("hooks")
+        .and_then(|hooks| hooks.get("state"))
+        .and_then(Item::as_table);
+    let untrusted = hashes.iter().filter(|(key, hash)| {
+        let trusted = state.and_then(|state| state.get(key)?.get("trusted_hash")?.as_str());
+        trusted != Some(hash.as_str())
+    });
+    let untrusted = untrusted.count();
+    if untrusted > 0 {
+        bail!(
+            "Codex will not run {untrusted} of the hooks until it trusts them; run `agent-leds install`"
+        );
+    }
+    Ok(())
 }
 
 /// Registers `command` for every event. Codex trusts a hook by its place
 /// among the groups of its event, so a group that is there already keeps
 /// its place, and a new one goes after the others.
 fn register(config: &mut DocumentMut, command: &str) -> Result<()> {
-    let hooks = hooks(config)?;
+    let hooks = hooks_table(config)?;
     for event in EVENTS {
         let groups = hooks
             .entry(event)
@@ -162,7 +211,7 @@ fn register(config: &mut DocumentMut, command: &str) -> Result<()> {
 
 /// Records the hash Codex gave for each hook, which is what makes it run them.
 fn trust(config: &mut DocumentMut, hashes: &[(String, String)]) -> Result<()> {
-    let hooks = hooks(config)?;
+    let hooks = hooks_table(config)?;
     let state = hooks.entry("state").or_insert_with(implicit);
     let state = state.as_table_mut().context("hooks.state is not a table")?;
     for (key, hash) in hashes {
@@ -596,5 +645,16 @@ trusted_hash = "sha256:7777"
     fn spells_an_event_as_codex_keys_it() {
         assert_eq!(snake_case("PreToolUse"), "pre_tool_use");
         assert_eq!(snake_case("Stop"), "stop");
+    }
+
+    #[test]
+    fn the_hooks_registered_are_listed_by_event() {
+        let home = Home::new();
+        let command = "/bin/agent-leds hook codex";
+        edit(&home.join(CONFIG), |config| register(config, command)).unwrap();
+        let listed = hooks(&home).unwrap();
+        let events: Vec<&str> = listed.iter().map(|(event, _)| event.as_str()).collect();
+        assert_eq!(events, EVENTS);
+        assert!(listed.iter().all(|(_, hook)| hook == command));
     }
 }

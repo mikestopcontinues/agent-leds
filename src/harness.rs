@@ -104,6 +104,99 @@ impl Harness {
         }
     }
 
+    /// The events an install registers the hook for.
+    fn events(self) -> Vec<&'static str> {
+        match self {
+            Harness::Claude => claude::EVENTS.to_vec(),
+            Harness::Codex => codex::EVENTS.to_vec(),
+            Harness::Grok => grok::EVENTS.map(|(event, _)| event).to_vec(),
+            Harness::Cursor => cursor::EVENTS.to_vec(),
+            Harness::Junie => junie::EVENTS.to_vec(),
+        }
+    }
+
+    /// Every hook command registered with the harness, with its event.
+    fn hooks(self, home: &Path) -> Result<Vec<(String, String)>> {
+        match self {
+            Harness::Claude => claude::hooks(home),
+            Harness::Codex => codex::hooks(home),
+            Harness::Grok => grok::hooks(home),
+            Harness::Cursor => cursor::hooks(home),
+            Harness::Junie => junie::hooks(home),
+        }
+    }
+
+    /// What is wrong with the hooks registered with the harness: whether
+    /// each event has the hook an install from `exe` writes, and nothing
+    /// else of agent-leds' or of SidePulse's own software.
+    fn check(self, home: &Path, exe: &Path) -> Result<()> {
+        let hooks = self.hooks(home)?;
+        let ours: Vec<&(String, String)> =
+            hooks.iter().filter(|(_, hook)| self.owns(hook)).collect();
+        let mut problems = Vec::new();
+        let missing: Vec<&str> = self
+            .events()
+            .into_iter()
+            .filter(|event| !ours.iter().any(|(registered, _)| registered == event))
+            .collect();
+        if ours.is_empty() {
+            problems.push("not registered; run `agent-leds install`".to_owned());
+        } else if !missing.is_empty() {
+            problems.push(format!(
+                "no hook for {}; run `agent-leds install`",
+                missing.join(", ")
+            ));
+        }
+        let command = self.command(exe);
+        let mut others: Vec<String> = ours
+            .iter()
+            .filter(|(_, hook)| *hook != command)
+            .filter_map(|(_, hook)| shlex::split(hook)?.into_iter().next())
+            .collect();
+        others.sort();
+        others.dedup();
+        if !others.is_empty() {
+            problems.push(format!(
+                "registered for {}, not this binary; run `agent-leds install`",
+                others.join(" and ")
+            ));
+        }
+        let mut theirs: Vec<&str> = hooks
+            .iter()
+            .filter(|(_, hook)| hook.to_lowercase().contains("sidepulse"))
+            .map(|(event, _)| event.as_str())
+            .collect();
+        theirs.dedup();
+        if !theirs.is_empty() {
+            problems.push(format!(
+                "SidePulse's own hook is registered for {}; remove it from ~/{}",
+                theirs.join(", "),
+                self.file()
+            ));
+        }
+        if self == Harness::Codex
+            && problems.is_empty()
+            && let Err(error) = codex::trusted(home)
+        {
+            problems.push(format!("{error:#}"));
+        }
+        if !problems.is_empty() {
+            bail!("{}", problems.join("; "));
+        }
+        Ok(())
+    }
+
+    /// The file in the home directory that holds the harness's hooks.
+    fn file(self) -> &'static str {
+        match self {
+            Harness::Claude => claude::SETTINGS,
+            Harness::Codex => codex::CONFIG,
+            Harness::Grok => grok::HOOKS,
+            Harness::Cursor => cursor::HOOKS,
+            Harness::Junie => junie::CONFIG,
+        }
+    }
+
     fn install(self, home: &Path, exe: &Path) -> Result<()> {
         match self {
             Harness::Claude => claude::install(home, exe),
@@ -125,13 +218,26 @@ impl Harness {
     }
 }
 
-/// Registers the hook with every harness that has a folder in `home`,
-/// replacing any earlier registration. One harness failing does not stop the
-/// rest.
+/// The harnesses that have a folder in `home`.
+fn used(home: &Path) -> impl Iterator<Item = Harness> {
+    Harness::ALL
+        .into_iter()
+        .filter(|harness| home.join(harness.folder()).is_dir())
+}
+
+/// Registers the hook with every harness in use, replacing any earlier
+/// registration. One harness failing does not stop the rest.
 pub fn install(home: &Path, exe: &Path) -> Vec<(Harness, Result<()>)> {
-    let used = |harness: &Harness| home.join(harness.folder()).is_dir();
-    let used = Harness::ALL.into_iter().filter(used);
-    used.map(|harness| (harness, harness.install(home, exe)))
+    used(home)
+        .map(|harness| (harness, harness.install(home, exe)))
+        .collect()
+}
+
+/// Checks the hooks registered with every harness in use against what an
+/// install from `exe` would write.
+pub fn check(home: &Path, exe: &Path) -> Vec<(Harness, Result<()>)> {
+    used(home)
+        .map(|harness| (harness, harness.check(home, exe)))
         .collect()
 }
 
@@ -324,6 +430,42 @@ fn ends_on_question(message: &str) -> bool {
         .ends_with('?')
 }
 
+/// The `hooks` object of a JSON settings file, empty when the file is not there.
+fn read_hooks(path: &Path) -> Result<Map<String, Value>> {
+    let Some(text) = files::read_optional(path)? else {
+        return Ok(Map::new());
+    };
+    let settings: Value =
+        serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    match settings.get("hooks") {
+        None => Ok(Map::new()),
+        Some(Value::Object(hooks)) => Ok(hooks.clone()),
+        Some(_) => bail!("hooks in {} is not an object", path.display()),
+    }
+}
+
+/// Every command in a `hooks` object, with its event. Hooks in groups list
+/// groups of handlers under each event, as Claude Code's do; the others
+/// list the handlers themselves.
+fn commands(hooks: &Map<String, Value>, grouped: bool) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    for (event, entries) in hooks {
+        for entry in entries.as_array().into_iter().flatten() {
+            let handlers = if grouped {
+                entry["hooks"].as_array().map_or(&[][..], Vec::as_slice)
+            } else {
+                std::slice::from_ref(entry)
+            };
+            for handler in handlers {
+                if let Some(command) = handler["command"].as_str() {
+                    found.push((event.clone(), command.to_owned()));
+                }
+            }
+        }
+    }
+    found
+}
+
 /// Rewrites a JSON settings file through `edit`, which is given the file's
 /// `hooks` object. Everything else in the file stays as it is, and a file
 /// that `edit` leaves unchanged is not written.
@@ -513,6 +655,56 @@ mod tests {
         assert_eq!(
             fs::read_to_string(home.join("settings.json")).unwrap(),
             r#"{"hooks": 3}"#
+        );
+    }
+
+    #[test]
+    fn a_check_says_what_an_install_would_change() {
+        let home = Home::new();
+        let exe = Path::new("/bin/agent-leds");
+        let check = |exe: &str| {
+            Harness::Claude
+                .check(&home, Path::new(exe))
+                .map_err(|error| error.to_string())
+        };
+        assert!(
+            check("/bin/agent-leds")
+                .unwrap_err()
+                .starts_with("not registered")
+        );
+        claude::install(&home, exe).unwrap();
+        check("/bin/agent-leds").unwrap();
+        // The binary moved, or a second one is being run.
+        assert!(
+            check("/opt/agent-leds")
+                .unwrap_err()
+                .starts_with("registered for /bin/agent-leds, not this binary")
+        );
+        edit_hooks(&home.join(claude::SETTINGS), |hooks| {
+            hooks.remove("Stop");
+            Ok(())
+        })
+        .unwrap();
+        assert!(
+            check("/bin/agent-leds")
+                .unwrap_err()
+                .starts_with("no hook for Stop;")
+        );
+    }
+
+    #[test]
+    fn a_check_finds_sidepulse_s_own_hooks() {
+        let home = Home::new();
+        let exe = Path::new("/bin/agent-leds");
+        home.write(
+            cursor::HOOKS,
+            r#"{ "version": 1, "hooks": { "stop": [{ "command": "~/.local/share/sidepulse/venv/bin/python -m sidepulse.hook_entry --provider cursor" }] } }"#,
+        );
+        cursor::install(&home, exe).unwrap();
+        let error = Harness::Cursor.check(&home, exe).unwrap_err().to_string();
+        assert_eq!(
+            error,
+            "SidePulse's own hook is registered for stop; remove it from ~/.cursor/hooks.json"
         );
     }
 }

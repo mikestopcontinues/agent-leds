@@ -6,17 +6,17 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use super::{Event, Harness, Hook, ends_on_question, or_empty};
+use super::{Event, Harness, Hook, commands, ends_on_question, or_empty, read_hooks};
 use crate::files;
 
 /// Grok reads every JSON file in the folder, so this one holds nothing but
 /// what an install wrote.
-const HOOKS: &str = ".grok/hooks/agent-leds.json";
+pub const HOOKS: &str = ".grok/hooks/agent-leds.json";
 
 /// The hook events the daemon needs, in the order a turn produces them,
 /// each with what it must match. Grok names the kind of a notification
 /// there.
-const EVENTS: [(&str, Option<&str>); 9] = [
+pub const EVENTS: [(&str, Option<&str>); 9] = [
     ("UserPromptSubmit", None),
     ("PreToolUse", None),
     ("Notification", Some("permission_prompt")),
@@ -106,6 +106,26 @@ pub fn install(home: &Path, exe: &Path) -> Result<()> {
         &home.join(HOOKS),
         &(serde_json::to_string_pretty(&hooks)? + "\n"),
     )
+}
+
+/// The hooks in every file of the folder, since Grok runs them all.
+pub fn hooks(home: &Path) -> Result<Vec<(String, String)>> {
+    let folder = home.join(HOOKS);
+    let folder = folder.parent().expect("the file is in a folder");
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return Ok(Vec::new());
+    };
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
+            found.extend(commands(&read_hooks(&path)?, true));
+        }
+    }
+    Ok(found)
 }
 
 pub fn uninstall(home: &Path) -> Result<()> {
