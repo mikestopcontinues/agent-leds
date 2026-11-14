@@ -4,6 +4,10 @@
 
 import index from "./index.html";
 
+// The dev server watches for changes under the directory it runs in, so run
+// in this one wherever the command was started from.
+process.chdir(import.meta.dir);
+
 async function leds(args: string[], stdin = ""): Promise<string> {
   const child = Bun.spawn(["leds", ...args], { stdin: new Blob([stdin]), stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([
