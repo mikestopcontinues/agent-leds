@@ -1,6 +1,8 @@
 //! agent-leds: shows a queue of agent sessions on a SidePulse Pro.
 
 mod config;
+#[allow(dead_code)]
+mod coverage;
 mod daemon;
 mod desktop;
 mod device;
