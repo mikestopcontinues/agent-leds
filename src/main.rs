@@ -19,8 +19,12 @@ mod live;
 #[allow(dead_code)]
 mod liveness;
 mod player;
+// Applied by the daemon once the sources feed it.
+#[allow(dead_code)]
+mod queue;
 mod render;
 mod settings;
+#[allow(dead_code)]
 mod source;
 mod state;
 
