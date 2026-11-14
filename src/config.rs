@@ -179,8 +179,7 @@ pub enum FadeIn {
 
 /// The animation that announces a change: a head in the new state's color
 /// crosses the dark strip and pulls the new queue in behind it as a dimmed
-/// tail, which then rises to full brightness and can crunch against the
-/// front end as it does.
+/// tail, which then rises to full brightness.
 ///
 /// Brightness levels are shares from 0 to 1 and timings are milliseconds.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -203,9 +202,6 @@ pub struct Snake {
     pub fade_in_ms: u32,
     /// The order in which the queue's lights rise.
     pub fade_in: FadeIn,
-    /// How far each item presses toward the front end in the middle of its
-    /// rise, as a share of its distance from that end. 0 is no crunch.
-    pub crunch: f64,
 }
 
 impl Default for Snake {
@@ -219,7 +215,6 @@ impl Default for Snake {
             fade_out_ms: 300,
             fade_in_ms: 500,
             fade_in: FadeIn::FrontToBack,
-            crunch: 0.0,
         }
     }
 }
@@ -283,14 +278,13 @@ impl Config {
             return Err("each die's brightness must be above 0".into());
         }
         let snake = &self.snake;
-        let levels = [snake.tail, snake.crunch];
         if !snake
             .head
             .iter()
-            .chain(&levels)
+            .chain([&snake.tail])
             .all(|level| (0.0..=1.0).contains(level))
         {
-            return Err("the snake's brightness levels and crunch are between 0 and 1".into());
+            return Err("the snake's brightness levels are between 0 and 1".into());
         }
         let timings = [snake.move_ms, snake.fade_out_ms, snake.fade_in_ms];
         if timings.iter().any(|&ms| ms == 0 || ms > LONGEST_MS) || snake.hold_ms > LONGEST_MS {
@@ -371,7 +365,7 @@ mod tests {
                 .contains("between 0 and 1")
         );
         assert!(with(|config| config.snake.head[0] = f64::NAN).is_err());
-        assert!(with(|config| config.snake.crunch = -0.1).is_err());
+        assert!(with(|config| config.snake.head[2] = -0.1).is_err());
         assert!(
             with(|config| config.snake.move_ms = 0)
                 .unwrap_err()
