@@ -1,10 +1,11 @@
 //! The queue of agent sessions that are doing something or need something.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::harness::Harness;
+use crate::live::Live;
 
 /// What a session is doing, in queue order: the first variant sits at the front.
 #[derive(
@@ -35,6 +36,10 @@ pub enum Update {
     /// The turn ended on a question. Unlike a prompt the agent is blocked on,
     /// this is a weak signal: the user may read it and leave it unanswered.
     Asked,
+    /// The turn ended with work of the session's still running in the
+    /// background, which starts the next turn when it finishes. The session
+    /// works on with no one at it.
+    Continue,
     /// Something other than the main agent is working in the session: a
     /// subagent ran a tool. A session that had stopped is working again;
     /// one that needs the user still does.
@@ -59,6 +64,8 @@ pub struct Item {
     pub weak: bool,
     /// When the user first looked at the session since its turn ended, in Unix milliseconds.
     pub read: Option<u64>,
+    /// Whether the session works on in the background, after its turn ended.
+    continuing: bool,
 }
 
 impl Item {
@@ -85,6 +92,11 @@ pub enum Change {
 /// interrupted: Claude Code fires no hook when the user stops a turn.
 const WORKING_SILENCE_MS: u64 = 30 * 60 * 1000;
 
+/// How long a working Claude Code session's process must have been idle,
+/// with no word from its hooks, to count as interrupted. A turn that ends
+/// goes idle a moment before its Stop hook arrives.
+const INTERRUPTED_MS: u64 = 5000;
+
 #[derive(Default, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Queue {
@@ -101,8 +113,10 @@ impl Queue {
         now: u64,
     ) -> Change {
         let position = self.items.iter().position(|item| item.session == session);
+        let continuing = matches!(update, Update::Continue | Update::Background);
         let (state, weak) = match (update, position) {
             (Update::Enter(state), _) => (state, false),
+            (Update::Continue, _) => (State::Working, false),
             (Update::Asked, _) => (State::Question, true),
             (Update::Background, Some(index)) => {
                 let item = &mut self.items[index];
@@ -128,11 +142,13 @@ impl Queue {
                 seen: now,
                 weak,
                 read: None,
+                continuing,
             });
             return Change::Entered(state);
         };
         let item = &mut self.items[index];
         item.seen = now;
+        item.continuing = continuing;
         // The end of a turn is news even to a session that had already
         // stopped: it has said something the user has not read.
         let turn_ended = matches!(update, Update::Enter(State::Stopped) | Update::Asked);
@@ -160,6 +176,46 @@ impl Queue {
             Some(prefix) => self.items.retain(|item| !item.session.starts_with(prefix)),
             None => self.items.retain(|item| item.state == State::Working),
         }
+        self.items.len() != before
+    }
+
+    /// Whether the queue holds a Claude Code session, which its process can
+    /// say more about than its hooks do.
+    pub fn has_claude(&self) -> bool {
+        self.items
+            .iter()
+            .any(|item| item.harness == Harness::Claude)
+    }
+
+    /// Removes the Claude Code sessions that their processes say are over,
+    /// given what each running process says (`live`) and the sessions seen
+    /// running before (`running`, which this keeps up to date):
+    ///
+    /// - A session that was running and is not now has ended, even if no
+    ///   hook said so, as when its terminal was closed.
+    /// - A working session whose process has been idle for `INTERRUPTED_MS`,
+    ///   with no word from its hooks since, was interrupted: Claude Code fires
+    ///   no hook when the user stops a turn between tool calls. A session
+    ///   working on in the background is idle too, and stays.
+    pub fn follow_claude(&mut self, live: &Live, running: &mut HashSet<String>, now: u64) -> bool {
+        let before = self.items.len();
+        self.items.retain(|item| {
+            if item.harness != Harness::Claude {
+                return true;
+            }
+            match live.get(&item.session) {
+                None => !running.remove(&item.session),
+                Some(idle_since) => {
+                    running.insert(item.session.clone());
+                    let interrupted = item.state == State::Working
+                        && !item.continuing
+                        && idle_since.is_some_and(|since| {
+                            since > item.seen && now >= since + INTERRUPTED_MS
+                        });
+                    !interrupted
+                }
+            }
+        });
         self.items.len() != before
     }
 
@@ -496,5 +552,47 @@ mod tests {
             states(&queue),
             [("done", State::Stopped), ("busy", State::Working)]
         );
+    }
+
+    #[test]
+    fn claude_code_s_own_word_ends_what_its_hooks_do_not() {
+        let mut queue = Queue::default();
+        let mut running = HashSet::new();
+        let claude = |queue: &mut Queue, session: &str, update, now| {
+            queue.apply(Harness::Claude, session, session, update, now)
+        };
+        claude(&mut queue, "interrupted", Update::Enter(State::Working), 1);
+        claude(&mut queue, "background", Update::Continue, 1);
+        claude(&mut queue, "stopped", Update::Enter(State::Stopped), 1);
+        claude(&mut queue, "hookless", Update::Enter(State::Working), 1);
+        queue.apply(
+            Harness::Codex,
+            "codex",
+            "codex",
+            Update::Enter(State::Working),
+            1,
+        );
+        let idle = Live::from([
+            ("interrupted".to_owned(), Some(2)),
+            ("background".to_owned(), Some(2)),
+            ("stopped".to_owned(), Some(2)),
+        ]);
+        // Idle, but not yet for long enough.
+        assert!(!queue.follow_claude(&idle, &mut running, 2 + INTERRUPTED_MS - 1));
+        assert!(queue.follow_claude(&idle, &mut running, 2 + INTERRUPTED_MS));
+        let left = |queue: &Queue| -> Vec<String> {
+            queue
+                .items()
+                .iter()
+                .map(|item| item.session.clone())
+                .collect()
+        };
+        // A session never seen running, such as one run with `claude -p`, stays.
+        assert_eq!(left(&queue), ["stopped", "background", "hookless", "codex"]);
+        // A hook after the process went idle means the session is going again.
+        claude(&mut queue, "background", Update::Background, 10);
+        let gone = Live::from([("background".to_owned(), Some(3))]);
+        assert!(queue.follow_claude(&gone, &mut running, 20_000));
+        assert_eq!(left(&queue), ["background", "hookless", "codex"]);
     }
 }

@@ -412,7 +412,7 @@ impl Event {
             Hook::PermissionRequest | Hook::Elicitation => Update::Enter(State::Question),
             Hook::Stop if self.asks => Update::Asked,
             // The session goes on by itself, so there is nothing to come back to yet.
-            Hook::Stop if self.unfinished => Update::Enter(State::Working),
+            Hook::Stop if self.unfinished => Update::Continue,
             Hook::Stop => Update::Enter(State::Stopped),
             Hook::StopFailure => Update::Enter(State::Error),
             Hook::SessionEnd | Hook::Interrupt => Update::Leave,

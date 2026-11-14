@@ -2,7 +2,7 @@
 //! and the hooks. What the lights play is the player's call; everything
 //! the daemon reads or changes outside itself goes through a `World`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -14,13 +14,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use crate::config::{Config, PALETTES, state_dir};
+use crate::config::{Config, PALETTES, home, state_dir};
 use crate::desktop::Desktop;
 use crate::device;
 use crate::eject;
 use crate::files;
 use crate::harness::Report;
 use crate::ipc::{self, Request, Status};
+use crate::live::{self, Live};
 use crate::player::Player;
 use crate::render::{self, Step};
 use crate::state::{Change, Expiry, Queue, State};
@@ -63,6 +64,9 @@ trait World {
     fn uptime_ms(&mut self) -> io::Result<u64>;
     /// The sessions the user has looked at since `since`, with when.
     fn looked_at(&mut self, since: u64, now: u64) -> HashMap<String, u64>;
+    /// What the running Claude Code processes say of their sessions, if
+    /// that can be read.
+    fn claude_sessions(&mut self) -> Option<Live>;
     /// The wall clock, in Unix milliseconds.
     fn now_ms(&self) -> u64;
     /// The monotonic clock that times the lights.
@@ -120,6 +124,10 @@ impl World for System {
         self.desktop.looked_at(since, now)
     }
 
+    fn claude_sessions(&mut self) -> Option<Live> {
+        live::sessions(&home().join(".claude/sessions"))
+    }
+
     fn now_ms(&self) -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -164,6 +172,8 @@ struct Daemon<W: World> {
     /// The binary was replaced, so the daemon should exit and let launchd
     /// start the new one.
     replaced: bool,
+    /// The Claude Code sessions in the queue whose process has been seen running.
+    claude_running: HashSet<String>,
 }
 
 type Inbox = mpsc::Receiver<(Request, Sender<Result<Value>>)>;
@@ -182,8 +192,10 @@ pub fn run() -> Result<()> {
         let deadline = [
             Some(daemon.next_check),
             daemon.player.deadline(),
-            // Reading is only looked for while something is unread.
-            daemon.queue.unread_since().map(|_| daemon.next_look),
+            // Looking is only needed while something is unread, or while
+            // Claude Code may say more about a session than its hooks.
+            (daemon.queue.unread_since().is_some() || daemon.queue.has_claude())
+                .then_some(daemon.next_look),
         ]
         .into_iter()
         .flatten()
@@ -256,6 +268,7 @@ impl<W: World> Daemon<W> {
             next_check: now,
             next_look: now,
             replaced: false,
+            claude_running: HashSet::new(),
         }
     }
 
@@ -378,8 +391,11 @@ impl<W: World> Daemon<W> {
         if self.next_look <= now {
             self.next_look = now + LOOK;
             // Looking runs a system tool, which could delay an animation's next program.
-            if !self.player.animating() && self.mark_read() {
-                self.save_queue();
+            if !self.player.animating() {
+                if self.mark_read() {
+                    self.save_queue();
+                }
+                self.follow_claude();
             }
         }
         if self.next_check <= now {
@@ -425,6 +441,24 @@ impl<W: World> Daemon<W> {
             Err(_) => self.uptime = None,
         }
         self.replaced = self.world.replaced();
+    }
+
+    /// Drops the Claude Code sessions that their processes say are over.
+    fn follow_claude(&mut self) {
+        if !self.queue.has_claude() {
+            return;
+        }
+        let Some(live) = self.world.claude_sessions() else {
+            return;
+        };
+        let now = self.world.now_ms();
+        if self
+            .queue
+            .follow_claude(&live, &mut self.claude_running, now)
+        {
+            self.save_queue();
+            self.settle();
+        }
     }
 
     /// Notes which sessions the user has looked at since their turn ended.
@@ -488,6 +522,7 @@ mod tests {
         saved_queues: usize,
         saved_config: Option<Config>,
         replaced: bool,
+        claude: Option<Live>,
     }
 
     impl World for Fake {
@@ -534,6 +569,10 @@ mod tests {
         fn replaced(&self) -> bool {
             self.replaced
         }
+
+        fn claude_sessions(&mut self) -> Option<Live> {
+            self.claude.clone()
+        }
     }
 
     fn daemon() -> Daemon<Fake> {
@@ -547,6 +586,7 @@ mod tests {
             saved_queues: 0,
             saved_config: None,
             replaced: false,
+            claude: None,
         };
         Daemon::new(world, Config::default(), Queue::default())
     }
@@ -733,5 +773,38 @@ mod tests {
         daemon.world.instant = daemon.next_check;
         daemon.tick();
         assert!(daemon.replaced);
+    }
+
+    #[test]
+    fn a_claude_session_its_process_says_is_over_leaves() {
+        let mut daemon = daemon();
+        report(&mut daemon, "s1", Update::Enter(State::Working));
+        report(&mut daemon, "s2", Update::Enter(State::Stopped));
+        play_out(&mut daemon);
+        let turn = daemon.world.now_ms;
+        // Both are running, and s1 has just gone idle: its Stop may be on its way.
+        daemon.world.claude = Some(Live::from([
+            ("s1".to_owned(), Some(turn + 1)),
+            ("s2".to_owned(), Some(turn)),
+        ]));
+        daemon.world.now_ms += 1_000;
+        daemon.follow_claude();
+        assert_eq!(daemon.queue.items().len(), 2);
+        // No Stop came: the user interrupted s1.
+        daemon.world.now_ms += 5_000;
+        daemon.follow_claude();
+        let left: Vec<&str> = daemon
+            .queue
+            .items()
+            .iter()
+            .map(|item| item.session.as_str())
+            .collect();
+        assert_eq!(left, ["s2"]);
+        // s2's process ended without a SessionEnd.
+        daemon.world.claude = Some(Live::new());
+        daemon.follow_claude();
+        assert!(daemon.queue.items().is_empty());
+        play_out(&mut daemon);
+        assert_eq!(daemon.world.written.last(), Some(&steady(&daemon)));
     }
 }

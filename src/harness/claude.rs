@@ -154,7 +154,7 @@ mod tests {
             )
         };
         let task = |kind: &str, status: &str| json!({ "id": "t1", "type": kind, "status": status });
-        let working = Some(Update::Enter(State::Working));
+        let working = Some(Update::Continue);
         let stopped = Some(Update::Enter(State::Stopped));
         assert_eq!(
             stop(

@@ -10,6 +10,7 @@ mod files;
 mod harness;
 mod ipc;
 mod launchd;
+mod live;
 mod player;
 mod render;
 mod settings;

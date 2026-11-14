@@ -33,12 +33,12 @@ The lights have to mean something, so every one of them has a way out:
 
 | Light | Clears |
 | --- | --- |
-| Working | When the turn ends with no subagent or workflow left running, or after 30 minutes of silence. |
+| Working | When the turn ends with no subagent or workflow left running, when Claude Code's process says the turn was interrupted, or after 30 minutes of silence. |
 | Stopped | At the next prompt, or `keep_read_minutes` after you have looked at the session. |
 | Question, weak: the turn ended on a question | The same as stopped. You may read it and leave it unanswered. |
 | Question, strong: a permission request, `AskUserQuestion` or an elicitation | When it is answered. The agent is blocked on it. |
 | Error | At the next prompt. |
-| Any | When the session ends, at `agent-leds dismiss`, or after `abandon_days` without a word from the session. |
+| Any | When the session ends, or a Claude Code session's process does; at `agent-leds dismiss`; or after `abandon_days` without a word from the session. |
 
 A turn that ends again in a session that had already stopped counts as new: the light is unread again and the change is announced.
 
@@ -64,6 +64,7 @@ Each module owns one concern; the ones that touch the system are thin.
 - `ipc.rs`: the socket protocol between the command line, the hooks and the service.
 - `config.rs`, `settings.rs`: the settings, and reading and changing them by name.
 - `desktop.rs`: which sessions the user has looked at in the Claude desktop app.
+- `live.rs`: what running Claude Code processes say of their sessions, from `~/.claude/sessions/`.
 - `device.rs`, `eject.rs`, `launchd.rs`, `files.rs`: the card, keeping it mounted, the LaunchAgent, and writing shared files whole.
 
 ## Workshop

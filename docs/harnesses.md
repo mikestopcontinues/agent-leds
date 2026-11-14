@@ -26,7 +26,8 @@ Events from subagents never say what the session needs, but they do say that wor
 
 - A subagent's permission request does not turn the session orange, because nothing after it says which agent was answered.
 - An approved permission prompt stays orange until its tool finishes. Claude Code has no hook for an approval: after `PermissionRequest`, the next event is the tool's `PostToolUse`.
-- Claude Code fires no hook when you interrupt a turn between tool calls, so that session stays green until its next prompt, or for 30 minutes of silence. Time the Mac spent asleep, or the daemon spent stopped, does not count as silence.
+- Claude Code fires no hook when you interrupt a turn between tool calls. Its process says so instead: each running Claude Code process, in a terminal or the desktop app, keeps a file in `~/.claude/sessions/` with its session and whether it is busy. While a Claude Code light is lit, the daemon reads those files every 3 seconds. A working session whose process has been idle for 5 seconds with no hook since was interrupted, and its light goes. A session whose turn ended with work running in the background is idle too, and stays. The files are undocumented; if they change, an interrupted session stays green until its next prompt, or for 30 minutes of silence.
+- A session whose process ends without a `SessionEnd`, as when its terminal is closed or it crashes, leaves once its file is gone or its process is. A session never seen running, such as one run with `claude -p`, is left to its hooks.
 
 ## Codex
 
