@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { DEFAULT_MODEL, appearanceHex, css, deviceColorFor, fromHex, toHex, type Gamut, type Model, type RGB } from "./color";
-import { DESIGNS, STATES, scaled, type Config, type Palette, type Rendering, type Scene, type ServiceRendering, type State } from "./designs";
 import { Engine, LED_COUNT } from "./engine";
+import { STATES, scaled, type Config, type Palette, type Rendering, type Scene, type Snake, type State } from "./service";
 
 type Item = { id: number; state: State };
 type NamedPalette = { name: string; about: string; colors: Palette };
@@ -20,8 +20,8 @@ async function api<T>(path: string, body?: unknown): Promise<T> {
   return data as T;
 }
 
-const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const bytes = (text: string) => new TextEncoder().encode(text).length;
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
 const PRESETS: Record<string, State[]> = {
   Empty: [],
@@ -41,6 +41,16 @@ const PRESETS: Record<string, State[]> = {
   ],
 };
 
+/** The snake's settings: what each is called, what it does and the range worth trying. */
+const SNAKE_SETTINGS: { key: keyof Snake; label: string; about: string; min: number; max: number; step: number }[] = [
+  { key: "nose", label: "Nose", about: "brightness of the leading light", min: 0, max: 1, step: 0.05 },
+  { key: "tail", label: "Tail", about: "brightness of the queue while it is pulled in", min: 0, max: 1, step: 0.05 },
+  { key: "hold_ms", label: "Hold ms", about: "how long each step stays still", min: 0, max: 400, step: 10 },
+  { key: "move_ms", label: "Move ms", about: "how long the move to the next light takes", min: 10, max: 400, step: 10 },
+  { key: "fade_out_ms", label: "Fade out ms", about: "how long the old queue takes to go dark", min: 10, max: 1500, step: 10 },
+  { key: "fade_in_ms", label: "Fade in ms", about: "how long the new queue takes to rise to full", min: 10, max: 1500, step: 10 },
+];
+
 let nextId = 1;
 const item = (state: State): Item => ({ id: nextId++, state });
 const inQueueOrder = (items: Item[]) =>
@@ -48,30 +58,31 @@ const inQueueOrder = (items: Item[]) =>
 
 export function App() {
   const [engine, setEngine] = useState<Engine | null>(null);
+  // The settings the service has, and the ones being tried here.
+  const [saved, setSaved] = useState<Config | null>(null);
   const [config, setConfig] = useState<Config | null>(null);
   const [palettes, setPalettes] = useState<NamedPalette[]>([]);
-  const [items, setItems] = useState<Item[]>([]);
-  const [designId, setDesignId] = useState("service");
-  const [lit, setLit] = useState<Palette | null>(null);
+  const [items, setItems] = useState<Item[]>(() => PRESETS["One of each"]!.map(item));
   const [rendering, setRendering] = useState<Rendering | null>(null);
   const [replays, setReplays] = useState(0);
-  const [scratch, setScratch] = useState("#FF0044 #FF8800 #FFFF00 #00FF66 #00CCFF #004CFF #8800FF #FF00CC\nroll 2s linear\nrepeat");
   const [trueColor, setTrueColor] = useState(true);
   const [model, setModel] = useState<Model>(DEFAULT_MODEL);
   const [diffusion, setDiffusion] = useState(DEFAULT_DIFFUSION);
   const [message, setMessage] = useState<{ text: string; bad: boolean } | null>(null);
-  // The state to announce on the next render; set by queue edits and replays, consumed once.
-  const announce = useRef<State | null>(null);
-  const lastAnnounced = useRef<State | null>(null);
-  const design = DESIGNS.find((candidate) => candidate.id === designId)!;
+  // Whether the next render plays the change; set by whatever should show it, consumed once.
+  const playChange = useRef(false);
+  const lastEntered = useRef<State | null>(null);
 
   useEffect(() => {
     fetch("/sdled.wasm")
       .then((response) => response.arrayBuffer())
       .then(Engine.load)
       .then(setEngine);
-    api<ServiceRendering>("/api/render", { states: [] })
-      .then((service) => setConfig(service.config))
+    api<Rendering>("/api/render", { states: [], announce: null })
+      .then((service) => {
+        setSaved(service.config);
+        setConfig(service.config);
+      })
       .catch(fail);
     api<NamedPalette[]>("/api/palettes").then(setPalettes).catch(fail);
   }, []);
@@ -86,23 +97,24 @@ export function App() {
     return parsed.ok;
   }
 
-  // Re-render and replay whenever the queue, the look or the design changes.
+  // Render through the service and play the result whenever the queue or a setting changes.
   useEffect(() => {
     if (!engine || !config) return;
     let stale = false;
     const timers: number[] = [];
-    const scene: Scene = { ...config, states: items.map((entry) => entry.state), announce: announce.current };
-    announce.current = null;
-    api<ServiceRendering>("/api/render", scene)
-      .then((service) => {
+    const states = items.map((entry) => entry.state);
+    // Always render the change, so its programs and timing are on hand; play it only when asked.
+    const scene: Scene = { states, announce: changeIn(states), config };
+    const play = playChange.current;
+    playChange.current = false;
+    api<Rendering>("/api/render", scene)
+      .then((result) => {
         if (stale) return;
-        const result = design.adapt(scene, service);
-        setLit(service.lit);
         setRendering(result);
         setMessage(null);
-        // Write each program when the one before it ends, as the service would.
+        // Write each program when the one before it ends, as the service does.
         let at = 0;
-        for (const step of result.steps) {
+        for (const step of play ? result.steps : []) {
           timers.push(window.setTimeout(() => run(step.program), at));
           at += step.ms;
         }
@@ -113,67 +125,95 @@ export function App() {
       stale = true;
       timers.forEach((timer) => window.clearTimeout(timer));
     };
-  }, [engine, config, items, design, replays]);
+  }, [engine, config, items, replays]);
+
+  /** The change to show for a queue: the last state entered if it is still queued, else the newest item's. */
+  function changeIn(states: State[]): State | null {
+    return lastEntered.current && states.includes(lastEntered.current) ? lastEntered.current : (states.at(-1) ?? null);
+  }
+
+  if (!engine || !config || !saved) return <p className="loading">{message?.text ?? "Loading…"}</p>;
+
+  const queued = items.map((entry) => entry.state);
+  const change = changeIn(queued);
+  const unsaved = !same(config, saved);
 
   function changeQueue(next: Item[], entered: State | null) {
-    announce.current = entered;
-    if (entered) lastAnnounced.current = entered;
+    if (entered) {
+      lastEntered.current = entered;
+      playChange.current = true;
+    }
     setItems(next);
   }
 
   function replay() {
-    announce.current = lastAnnounced.current;
+    playChange.current = true;
     setReplays(replays + 1);
   }
 
-  async function showOnDevice(programs: Rendering | string) {
-    const play = (program: string) => api("/api/play", { program, seconds: DEVICE_HOLD_SECONDS });
-    try {
-      if (typeof programs === "string") {
-        await play(programs);
-      } else {
-        for (const step of programs.steps) {
-          await play(step.program);
-          await wait(step.ms);
-        }
-        await play(programs.steady);
-      }
-      setMessage({ text: `Showing on the device for ${DEVICE_HOLD_SECONDS} seconds, then the real queue returns.`, bad: false });
-    } catch (error) {
-      fail(error);
-    }
-  }
-
-  async function saveToService() {
-    try {
-      await api("/api/config", config);
-      setMessage({ text: "Saved. The service now uses these colors, brightness, die balance and front light.", bad: false });
-    } catch (error) {
-      fail(error);
-    }
-  }
-
-  if (!engine || !config) return <p className="loading">{message?.text ?? "Loading…"}</p>;
-
-  const setColor = (state: State, color: string) => setConfig({ ...config, colors: { ...config.colors, [state]: color } });
+  const set = (change: Partial<Config>) => setConfig({ ...config, ...change });
+  const setColor = (state: State, color: string) => set({ colors: { ...config.colors, [state]: color } });
   const setBalance = (die: number, value: number) =>
-    setConfig({ ...config, balance: config.balance.map((old, index) => (index === die ? value : old)) as Config["balance"] });
+    set({ balance: config.balance.map((old, index) => (index === die ? value : old)) as Config["balance"] });
+  // A change to the snake replays it, so each adjustment is seen at once.
+  function setSnake(key: keyof Snake, value: number) {
+    playChange.current = true;
+    set({ snake: { ...config!.snake, [key]: value } });
+  }
+
+  async function act(action: () => Promise<string>) {
+    try {
+      setMessage({ text: await action(), bad: false });
+    } catch (error) {
+      fail(error);
+    }
+  }
+
+  const showOnDevice = () =>
+    act(async () => {
+      await api("/api/show", { scene: { states: queued, announce: change, config }, seconds: DEVICE_HOLD_SECONDS });
+      return `Showing these settings on the device for ${DEVICE_HOLD_SECONDS} seconds, then the real queue returns.`;
+    });
+
+  const save = () =>
+    act(async () => {
+      const result = await api<Config>("/api/config", config);
+      setSaved(result);
+      setConfig(result);
+      return "Saved. The service is using these settings now.";
+    });
+
   // The three dies side by side, each scaled so that all look as bright as the dimmest one at full value.
   const dimmest = Math.min(...config.balance);
   const dies = ["#FF0000", "#00FF00", "#0000FF"].map((die, index) => scaled(die, dimmest / config.balance[index]!));
   const diesProgram = `${dies[0]} ${dies[0]} #000000 ${dies[1]} ${dies[1]} #000000 ${dies[2]} ${dies[2]}`;
+  const showDiesOnDevice = () =>
+    act(async () => {
+      await api("/api/play", { program: diesProgram, seconds: DEVICE_HOLD_SECONDS });
+      return `Showing the dies on the device for ${DEVICE_HOLD_SECONDS} seconds, then the real queue returns.`;
+    });
+
+  const changeMs = rendering?.steps.reduce((sum, step) => sum + step.ms, 0) ?? 0;
 
   return (
     <main>
       <header>
         <h1>leds workshop</h1>
         <p>
-          Programs run in the firmware's own interpreter. {GAMUT === "p3" ? "This display shows Display P3." : "This display is limited to sRGB."}
+          Tune the service's settings against the device. The lights below are what the service renders, run in the
+          firmware's own interpreter. {GAMUT === "p3" ? "This display shows Display P3." : "This display is limited to sRGB."}
         </p>
       </header>
 
       <section className="stage">
         <Strip engine={engine} trueColor={trueColor} model={model} diffusion={diffusion} frontLed={config.front_led} />
+        <div className="actions">
+          <button disabled={!change} onClick={replay}>Replay the change</button>
+          <button onClick={showOnDevice}>Show on device</button>
+          <span className={unsaved ? "status unsaved" : "status"}>{unsaved ? "Unsaved changes" : "Saved to the service"}</span>
+          <button disabled={!unsaved} onClick={() => setConfig(saved)}>Revert</button>
+          <button className="primary" disabled={!unsaved} onClick={save}>Save to the service</button>
+        </div>
         {message && <p className={message.bad ? "message bad" : "message"}>{message.text}</p>}
       </section>
 
@@ -210,37 +250,31 @@ export function App() {
               <button key={name} onClick={() => changeQueue(states.map(item), null)}>{name}</button>
             ))}
           </div>
+          <p className="note">A test queue for this page only. Adding an item or changing its state plays the change.</p>
         </section>
 
         <section>
-          <h2>Design</h2>
-          <div className="row">
-            {DESIGNS.map((candidate) => (
-              <button key={candidate.id} className={candidate.id === designId ? "chosen" : ""} onClick={() => setDesignId(candidate.id)}>
-                {candidate.name}
-              </button>
-            ))}
-          </div>
-          <p className="note">{design.about}</p>
-          <div className="row">
-            <button disabled={!lastAnnounced.current} onClick={replay}>Replay the last change</button>
-            {rendering && <button onClick={() => showOnDevice(rendering)}>Show on device</button>}
-          </div>
-          {rendering?.steps.map((step, index) => (
-            <Program
-              key={index}
-              title={`On the change${rendering.steps.length > 1 ? `, part ${index + 1}` : ""} · ${(step.ms / 1000).toFixed(2)} s`}
-              text={step.program}
-            />
+          <h2>Change animation</h2>
+          <p className="note">
+            The lights fade out. A head in the new state's color crosses the strip toward the front of the queue: a nose,
+            a bright light, then a dark one. It pulls the new queue in as its tail, and the queue then rises to full.
+          </p>
+          {SNAKE_SETTINGS.map((setting) => (
+            <Slider key={setting.key} label={setting.label} title={setting.about} value={config.snake[setting.key]}
+              min={setting.min} max={setting.max} step={setting.step} onChange={(value) => setSnake(setting.key, value)} />
           ))}
-          {rendering && <Program title="Then, held" text={rendering.steady} />}
-          <h2>Scratch program</h2>
-          <textarea value={scratch} rows={5} spellCheck={false} onChange={(event) => setScratch(event.target.value)} />
-          <div className="row">
-            <span className={bytes(scratch) > MAX_BYTES ? "count bad" : "count"}>{bytes(scratch)} / {MAX_BYTES} bytes</span>
-            <button onClick={() => run(scratch) && setMessage(null)}>Run here</button>
-            <button onClick={() => showOnDevice(scratch)}>Show on device</button>
-          </div>
+          <p className="note">
+            {change
+              ? `The change takes ${(changeMs / 1000).toFixed(2)} s in ${rendering?.steps.length ?? 0} programs.`
+              : "Add an item to the queue to see the change."}
+          </p>
+          <details>
+            <summary>Programs the service writes</summary>
+            {rendering?.steps.map((step, index) => (
+              <Program key={index} title={`Change, part ${index + 1} · ${(step.ms / 1000).toFixed(2)} s`} text={step.program} />
+            ))}
+            {rendering && <Program title="Then, held" text={rendering.steady} />}
+          </details>
         </section>
 
         <section>
@@ -261,7 +295,7 @@ export function App() {
                       onChange={(event) => setColor(state, toHex(deviceColorFor(event.target.value, model)!))}
                     />
                   </td>
-                  <td><code>{lit?.[state]}</code></td>
+                  <td><code>{rendering?.lit[state]}</code></td>
                 </tr>
               ))}
             </tbody>
@@ -272,15 +306,20 @@ export function App() {
           </p>
           <div className="row">
             {palettes.map((palette) => (
-              <button key={palette.name} title={palette.about} onClick={() => setConfig({ ...config, colors: palette.colors })}>
+              <button key={palette.name} title={palette.about} className={same(palette.colors, config.colors) ? "chosen" : ""}
+                onClick={() => set({ colors: palette.colors })}>
                 {STATES.map((state) => <Swatch key={state} color={palette.colors[state]} trueColor={trueColor} model={model} />)} {palette.name}
               </button>
             ))}
           </div>
-          <Slider label="Brightness" value={config.brightness} min={0} max={255} step={1} onChange={(brightness) => setConfig({ ...config, brightness })} />
+        </section>
+
+        <section>
+          <h2>Brightness</h2>
+          <Slider label="Overall" value={config.brightness} min={0} max={255} step={1} onChange={(brightness) => set({ brightness })} />
           <label className="field">
-            Front of the queue
-            <select value={config.front_led} onChange={(event) => setConfig({ ...config, front_led: Number(event.target.value) })}>
+            Front of queue
+            <select value={config.front_led} onChange={(event) => set({ front_led: Number(event.target.value) })}>
               <option value={7}>light 7</option>
               <option value={0}>light 0</option>
             </select>
@@ -295,13 +334,12 @@ export function App() {
           ))}
           <div className="row">
             <button onClick={() => run(diesProgram) && setMessage(null)}>Show dies here</button>
-            <button onClick={() => showOnDevice(diesProgram)}>Show dies on device</button>
+            <button onClick={showDiesOnDevice}>Show dies on device</button>
           </div>
-          <button onClick={saveToService}>Save to the service</button>
         </section>
 
         <section>
-          <h2>Color look</h2>
+          <h2>Preview look</h2>
           <label className="toggle">
             <input type="checkbox" checked={trueColor} onChange={(event) => setTrueColor(event.target.checked)} />
             True color
@@ -315,7 +353,7 @@ export function App() {
           <button disabled={!trueColor} onClick={() => { setModel(DEFAULT_MODEL); setDiffusion(DEFAULT_DIFFUSION); }}>Reset</button>
           <p className="note">
             {trueColor
-              ? "True color models the Pro's WS2816 LEDs: light linear in the value, near single-wavelength dies, white-balanced by the firmware. Response 1 is the hardware's linear response. The model comes from the datasheet, so tune it against the device."
+              ? "How this page draws the lights; nothing here is saved to the service. True color models the Pro's WS2816 LEDs: light linear in the value, near single-wavelength dies, white-balanced by the firmware. The model comes from the datasheet, so tune it against the device."
               : "Showing each value as the screen color with the same hex. On the device, dim values are much brighter and mixed colors lean toward their weaker die."}
           </p>
         </section>
@@ -379,9 +417,18 @@ function Program(props: { title: string; text: string }) {
   );
 }
 
-function Slider(props: { label: string; value: number; min: number; max: number; step: number; disabled?: boolean; onChange(value: number): void }) {
+function Slider(props: {
+  label: string;
+  title?: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  disabled?: boolean;
+  onChange(value: number): void;
+}) {
   return (
-    <label className="field">
+    <label className="field" title={props.title}>
       {props.label}
       <input type="range" min={props.min} max={props.max} step={props.step} value={props.value} disabled={props.disabled}
         onChange={(event) => props.onChange(Number(event.target.value))} />

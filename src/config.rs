@@ -1,11 +1,12 @@
-//! Saved settings: the color of each state, brightness and which end is the front.
+//! Saved settings: the color of each state, brightness, which end is the front
+//! and how a change is announced.
 
 use std::fmt;
 use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
 use crate::state::State;
@@ -166,6 +167,38 @@ pub const PALETTES: [NamedPalette; 11] = [
     },
 ];
 
+/// The animation that announces a change: a head in the new state's color
+/// crosses the dark strip and pulls the new queue in behind it as a dimmed tail.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Snake {
+    /// How bright the head's leading light is, as a share of the bright light behind it.
+    pub nose: f64,
+    /// How bright the queue is while it trails the head, as a share of its resting brightness.
+    pub tail: f64,
+    /// How long each step holds still before the snake moves on, in milliseconds.
+    pub hold_ms: u32,
+    /// How long the move to the next light takes.
+    pub move_ms: u32,
+    /// How long the old queue takes to fade out before the snake enters.
+    pub fade_out_ms: u32,
+    /// How long the new queue takes to rise to full brightness once it is in place.
+    pub fade_in_ms: u32,
+}
+
+impl Default for Snake {
+    fn default() -> Self {
+        Snake {
+            nose: 0.6,
+            tail: 0.3,
+            hold_ms: 60,
+            move_ms: 90,
+            fade_out_ms: 300,
+            fade_in_ms: 500,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -179,6 +212,7 @@ pub struct Config {
     /// brighter saturated colors look than their luminance; tune it by eye.
     pub balance: [f64; 3],
     pub colors: Palette,
+    pub snake: Snake,
 }
 
 impl Default for Config {
@@ -188,6 +222,7 @@ impl Default for Config {
             front_led: 7,
             balance: [0.32, 0.54, 0.14],
             colors: PALETTES[0].colors,
+            snake: Snake::default(),
         }
     }
 }
@@ -197,11 +232,45 @@ impl Config {
         let path = config_file();
         match fs::read_to_string(&path) {
             Ok(text) => {
-                toml::from_str(&text).with_context(|| format!("reading {}", path.display()))
+                let config: Config =
+                    toml::from_str(&text).with_context(|| format!("reading {}", path.display()))?;
+                config
+                    .check()
+                    .map_err(|problem| anyhow!("{}: {problem}", path.display()))?;
+                Ok(config)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
             Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
         }
+    }
+
+    /// Says what is wrong with a setting the renderer or the device cannot use.
+    pub fn check(&self) -> Result<(), String> {
+        const LONGEST_MS: u32 = 5000;
+        if self.front_led != 0 && self.front_led != 7 {
+            return Err("the front light is 0 or 7".into());
+        }
+        if !self
+            .balance
+            .iter()
+            .all(|weight| weight.is_finite() && *weight > 0.0)
+        {
+            return Err("each die's brightness must be above 0".into());
+        }
+        let snake = &self.snake;
+        if ![snake.nose, snake.tail]
+            .iter()
+            .all(|level| (0.0..=1.0).contains(level))
+        {
+            return Err("the snake's nose and tail are between 0 and 1".into());
+        }
+        let moving = [snake.move_ms, snake.fade_out_ms, snake.fade_in_ms];
+        if moving.iter().any(|&ms| ms == 0 || ms > LONGEST_MS) || snake.hold_ms > LONGEST_MS {
+            return Err(format!(
+                "the snake's move and fades take 1-{LONGEST_MS} ms and its hold up to {LONGEST_MS} ms"
+            ));
+        }
+        Ok(())
     }
 
     pub fn save(&self) -> Result<()> {
@@ -248,6 +317,38 @@ mod tests {
             config
         );
         assert_eq!(toml::from_str::<Config>("brightness = 90").unwrap(), config);
+    }
+
+    #[test]
+    fn check_names_the_setting_that_cannot_be_used() {
+        let with = |change: fn(&mut Config)| {
+            let mut config = Config::default();
+            change(&mut config);
+            config.check()
+        };
+        assert_eq!(with(|_| {}), Ok(()));
+        assert!(
+            with(|config| config.front_led = 3)
+                .unwrap_err()
+                .contains("front")
+        );
+        assert!(
+            with(|config| config.balance[2] = 0.0)
+                .unwrap_err()
+                .contains("die")
+        );
+        assert!(
+            with(|config| config.snake.tail = 1.5)
+                .unwrap_err()
+                .contains("nose and tail")
+        );
+        assert!(with(|config| config.snake.nose = f64::NAN).is_err());
+        assert!(
+            with(|config| config.snake.move_ms = 0)
+                .unwrap_err()
+                .contains("move")
+        );
+        assert_eq!(with(|config| config.snake.hold_ms = 0), Ok(()));
     }
 
     #[test]

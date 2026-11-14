@@ -118,6 +118,32 @@ section > h2:first-child {
   transform: none;
 }
 
+/* What to do with the settings being tried: see them, then keep or drop them. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.status {
+  margin-left: auto;
+  color: var(--muted);
+}
+
+.status.unsaved {
+  color: var(--accent);
+}
+
+button.primary:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0e0f12;
+  font-weight: 600;
+}
+
 .message {
   margin: 6px 0 0;
   text-align: center;
@@ -181,15 +207,32 @@ button.chosen {
   color: var(--accent);
 }
 
-.toggle,
-.field {
+.toggle {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
+/* A setting: its name, its control, its value. */
 .field {
+  display: grid;
+  grid-template-columns: 7.5em 1fr 4ch;
+  align-items: center;
+  gap: 8px;
   margin: 8px 0;
+}
+
+.field select {
+  justify-self: start;
+}
+
+details {
+  margin-top: 8px;
+}
+
+summary {
+  color: var(--muted);
+  cursor: pointer;
 }
 
 .field output {

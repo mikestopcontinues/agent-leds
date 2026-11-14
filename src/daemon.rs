@@ -1,6 +1,7 @@
 //! The service: owns the queue and the device, and answers the CLI and hooks
 //! over a Unix socket carrying one JSON request and one JSON reply per connection.
 
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -14,7 +15,7 @@ use serde_json::{Value, json};
 
 use crate::config::{Color, Config, PALETTES, state_dir};
 use crate::device;
-use crate::render;
+use crate::render::{self, Step};
 use crate::state::{Change, Queue, State, Update};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -45,9 +46,21 @@ pub enum Request {
     Balance {
         weights: [f64; 3],
     },
+    /// Replace every setting.
+    Configure {
+        config: Config,
+    },
     /// Show a raw program for a while, then return to the queue.
     Play {
         program: String,
+        seconds: f64,
+    },
+    /// Show a queue as these settings would, announcing a change first if
+    /// asked, for a while, then return to the real queue.
+    Show {
+        states: Vec<State>,
+        announce: Option<State>,
+        config: Config,
         seconds: f64,
     },
 }
@@ -99,9 +112,11 @@ const DEVICE_CHECK: Duration = Duration::from_secs(15);
 struct Daemon {
     config: Config,
     queue: Queue,
-    /// When the program on the device ends and the steady queue must be rewritten.
+    /// Programs waiting to be written, each when the one before it ends.
+    pending: VecDeque<Step>,
+    /// When the program on the device ends.
     settle_at: Option<Instant>,
-    /// A played program is showing; queue changes wait until it ends.
+    /// Something other than the queue is showing; queue changes wait until it ends.
     holding: bool,
     /// The device's last uptime, or None while it is missing or needs a rewrite.
     uptime: Option<u64>,
@@ -129,6 +144,7 @@ pub fn run() -> Result<()> {
     let mut daemon = Daemon {
         config: Config::load()?,
         queue: saved_queue(),
+        pending: VecDeque::new(),
         settle_at: None,
         holding: false,
         uptime: None,
@@ -175,6 +191,14 @@ fn serve(stream: UnixStream, requests: &Sender<(Request, Sender<Reply>)>) {
     let _ = (&stream).write_all(format!("{body}\n").as_bytes());
 }
 
+/// How long to show something that was asked for, in milliseconds.
+fn held_ms(seconds: f64) -> Result<u64, String> {
+    if !(seconds > 0.0 && seconds <= 3600.0) {
+        return Err("show it for between 0 and 3600 seconds".into());
+    }
+    Ok((seconds * 1000.0) as u64)
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -217,60 +241,81 @@ impl Daemon {
                 Ok(Value::Null)
             }
             Request::Color { state, color } => {
-                self.config.colors.set(state, color);
-                self.configured()
+                let mut config = self.config.clone();
+                config.colors.set(state, color);
+                self.configure(config)
             }
             Request::Palette { name } => {
                 let named = PALETTES.iter().find(|palette| palette.name == name);
-                self.config.colors = named
+                let colors = named
                     .ok_or_else(|| format!("no palette named {name:?}"))?
                     .colors;
-                self.configured()
+                self.configure(Config {
+                    colors,
+                    ..self.config.clone()
+                })
             }
-            Request::Brightness { level } => {
-                self.config.brightness = level;
-                self.configured()
-            }
-            Request::Front { led } => {
-                if led != 0 && led != 7 {
-                    return Err("the front light is 0 or 7".into());
-                }
-                self.config.front_led = led;
-                self.configured()
-            }
-            Request::Balance { weights } => {
-                if !weights
-                    .iter()
-                    .all(|weight| weight.is_finite() && *weight > 0.0)
-                {
-                    return Err("each die's brightness must be above 0".into());
-                }
-                self.config.balance = weights;
-                self.configured()
-            }
+            Request::Brightness { level } => self.configure(Config {
+                brightness: level,
+                ..self.config.clone()
+            }),
+            Request::Front { led } => self.configure(Config {
+                front_led: led,
+                ..self.config.clone()
+            }),
+            Request::Balance { weights } => self.configure(Config {
+                balance: weights,
+                ..self.config.clone()
+            }),
+            Request::Configure { config } => self.configure(config),
             Request::Play { program, seconds } => {
                 device::check(&program)?;
-                if !(seconds > 0.0 && seconds <= 3600.0) {
-                    return Err("play for between 0 and 3600 seconds".into());
-                }
-                device::write(&program).map_err(|error| error.to_string())?;
-                self.holding = true;
-                self.settle_at = Some(Instant::now() + Duration::from_secs_f64(seconds));
-                Ok(Value::Null)
+                self.hold(vec![Step {
+                    program,
+                    ms: held_ms(seconds)?,
+                }])
+            }
+            Request::Show {
+                states,
+                announce,
+                config,
+                seconds,
+            } => {
+                config.check()?;
+                let slots = render::slots(&states);
+                let mut steps = announce
+                    .map_or_else(Vec::new, |state| render::announce(state, &slots, &config));
+                steps.push(Step {
+                    program: render::steady(&slots, &config),
+                    ms: held_ms(seconds)?,
+                });
+                self.hold(steps)
             }
         }
     }
 
-    fn configured(&mut self) -> Reply {
-        self.config.save().map_err(|error| format!("{error:#}"))?;
+    fn configure(&mut self, config: Config) -> Reply {
+        config.check()?;
+        config.save().map_err(|error| format!("{error:#}"))?;
+        self.config = config;
         self.refresh();
         Ok(json!(self.config))
+    }
+
+    /// Shows programs that are not the queue; the queue returns when the last one ends.
+    fn hold(&mut self, steps: Vec<Step>) -> Reply {
+        if device::volume().is_none() {
+            return Err("no SidePulse volume is mounted".into());
+        }
+        self.holding = true;
+        self.play(steps);
+        Ok(Value::Null)
     }
 
     fn tick(&mut self) {
         let now = Instant::now();
         if self.settle_at.is_some_and(|settle| settle <= now) {
-            self.steady();
+            self.advance();
         }
         if self.next_check <= now {
             self.next_check = now + DEVICE_CHECK;
@@ -306,11 +351,27 @@ impl Daemon {
         if self.holding {
             return;
         }
-        self.write(&render::announce(state, &self.slots(), &self.config));
-        self.settle_at = Some(Instant::now() + Duration::from_millis(render::ANNOUNCE_MS + 50));
+        self.play(render::announce(state, &self.slots(), &self.config));
     }
 
-    /// Shows the queue now, unless a played program still has the lights.
+    /// Writes the programs one after another, each when the one before it ends, then the queue.
+    fn play(&mut self, steps: Vec<Step>) {
+        self.pending = steps.into();
+        self.advance();
+    }
+
+    /// Writes the next waiting program, or the queue once none is left.
+    fn advance(&mut self) {
+        match self.pending.pop_front() {
+            Some(step) => {
+                self.write(&step.program);
+                self.settle_at = Some(Instant::now() + Duration::from_millis(step.ms));
+            }
+            None => self.steady(),
+        }
+    }
+
+    /// Shows the queue now, unless something else is being shown.
     fn refresh(&mut self) {
         if !self.holding {
             self.steady();
@@ -320,6 +381,7 @@ impl Daemon {
     fn steady(&mut self) {
         self.holding = false;
         self.settle_at = None;
+        self.pending.clear();
         self.write(&render::steady(&self.slots(), &self.config));
     }
 

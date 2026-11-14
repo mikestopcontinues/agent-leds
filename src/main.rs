@@ -16,7 +16,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use config::{Color, Config, PALETTES, Palette};
+use config::{Color, Config, PALETTES};
 use daemon::Request;
 use state::State;
 
@@ -63,8 +63,15 @@ enum Command {
         #[arg(long, default_value_t = 5.0)]
         seconds: f64,
     },
-    /// Render a scene read from stdin as JSON; used by the prototype
+    /// Replace every setting with a config read from stdin as JSON; used by the workshop
+    Configure,
+    /// Render a scene read from stdin as JSON; used by the workshop
     Render,
+    /// Show a scene read from stdin as JSON on the device, then return to the queue; used by the workshop
+    Show {
+        #[arg(long, default_value_t = 10.0)]
+        seconds: f64,
+    },
     /// Receive one agent hook event on stdin
     #[command(hide = true)]
     Hook { agent: Agent },
@@ -75,16 +82,26 @@ enum Agent {
     Claude,
 }
 
-/// A queue to render without the daemon. Anything left out comes from the saved config.
+/// A queue to render as the service would, with the saved config unless one is given.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Scene {
     states: Vec<State>,
+    /// The state a session has just entered, to announce the change.
     announce: Option<State>,
-    colors: Option<Palette>,
-    brightness: Option<u8>,
-    front_led: Option<u8>,
-    balance: Option<[f64; 3]>,
+    config: Option<Config>,
+}
+
+impl Scene {
+    fn read() -> Result<(Scene, Config)> {
+        let mut scene: Scene = serde_json::from_str(&stdin()?).context("reading the scene")?;
+        let config = match scene.config.take() {
+            Some(config) => config,
+            None => Config::load()?,
+        };
+        config.check().map_err(anyhow::Error::msg)?;
+        Ok((scene, config))
+    }
 }
 
 fn main() -> Result<()> {
@@ -135,7 +152,23 @@ fn main() -> Result<()> {
             })
             .map(drop)
         }
+        Command::Configure => {
+            let config = serde_json::from_str(&stdin()?).context("reading the config")?;
+            let saved = daemon::request(&Request::Configure { config })?;
+            println!("{saved}");
+            Ok(())
+        }
         Command::Render => render_scene(),
+        Command::Show { seconds } => {
+            let (scene, config) = Scene::read()?;
+            daemon::request(&Request::Show {
+                states: scene.states,
+                announce: scene.announce,
+                config,
+                seconds,
+            })
+            .map(drop)
+        }
         Command::Hook {
             agent: Agent::Claude,
         } => {
@@ -212,21 +245,15 @@ fn palettes(json: bool) {
 }
 
 fn render_scene() -> Result<()> {
-    let mut scene: Scene = serde_json::from_str(&stdin()?).context("reading the scene")?;
-    let saved = Config::load()?;
-    let config = Config {
-        brightness: scene.brightness.unwrap_or(saved.brightness),
-        front_led: scene.front_led.unwrap_or(saved.front_led),
-        balance: scene.balance.unwrap_or(saved.balance),
-        colors: scene.colors.unwrap_or(saved.colors),
-    };
-    scene.states.sort();
+    let (scene, config) = Scene::read()?;
     let slots = render::slots(&scene.states);
+    let steps = scene
+        .announce
+        .map_or_else(Vec::new, |state| render::announce(state, &slots, &config));
     let output = json!({
         "slots": slots,
         "steady": render::steady(&slots, &config),
-        "announce": scene.announce.map(|state| render::announce(state, &slots, &config)),
-        "announce_ms": render::ANNOUNCE_MS,
+        "steps": steps,
         "lit": render::balanced(&config),
         "config": config,
     });

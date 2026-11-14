@@ -1,5 +1,6 @@
 // Serves the workshop page and bridges it to the installed `leds` CLI, so the
-// page shows exactly what the service renders and can preview on the device.
+// page shows exactly what the service renders, can preview on the device and
+// can save its settings to the service.
 
 import index from "./index.html";
 
@@ -34,20 +35,22 @@ const server = Bun.serve({
     "/": index,
     "/sdled.wasm": () => new Response(Bun.file(`${import.meta.dir}/vendor/sdled.wasm`)),
     "/api/palettes": handler(async () => JSON.parse(await leds(["palette", "--json"]))),
+    // Renders a scene as the service would.
     "/api/render": { POST: handler(async (scene) => JSON.parse(await leds(["render"], JSON.stringify(scene)))) },
+    // Shows a scene on the device for a while.
+    "/api/show": {
+      POST: handler(async ({ scene, seconds }) => {
+        await leds(["show", "--seconds", String(seconds)], JSON.stringify(scene));
+      }),
+    },
+    // Shows a raw program on the device for a while.
     "/api/play": {
       POST: handler(async ({ program, seconds }) => {
         await leds(["play", "-", "--seconds", String(seconds)], program);
       }),
     },
-    "/api/config": {
-      POST: handler(async ({ colors, brightness, front_led, balance }) => {
-        for (const [state, color] of Object.entries(colors)) await leds(["color", state, String(color)]);
-        await leds(["brightness", String(brightness)]);
-        await leds(["front", String(front_led)]);
-        await leds(["balance", ...balance.map(String)]);
-      }),
-    },
+    // Saves every setting to the service and returns what it saved.
+    "/api/config": { POST: handler(async (config) => JSON.parse(await leds(["configure"], JSON.stringify(config)))) },
   },
 });
 
