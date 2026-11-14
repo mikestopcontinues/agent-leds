@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use crate::config::{Color, Config, PALETTES, state_dir};
 use crate::desktop::Desktop;
 use crate::device;
+use crate::eject;
 use crate::harness::Harness;
 use crate::render::{self, Step};
 use crate::state::{Change, Expiry, Queue, State, Update};
@@ -155,6 +156,8 @@ pub fn run() -> Result<()> {
             thread::spawn(move || serve(stream, &requests));
         }
     });
+
+    thread::spawn(eject::guard);
 
     let mut queue = saved_queue();
     // Nothing was listening while the daemon was down.

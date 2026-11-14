@@ -7,6 +7,8 @@ edition = "2024"
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 libc = "0.2.191"
+objc2-core-foundation = "0.3.2"
+objc2-disk-arbitration = "0.3.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 toml = "1.2.1"

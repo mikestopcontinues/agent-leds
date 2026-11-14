@@ -22,6 +22,11 @@ The daemon saves the queue to `~/.local/state/leds/queue.json` on every change a
 
 The daemon reads the card's uptime every 15 seconds. The read keeps the SD reader from powering the card down, and an uptime that went backwards means the card restarted, so the queue is rewritten.
 
+The daemon also keeps the card mounted. macOS ejects a disk that appears while the screen is locked, which the card does when the Mac wakes from hibernation, and an ejected card stays dark until it is taken out and put back. Disk Arbitration asks its clients before it ejects a disk, so the daemon refuses every eject of a disk whose volume name starts with `SidePulse`, and then tries every 5 seconds to mount it until that works, which it does once the screen is unlocked. Other cards in the reader eject as usual. Two things follow:
+
+- The card cannot be ejected from Finder or with `diskutil eject` while the daemon runs. Pull it out, or stop the daemon first.
+- A session with Disk Arbitration is asked nothing once that daemon restarts. The daemon watches its process id and exits when it changes; launchd starts it again, with a new session.
+
 ## Harness states
 
 `leds install` registers `leds hook <harness>` with each harness, for the events listed below. The hook reads one event, tells the daemon what it means, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked.
@@ -168,7 +173,7 @@ The snake's settings are the `[snake]` table of the config. Levels run from 0 to
 
 The workshop is the way to tune them. The daemon reads the file only when it starts, so change settings through the CLI or the workshop. A key the service does not know is ignored, so a config from an older version still loads; a value it cannot use stops the daemon with a message in its log.
 
-SidePulse's own software must not drive the same card, and none of it is needed but one piece: its eject prevention helper, the launch agent `io.sidepulse.sdejectguard`. macOS ejects a card that reappears while the screen is locked, as this one does when the Mac wakes from hibernation, and the helper refuses the eject. It runs apart from the rest of SidePulse's software, which can be removed.
+SidePulse's own software must not drive the same card, and none of it is needed. Its hooks, service and eject prevention helper can all be removed.
 
 ## Workshop
 
@@ -189,7 +194,8 @@ cd prototype && bun install && bun run dev
 
 ## Open questions
 
-- Only Claude Code and Codex 0.153.2 have been checked against real sessions. Grok's events are taken from its bundled hooks guide (1.0.13), Cursor's from the code of `cursor-agent` 2026.05.28, and Junie's from its documentation; Grok does list the registered hooks in `grok inspect`.
+- Claude Code, Codex 0.153.2, Grok 1.0.13 and `cursor-agent` 2026.05.28 have been checked against real sessions, the last two only run once from the command line (`grok -p`, `cursor-agent -p`). What Cursor sends from its interface is taken from its code, and Junie's events from its documentation.
+- Refusing an eject has been checked with `diskutil eject`: the eject fails and the card is mounted again within 5 seconds. A wake from hibernation with the screen locked has not been seen, nor has a restart of Disk Arbitration.
 - Whether Grok sends its own camelCase payloads to the hooks it reads from `~/.claude/settings.json`. If it sent Claude Code's spelling there, a Grok session would be reported twice.
 - Whether Codex's desktop app runs other sessions of its own that do keep a transcript. Those would show as lights.
 - Input in the Claude app with a session open is taken as having looked at it. Typing in a second window, or in the Chat tab, would count too.

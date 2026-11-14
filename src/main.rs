@@ -4,6 +4,7 @@ mod config;
 mod daemon;
 mod desktop;
 mod device;
+mod eject;
 mod harness;
 mod launchd;
 mod render;

@@ -5,6 +5,9 @@ use std::io::{self, Write};
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 
+/// What the name of the card's volume starts with.
+pub const NAME: &str = "SidePulse";
+
 const MAX_BYTES: usize = 512;
 const MAX_LINES: usize = 20;
 
@@ -28,7 +31,7 @@ pub fn volume() -> Option<PathBuf> {
         .find(|path| {
             let named = path
                 .file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("SidePulse"));
+                .is_some_and(|name| name.to_string_lossy().starts_with(NAME));
             named && path.join("LEDS.LED").exists()
         })
 }
