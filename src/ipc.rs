@@ -13,7 +13,8 @@ use serde_json::{Value, json};
 
 use crate::config::{Config, state_dir};
 use crate::harness::Report;
-use crate::state::{Item, State};
+use crate::render::Scene;
+use crate::state::Item;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -38,9 +39,7 @@ pub enum Request {
     /// Show a queue as these settings would for a while, after the change
     /// that led to it from another queue, then return to the real queue.
     Show {
-        states: Vec<State>,
-        announce: Option<State>,
-        from: Vec<State>,
+        scene: Scene,
         config: Config,
         seconds: f64,
     },
@@ -121,7 +120,7 @@ mod tests {
 
     use super::*;
     use crate::harness::Harness;
-    use crate::state::Update;
+    use crate::state::{State, Update};
 
     #[test]
     fn a_request_is_tagged_by_its_type() {

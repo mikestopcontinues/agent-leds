@@ -293,26 +293,22 @@ impl<W: World> Daemon<W> {
                 }])
             }
             Request::Show {
-                states,
-                announce,
-                from,
+                scene,
                 config,
                 seconds,
             } => {
                 config.check()?;
-                let from = render::slots(&from);
-                let slots = render::slots(&states);
+                let shown = scene.render(&config);
                 // The change starts from the queue it leaves, and ends held on the one it reaches.
                 let lead = Step {
-                    program: render::steady(&from, &config),
+                    program: render::steady(&shown.from, &config),
                     ms: SHOW_LEAD_MS,
                 };
                 let held = Step {
-                    program: render::steady(&slots, &config),
+                    program: render::steady(&shown.slots, &config),
                     ms: held_ms(seconds)?,
                 };
-                let change = render::change(announce, &from, &slots, &config);
-                self.hold([vec![lead], change, vec![held]].concat())
+                self.hold([vec![lead], shown.steps, vec![held]].concat())
             }
         }
     }

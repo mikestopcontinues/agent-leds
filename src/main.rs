@@ -28,6 +28,7 @@ use serde_json::{Value, json};
 use config::{Config, PALETTES, home};
 use harness::Harness;
 use ipc::{Request, Status};
+use render::Scene;
 use state::State;
 
 #[derive(Parser)]
@@ -111,28 +112,23 @@ enum Command {
     Hook { harness: Harness },
 }
 
-/// A queue to render as the service would, with the saved config unless one is given.
+/// A scene to render as the service would, with the saved config unless one is given.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Scene {
-    states: Vec<State>,
-    /// The state a session has just entered, if the change is one.
-    announce: Option<State>,
-    /// The queue before the change.
-    #[serde(default)]
-    from: Vec<State>,
+struct Input {
+    #[serde(flatten)]
+    scene: Scene,
     config: Option<Config>,
 }
 
-impl Scene {
+impl Input {
     fn read() -> Result<(Scene, Config)> {
-        let mut scene: Scene = serde_json::from_str(&stdin()?).context("reading the scene")?;
-        let config = match scene.config.take() {
+        let input: Input = serde_json::from_str(&stdin()?).context("reading the scene")?;
+        let config = match input.config {
             Some(config) => config,
             None => Config::load()?,
         };
         config.check()?;
-        Ok((scene, config))
+        Ok((input.scene, config))
     }
 }
 
@@ -186,11 +182,9 @@ fn main() -> Result<()> {
         }
         Command::Render => render_scene(),
         Command::Show { seconds } => {
-            let (scene, config) = Scene::read()?;
+            let (scene, config) = Input::read()?;
             ipc::request(&Request::Show {
-                states: scene.states,
-                announce: scene.announce,
-                from: scene.from,
+                scene,
                 config,
                 seconds,
             })
@@ -315,14 +309,12 @@ fn palettes(json: bool) {
 }
 
 fn render_scene() -> Result<()> {
-    let (scene, config) = Scene::read()?;
-    let slots = render::slots(&scene.states);
-    let from = render::slots(&scene.from);
-    let steps = render::change(scene.announce, &from, &slots, &config);
+    let (scene, config) = Input::read()?;
+    let shown = scene.render(&config);
     let output = json!({
-        "slots": slots,
-        "steady": render::steady(&slots, &config),
-        "steps": steps,
+        "steady": render::steady(&shown.slots, &config),
+        "slots": shown.slots,
+        "steps": shown.steps,
         "lit": render::balanced(&config),
         "config": config,
     });

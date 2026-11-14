@@ -3,7 +3,7 @@
 //! A program is text in the device's LEDS.LED language. The firmware runs it
 //! by itself, so a steady display costs nothing on the Mac.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::{Color, Config, Palette, Snake};
 use crate::device;
@@ -20,6 +20,39 @@ type Lights = [Color; LEDS];
 pub struct Step {
     pub program: String,
     pub ms: u64,
+}
+
+/// A queue as the service shows it, after the change that led to it from
+/// another queue.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Scene {
+    pub states: Vec<State>,
+    /// The state a session has just entered, if the change is one.
+    pub announce: Option<State>,
+    /// The queue before the change.
+    #[serde(default)]
+    pub from: Vec<State>,
+}
+
+/// What a scene shows: the lights before the change and after it, and the
+/// programs that play between.
+pub struct Shown {
+    pub from: Vec<State>,
+    pub slots: Vec<State>,
+    pub steps: Vec<Step>,
+}
+
+impl Scene {
+    pub fn render(&self, config: &Config) -> Shown {
+        let from = slots(&self.from);
+        let to = slots(&self.states);
+        let steps = change(self.announce, &from, &to, config);
+        Shown {
+            from,
+            slots: to,
+            steps,
+        }
+    }
 }
 
 /// Chooses the lights for the queue, front first, given its items' states in any order.
