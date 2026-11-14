@@ -1,5 +1,6 @@
-//! The agent harnesses that report to the daemon: what their hook events
-//! mean, and registering the hook with each.
+//! The agent harnesses the daemon follows: registering our hooks with each,
+//! what each declares it tells, and, until a harness's own files are read,
+//! what its hook events mean.
 //!
 //! The harnesses took their hook vocabulary from Claude Code, so one mapping
 //! serves them all. Each harness module turns its own payloads into that
@@ -13,18 +14,17 @@ mod junie;
 mod opencode;
 mod pi;
 
+use std::borrow::Cow;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::config::state_dir;
-use crate::coverage::Declared;
+use crate::coverage::{Declared, Evidence};
 use crate::files;
 use crate::fsm::{Channel, Signal};
 use crate::source;
-use crate::state::{State, Update};
 
 /// An agent harness whose sessions the queue shows.
 #[derive(
@@ -124,7 +124,7 @@ impl Harness {
 
     fn event(self, payload: &Value) -> Option<Event> {
         match self {
-            Harness::Claude => claude::event(payload),
+            Harness::Claude => None,
             Harness::Codex => codex::event(payload),
             Harness::Grok => grok::event(payload),
             Harness::Cursor => cursor::event(payload),
@@ -272,16 +272,19 @@ impl Harness {
 
 /// What a harness's files and hooks tell the daemon, which `coverage`
 /// crosses with the table.
-#[allow(dead_code)]
 pub fn signals(harness: Harness) -> &'static [Declared] {
     match harness {
         Harness::Claude => source::claude::SIGNALS,
-        _ => &[],
+        Harness::Codex => codex::SIGNALS,
+        Harness::Grok => grok::SIGNALS,
+        Harness::Cursor => cursor::SIGNALS,
+        Harness::Junie => junie::SIGNALS,
+        Harness::OpenCode => opencode::SIGNALS,
+        Harness::Pi => pi::SIGNALS,
     }
 }
 
 /// Whether a harness tells `signal` through `channel`.
-#[allow(dead_code)]
 pub fn declares(harness: Harness, signal: Signal, channel: Channel) -> bool {
     signals(harness)
         .iter()
@@ -355,9 +358,6 @@ struct Event {
     asks: bool,
     /// Whether something other than the main agent sent the event.
     subagent: bool,
-    /// Whether the turn ended with work of the session's still running in
-    /// the background, which wakes the session when it finishes.
-    unfinished: bool,
 }
 
 /// A hook payload as Claude Code spells it, which Codex and Junie follow.
@@ -374,23 +374,9 @@ struct Payload {
     /// Set when a subagent sent the event.
     agent_id: Option<String>,
     tool_name: Option<String>,
-    /// Whether a failed tool was cut short by the user.
-    #[serde(default)]
-    is_interrupt: bool,
-    #[serde(default)]
-    background_tasks: Vec<Task>,
     /// Codex sends null for a session it keeps no record of.
     #[serde(default, deserialize_with = "present")]
     transcript_path: Option<Option<String>>,
-}
-
-/// Work a Claude Code session runs in the background.
-#[derive(Deserialize)]
-struct Task {
-    #[serde(rename = "type", default)]
-    kind: String,
-    #[serde(default)]
-    status: String,
 }
 
 /// Reads text that may be null as empty.
@@ -422,71 +408,69 @@ impl Event {
             cwd: payload.cwd.clone(),
             asks: ends_on_question(&payload.last_assistant_message),
             subagent: payload.agent_id.is_some(),
-            unfinished: false,
         })
     }
 
-    /// What the event means for its session.
-    fn update(&self) -> Option<Update> {
+    /// What the event means for its session, as a signal of the table.
+    fn signal(&self) -> Signal {
         if self.subagent {
             // Only the main agent's events say what the session needs. A
             // subagent's say that work is going on, which matters once the
             // main agent has stopped and left a subagent running in the
             // background.
-            return Some(Update::Background);
+            return Signal::Backgrounded;
         }
-        Some(match self.hook {
+        match self.hook {
             Hook::UserPromptSubmit
             | Hook::PostToolUse
             | Hook::PostToolUseFailure
-            | Hook::ElicitationResult => Update::Enter(State::Working),
-            Hook::PreToolUse if self.asks => Update::Enter(State::Question),
-            Hook::PreToolUse => Update::Enter(State::Working),
-            Hook::PermissionRequest | Hook::Elicitation => Update::Enter(State::Question),
-            Hook::Stop if self.asks => Update::Asked,
-            // The session goes on by itself, so there is nothing to come back to yet.
-            Hook::Stop if self.unfinished => Update::Continue,
-            Hook::Stop => Update::Enter(State::Stopped),
-            Hook::StopFailure => Update::Enter(State::Error),
-            Hook::SessionEnd | Hook::Interrupt => Update::Leave,
-        })
+            | Hook::ElicitationResult => Signal::Prompted,
+            Hook::PreToolUse if self.asks => Signal::QuestionAsked,
+            Hook::PreToolUse => Signal::Prompted,
+            Hook::PermissionRequest => Signal::PermissionAsked,
+            Hook::Elicitation => Signal::QuestionAsked,
+            Hook::Stop if self.asks => Signal::TurnEndedAsking,
+            Hook::Stop => Signal::TurnEnded,
+            Hook::StopFailure => Signal::TurnFailed,
+            Hook::Interrupt => Signal::Interrupted,
+            Hook::SessionEnd => Signal::Ended,
+        }
     }
 }
 
-/// What one hook event says about a session, as the hook tells the daemon.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-pub struct Report {
-    pub harness: Harness,
-    pub session: String,
-    /// What the queue calls the session: the name of its folder.
-    pub label: String,
-    pub update: Update,
+/// Translates one hook payload while the harness's own files are not read:
+/// the session it names, the folder that session works in, and what the
+/// event means. Junie names the session only when a prompt is submitted, so
+/// the session its last prompt named is kept in `state` between events.
+pub fn interim(
+    harness: Harness,
+    payload: &Value,
+    state: &Path,
+) -> Option<(String, String, Signal)> {
+    let payload = match harness {
+        Harness::Junie => junie::with_session(payload, state)?,
+        _ => Cow::Borrowed(payload),
+    };
+    let event = harness.event(&payload)?;
+    let signal = event.signal();
+    Some((event.session, event.cwd, signal))
 }
 
-/// Translates one hook payload from a harness into a report for the daemon,
-/// as the hook does. Junie names the session only when a prompt is
-/// submitted, so the hook keeps that between events.
-pub fn hook(harness: Harness, payload: &Value) -> Option<Report> {
-    if harness == Harness::Junie {
-        return report(harness, &*junie::with_session(payload, &state_dir())?);
+/// A signal one of the harnesses whose files are not read yet tells through
+/// its hooks.
+const fn hooked(
+    signal: Signal,
+    evidence: Evidence,
+    record: &'static str,
+    cite: &'static str,
+) -> Declared {
+    Declared {
+        signal,
+        channel: Channel::Hook,
+        evidence,
+        record,
+        cite,
     }
-    report(harness, payload)
-}
-
-/// Translates one hook payload from a harness into a report for the daemon.
-fn report(harness: Harness, payload: &Value) -> Option<Report> {
-    let event = harness.event(payload)?;
-    let update = event.update()?;
-    let label = Path::new(&event.cwd)
-        .file_name()
-        .map_or(event.cwd.as_str().into(), |name| name.to_string_lossy())
-        .into_owned();
-    Some(Report {
-        harness,
-        session: event.session,
-        label,
-        update,
-    })
 }
 
 /// Whether a final message ends by asking the user something.
@@ -687,8 +671,9 @@ mod tests {
         }
     }
 
-    pub fn update(harness: Harness, payload: Value) -> Option<Update> {
-        report(harness, &payload).map(|report| report.update)
+    /// What a payload means, as the daemon reads it.
+    pub fn signal(harness: Harness, payload: Value) -> Option<Signal> {
+        Some(harness.event(&payload)?.signal())
     }
 
     #[test]
@@ -701,22 +686,6 @@ mod tests {
             "I found two options.\n\n**Which should I use?**\n"
         ));
         assert!(!ends_on_question(""));
-    }
-
-    #[test]
-    fn labels_a_session_by_its_folder() {
-        let stop =
-            json!({ "session_id": "s1", "cwd": "/Users/me/Code/app", "hook_event_name": "Stop" });
-        let report = report(Harness::Claude, &stop).unwrap();
-        assert_eq!(
-            report,
-            Report {
-                harness: Harness::Claude,
-                session: "s1".into(),
-                label: "app".into(),
-                update: Update::Enter(State::Stopped),
-            }
-        );
     }
 
     #[test]

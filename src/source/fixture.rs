@@ -396,3 +396,101 @@ pub fn seed(replay: &Replay) -> Queue {
     }
     queue
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::coverage::Declared;
+
+    /// The name a fixture that demonstrates a declaration has:
+    /// `<signal>.<channel>`, as the fixtures spell them.
+    fn demonstrating(declared: &Declared) -> String {
+        let signal = serde_json::to_value(declared.signal).unwrap();
+        let channel = serde_json::to_value(declared.channel).unwrap();
+        format!("{}.{}", signal.as_str().unwrap(), channel.as_str().unwrap())
+    }
+
+    #[test]
+    fn every_declared_row_is_demonstrated_by_a_fixture_of_its_evidence() {
+        for harness in Harness::ALL {
+            for declared in harness::signals(harness) {
+                let name = demonstrating(declared);
+                assert!(
+                    names(harness).contains(&name),
+                    "{}: no fixture {name} demonstrates {:?} on {:?}",
+                    harness.title(),
+                    declared.signal,
+                    declared.channel
+                );
+                let fixture = load(harness, &name);
+                assert_eq!(
+                    fixture.evidence,
+                    declared.evidence,
+                    "{}: {name} ({}) is not of the evidence its row declares",
+                    harness.title(),
+                    fixture.cite
+                );
+                let replay = replay(harness, &name);
+                assert!(
+                    replay
+                        .yielded
+                        .iter()
+                        .any(|(o, _)| o.event.signal() == declared.signal
+                            && o.channel == declared.channel),
+                    "{}: {name} never yields what it demonstrates",
+                    harness.title()
+                );
+            }
+        }
+    }
+
+    /// The replay fails on any observation its harness does not declare.
+    #[test]
+    fn every_fixture_yields_only_what_its_harness_declares() {
+        for harness in Harness::ALL {
+            let names = names(harness);
+            assert!(!names.is_empty(), "{} has no fixtures", harness.title());
+            for name in names {
+                assert!(
+                    !load(harness, &name).cite.is_empty(),
+                    "{name} cites nothing"
+                );
+                replay(harness, &name);
+            }
+        }
+    }
+
+    #[test]
+    fn a_signal_told_on_two_channels_is_idempotent() {
+        for harness in Harness::ALL {
+            for declared in harness::signals(harness) {
+                let channels: HashSet<Channel> = harness::signals(harness)
+                    .iter()
+                    .filter(|other| other.signal == declared.signal)
+                    .map(|other| other.channel)
+                    .collect();
+                assert!(
+                    channels.len() == 1 || fsm::idempotent(declared.signal),
+                    "{}: {:?} comes on {channels:?} and is not idempotent",
+                    harness.title(),
+                    declared.signal
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_harness_declares_how_its_sessions_start_and_end() {
+        for harness in Harness::ALL {
+            for signal in [Signal::Started, Signal::Ended] {
+                assert!(
+                    harness::signals(harness)
+                        .iter()
+                        .any(|declared| declared.signal == signal),
+                    "{} declares no {signal:?}",
+                    harness.title()
+                );
+            }
+        }
+    }
+}

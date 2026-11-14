@@ -1,0 +1,11 @@
+{"cite": "0.5.0 hooks, probe-grok runs a–l", "evidence": "observed"}
+{"alive": 71001, "started_us": 1794693357000000}
+{"expect": []}
+{"hook": {"hookEventName": "user_prompt_submit", "sessionId": "019f0a3c-6f0e-7a51-8d2b-5d2f4c0e9a11", "cwd": "/Users/me/Code/app", "workspaceRoot": "/Users/me/Code/app", "permissionMode": "default", "promptId": "p1", "timestamp": "2026-11-14T21:56:00Z"}, "ancestry": [{"pid": 71050, "started_us": 1794693362000000, "name": "sh"}, {"pid": 71001, "started_us": 1794693357000000, "name": "grok-native"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
+{"expect": [["started", "hook"], ["prompted", "hook"]]}
+{"hook": {"hookEventName": "pre_tool_use", "sessionId": "019f0a3c-6f0e-7a51-8d2b-5d2f4c0e9a11", "cwd": "/Users/me/Code/app", "workspaceRoot": "/Users/me/Code/app", "permissionMode": "default", "promptId": "p1", "timestamp": "2026-11-14T21:56:00Z", "toolName": "bash"}, "ancestry": [{"pid": 71050, "started_us": 1794693362000000, "name": "sh"}, {"pid": 71001, "started_us": 1794693357000000, "name": "grok-native"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
+{"expect": [["started", "hook"], ["prompted", "hook"]]}
+{"hook": {"hookEventName": "post_tool_use", "sessionId": "019f0a3c-6f0e-7a51-8d2b-5d2f4c0e9a11", "cwd": "/Users/me/Code/app", "workspaceRoot": "/Users/me/Code/app", "permissionMode": "default", "promptId": "p1", "timestamp": "2026-11-14T21:56:00Z", "toolName": "bash"}, "ancestry": [{"pid": 71050, "started_us": 1794693362000000, "name": "sh"}, {"pid": 71001, "started_us": 1794693357000000, "name": "grok-native"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
+{"expect": [["started", "hook"], ["prompted", "hook"]]}
+{"hook": {"hookEventName": "post_tool_use_failure", "sessionId": "019f0a3c-6f0e-7a51-8d2b-5d2f4c0e9a11", "cwd": "/Users/me/Code/app", "workspaceRoot": "/Users/me/Code/app", "permissionMode": "default", "promptId": "p1", "timestamp": "2026-11-14T21:56:00Z", "toolName": "bash"}, "ancestry": [{"pid": 71050, "started_us": 1794693362000000, "name": "sh"}, {"pid": 71001, "started_us": 1794693357000000, "name": "grok-native"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
+{"expect": [["started", "hook"], ["prompted", "hook"]]}

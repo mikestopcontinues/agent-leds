@@ -3,12 +3,9 @@
 use std::path::Path;
 
 use anyhow::Result;
-use serde_json::{Value, json};
+use serde_json::json;
 
-use super::{
-    Event, Harness, Hook, Payload, commands, edit_hooks, owns_group, read_hooks, register_groups,
-    unregister,
-};
+use super::{Harness, commands, edit_hooks, owns_group, read_hooks, register_groups, unregister};
 
 /// The hook events the daemon needs, in the order a turn produces them.
 pub const EVENTS: [&str; 10] = [
@@ -23,29 +20,6 @@ pub const EVENTS: [&str; 10] = [
     "StopFailure",
     "SessionEnd",
 ];
-
-pub fn event(payload: &Value) -> Option<Event> {
-    let payload = Payload::read(payload)?;
-    let mut event = Event::read(&payload)?;
-    event.asks |= payload.tool_name.as_deref() == Some("AskUserQuestion");
-    event.unfinished = event.hook == Hook::Stop && has_work_running(&payload);
-    // An aborted tool means the user interrupted the turn.
-    if event.hook == Hook::PostToolUseFailure && payload.is_interrupt {
-        event.hook = Hook::Interrupt;
-    }
-    Some(event)
-}
-
-/// Whether a turn ended with a subagent or a workflow still running. Claude
-/// Code starts a new turn when one finishes. It lists monitors and shell
-/// commands as background tasks too, but those can run for as long as the
-/// session does, and a session held as working for one would never show
-/// that it had stopped.
-fn has_work_running(payload: &Payload) -> bool {
-    payload.background_tasks.iter().any(|task| {
-        matches!(task.kind.as_str(), "subagent" | "workflow") && task.status == "running"
-    })
-}
 
 pub const SETTINGS: &str = ".claude/settings.json";
 
@@ -76,137 +50,14 @@ pub fn uninstall(home: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{Home, update};
+    use super::super::tests::Home;
     use super::*;
-    use crate::state::{State, Update};
 
     #[test]
     fn every_event_registered_is_one_the_daemon_follows() {
         for event in EVENTS {
             assert!(super::super::Hook::named(event).is_some(), "{event}");
         }
-    }
-
-    fn event(name: &str, extra: Value) -> Option<Update> {
-        let mut event =
-            json!({ "session_id": "s1", "cwd": "/Users/me/Code/app", "hook_event_name": name });
-        event
-            .as_object_mut()
-            .unwrap()
-            .extend(extra.as_object().unwrap().clone());
-        update(Harness::Claude, event)
-    }
-
-    #[test]
-    fn maps_a_turn() {
-        let none = json!({});
-        assert_eq!(
-            event("UserPromptSubmit", none.clone()),
-            Some(Update::Enter(State::Working))
-        );
-        assert_eq!(
-            event("PreToolUse", json!({ "tool_name": "Bash" })),
-            Some(Update::Enter(State::Working))
-        );
-        assert_eq!(
-            event("PreToolUse", json!({ "tool_name": "AskUserQuestion" })),
-            Some(Update::Enter(State::Question))
-        );
-        assert_eq!(
-            event("PermissionRequest", none.clone()),
-            Some(Update::Enter(State::Question))
-        );
-        assert_eq!(
-            event("PostToolUse", none.clone()),
-            Some(Update::Enter(State::Working))
-        );
-        assert_eq!(
-            event("StopFailure", json!({ "error": "rate_limit" })),
-            Some(Update::Enter(State::Error))
-        );
-        assert_eq!(event("SessionEnd", none.clone()), Some(Update::Leave));
-        assert_eq!(event("SessionStart", none), None);
-    }
-
-    #[test]
-    fn stop_is_a_question_only_when_the_last_line_asks() {
-        let stop = |message: &str| event("Stop", json!({ "last_assistant_message": message }));
-        assert_eq!(
-            stop("Done. All tests pass."),
-            Some(Update::Enter(State::Stopped))
-        );
-        assert_eq!(
-            stop("I found two options.\n\n**Which should I use?**\n"),
-            Some(Update::Asked)
-        );
-        assert_eq!(
-            event("Stop", json!({})),
-            Some(Update::Enter(State::Stopped))
-        );
-    }
-
-    #[test]
-    fn a_turn_that_leaves_work_running_has_not_stopped() {
-        let stop = |message: &str, tasks: Value| {
-            event(
-                "Stop",
-                json!({ "last_assistant_message": message, "background_tasks": tasks }),
-            )
-        };
-        let task = |kind: &str, status: &str| json!({ "id": "t1", "type": kind, "status": status });
-        let working = Some(Update::Continue);
-        let stopped = Some(Update::Enter(State::Stopped));
-        assert_eq!(
-            stop(
-                "The review is running.",
-                json!([task("subagent", "running")])
-            ),
-            working
-        );
-        assert_eq!(
-            stop(
-                "Started.",
-                json!([task("monitor", "running"), task("workflow", "running")])
-            ),
-            working
-        );
-        // A question is put to the user whatever else is going on.
-        assert_eq!(
-            stop("Which one?", json!([task("workflow", "running")])),
-            Some(Update::Asked)
-        );
-        // A monitor or a shell command may never finish.
-        assert_eq!(
-            stop(
-                "Done.",
-                json!([task("monitor", "running"), task("shell", "running")])
-            ),
-            stopped
-        );
-        assert_eq!(
-            stop("Done.", json!([task("subagent", "completed")])),
-            stopped
-        );
-        assert_eq!(stop("Done.", json!([])), stopped);
-    }
-
-    #[test]
-    fn interrupts_and_subagents() {
-        assert_eq!(
-            event("PostToolUseFailure", json!({ "is_interrupt": true })),
-            Some(Update::Leave)
-        );
-        assert_eq!(
-            event("PostToolUseFailure", json!({ "error": "exit 1" })),
-            Some(Update::Enter(State::Working))
-        );
-        assert_eq!(
-            event(
-                "PreToolUse",
-                json!({ "agent_id": "a1", "tool_name": "AskUserQuestion" })
-            ),
-            Some(Update::Background)
-        );
     }
 
     #[test]

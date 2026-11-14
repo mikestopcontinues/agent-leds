@@ -12,14 +12,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::config::{Config, state_dir};
-use crate::harness::Report;
+use crate::fsm::Phase;
+use crate::harness::Harness;
+use crate::queue::Session;
 use crate::render::Scene;
-use crate::state::Item;
+use crate::source::Hook;
+use crate::state::State;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
-    Report(Report),
+    Hook(Hook),
     Status,
     Dismiss {
         session: Option<String>,
@@ -50,13 +53,48 @@ pub enum Request {
 pub struct Status {
     /// The daemon's version.
     pub version: String,
-    pub items: Vec<Item>,
+    pub items: Vec<View>,
     /// The daemon's clock, in Unix milliseconds, which the items' times are on.
     pub now: u64,
     pub config: Config,
     /// Where the card is mounted, if it is.
     pub device: Option<PathBuf>,
     pub device_uptime_ms: Option<u64>,
+    /// How many observations a source made that its harness does not
+    /// declare, which the daemon dropped.
+    pub undeclared: u64,
+}
+
+/// One light in the queue, as `agent-leds status` shows it.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct View {
+    pub harness: Harness,
+    pub session: String,
+    pub label: String,
+    pub state: State,
+    /// When the session's light took its state, in Unix milliseconds.
+    pub since: u64,
+    /// Whether this is a question the turn merely ended on, which reading
+    /// settles, rather than a wait the agent is blocked on.
+    pub weak: bool,
+    /// When the user looked at the session since its turn ended.
+    pub read: Option<u64>,
+}
+
+impl View {
+    /// The light of a session that has one.
+    pub fn of(session: &Session) -> Option<View> {
+        Some(View {
+            harness: session.key.harness,
+            session: session.key.id.clone(),
+            label: session.label.clone(),
+            state: session.phase.state()?,
+            since: session.since,
+            weak: matches!(session.phase, Phase::Asked | Phase::AskedRead),
+            read: matches!(session.phase, Phase::StoppedRead | Phase::AskedRead)
+                .then_some(session.entered),
+        })
+    }
 }
 
 pub fn socket_path() -> PathBuf {
@@ -121,22 +159,29 @@ mod tests {
     use std::thread;
 
     use super::*;
-    use crate::harness::Harness;
-    use crate::state::{State, Update};
+    use crate::liveness::Proc;
 
     #[test]
-    fn a_request_is_tagged_by_its_type() {
-        let report = Request::Report(Report {
+    fn a_hook_round_trips_as_a_request_tagged_by_its_type() {
+        let hook = Request::Hook(Hook {
             harness: Harness::Codex,
-            session: "s1".into(),
-            label: "app".into(),
-            update: Update::Enter(State::Working),
+            payload: json!({ "hook_event_name": "Stop", "session_id": "s1" }),
+            ancestry: vec![Proc {
+                pid: 501,
+                started_us: 1_794_693_357_250_000,
+                name: "codex".into(),
+            }],
         });
-        let line = serde_json::to_value(&report).unwrap();
-        assert_eq!(line["type"], "report");
+        let line = serde_json::to_value(&hook).unwrap();
+        assert_eq!(line["type"], "hook");
         assert_eq!(line["harness"], "codex");
+        assert_eq!(line["ancestry"][0]["name"], "codex");
         let back: Request = serde_json::from_value(line).unwrap();
-        assert!(matches!(back, Request::Report(Report { session, .. }) if session == "s1"));
+        assert!(matches!(
+            back,
+            Request::Hook(Hook { payload, ancestry, .. })
+                if payload["session_id"] == "s1" && ancestry[0].pid == 501
+        ));
     }
 
     #[test]

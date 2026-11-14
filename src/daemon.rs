@@ -1,6 +1,7 @@
-//! The service: owns the queue and the card, and answers the command line
-//! and the hooks. What the lights play is the player's call; everything
-//! the daemon reads or changes outside itself goes through a `World`.
+//! The service: owns the queue and the card, follows the harnesses' files
+//! and hooks through their sources, and answers the command line. What the
+//! lights play is the player's call; everything the daemon reads or changes
+//! outside itself goes through a `World`.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -19,12 +20,15 @@ use crate::desktop::Desktop;
 use crate::device;
 use crate::eject;
 use crate::files;
-use crate::harness::Report;
-use crate::ipc::{self, Request, Status};
-use crate::live::{self, Live};
+use crate::fsm::{Channel, Signal};
+use crate::harness::{self, Harness};
+use crate::ipc::{self, Request, Status, View};
+use crate::liveness::{self, Liveness};
 use crate::player::Player;
+use crate::queue::{Change, Expiry, Queue};
 use crate::render::{self, Step};
-use crate::state::{Change, Expiry, Queue, State};
+use crate::source::{self, Observation, Read, Sources};
+use crate::state::State;
 
 fn queue_path() -> PathBuf {
     state_dir().join("queue.json")
@@ -48,7 +52,8 @@ fn saved_queue() -> Queue {
 
 /// How often to read the device's uptime, which also keeps the SD reader awake.
 const DEVICE_CHECK: Duration = Duration::from_secs(15);
-/// How often to look for whether the user has read a session, while one is unread.
+/// How often to look for whether the user has read a session, while one is
+/// unread, and whether the processes of the tracked sessions still run.
 const LOOK: Duration = Duration::from_secs(3);
 /// How long a check that falls in the middle of an animation waits before trying again.
 const ANIMATION_CHECK: Duration = Duration::from_secs(1);
@@ -56,7 +61,8 @@ const ANIMATION_CHECK: Duration = Duration::from_secs(1);
 const SHOW_LEAD_MS: u64 = 400;
 
 /// What the daemon needs from outside itself: the card, the clocks, the
-/// desktop app, and somewhere to keep its queue and settings.
+/// desktop app, the harnesses' sources and processes, and somewhere to keep
+/// its queue and settings.
 trait World {
     /// Where the card is mounted, if it is.
     fn card(&self) -> Option<PathBuf>;
@@ -64,9 +70,6 @@ trait World {
     fn uptime_ms(&mut self) -> io::Result<u64>;
     /// The sessions the user has looked at since `since`, with when.
     fn looked_at(&mut self, since: u64, now: u64) -> HashMap<String, u64>;
-    /// What the running Claude Code processes say of their sessions, if
-    /// that can be read.
-    fn claude_sessions(&mut self) -> Option<Live>;
     /// The wall clock, in Unix milliseconds.
     fn now_ms(&self) -> u64;
     /// The monotonic clock that times the lights.
@@ -76,6 +79,12 @@ trait World {
     /// Whether the binary the daemon was started from has been replaced,
     /// as an upgrade does.
     fn replaced(&self) -> bool;
+    /// What the harnesses' sources read.
+    fn read(&mut self, what: Read) -> Vec<Observation>;
+    /// Whether the process behind a session still runs.
+    fn alive(&mut self, liveness: &Liveness) -> bool;
+    /// Whether a source left bytes unread at its read budget.
+    fn behind(&self) -> bool;
 }
 
 /// The Mac the daemon runs on.
@@ -84,6 +93,7 @@ struct System {
     exe: PathBuf,
     /// The file `exe` led to when the daemon started.
     started_from: Option<Binary>,
+    sources: Sources,
 }
 
 /// Which file a path leads to, and when it was last written.
@@ -124,10 +134,6 @@ impl World for System {
         self.desktop.looked_at(since, now)
     }
 
-    fn claude_sessions(&mut self) -> Option<Live> {
-        live::sessions(&home().join(".claude/sessions"))
-    }
-
     fn now_ms(&self) -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -155,6 +161,18 @@ impl World for System {
         let now = Binary::at(&self.exe);
         now.is_some() && now != self.started_from
     }
+
+    fn read(&mut self, what: Read) -> Vec<Observation> {
+        self.sources.read(what)
+    }
+
+    fn alive(&mut self, liveness: &Liveness) -> bool {
+        liveness::alive(&liveness::System, liveness)
+    }
+
+    fn behind(&self) -> bool {
+        self.sources.behind()
+    }
 }
 
 struct Daemon<W: World> {
@@ -165,22 +183,21 @@ struct Daemon<W: World> {
     /// The device's last uptime, or None while it is missing or needs a rewrite.
     uptime: Option<u64>,
     next_check: Instant,
-    /// When to look next for whether the user has read a session.
+    /// When to look next for whether the user has read a session, and
+    /// whether the tracked sessions' processes still run.
     next_look: Instant,
-    /// When the last check ran, in Unix milliseconds. A long gap means the Mac slept.
-    checked: u64,
     /// The binary was replaced, so the daemon should exit and let launchd
     /// start the new one.
     replaced: bool,
-    /// The Claude Code sessions in the queue whose process has been seen running.
-    claude_running: HashSet<String>,
+    /// How many observations were dropped because their harness does not
+    /// declare them.
+    undeclared: u64,
+    /// The undeclared kinds already logged, each logged once.
+    logged: HashSet<(Harness, Signal, Channel)>,
 }
-
-type Inbox = mpsc::Receiver<(Request, Sender<Result<Value>>)>;
 
 /// What wakes the daemon: a request on the socket, files the watcher says
 /// changed, or word that the watcher dropped events.
-#[allow(dead_code)]
 pub enum Input {
     Request(Request, Sender<Result<Value>>),
     Files(Vec<PathBuf>),
@@ -188,36 +205,29 @@ pub enum Input {
 }
 
 pub fn run() -> Result<()> {
-    let inbox = listen()?;
+    let (inputs, inbox) = mpsc::channel();
+    listen(inputs.clone())?;
     thread::spawn(eject::guard);
     let exe = std::env::current_exe()?;
+    let sources = Sources::start(source::all(&home(), &state_dir()), inputs)?;
     let world = System {
         desktop: Desktop::default(),
         started_from: Binary::at(&exe),
         exe,
+        sources,
     };
     let mut daemon = Daemon::new(world, Config::load()?, saved_queue());
     while !daemon.replaced {
-        let deadline = [
-            Some(daemon.next_check),
-            daemon.player.deadline(),
-            // Looking is only needed while something is unread, or while
-            // Claude Code may say more about a session than its hooks.
-            (daemon.queue.unread_since().is_some() || daemon.queue.has_claude())
-                .then_some(daemon.next_look),
-        ]
-        .into_iter()
-        .flatten()
-        .min()
-        .expect("a check is always due");
-        let wait = deadline.saturating_duration_since(daemon.world.instant());
-        match inbox.recv_timeout(wait) {
-            Ok((request, reply)) => {
-                let _ = reply.send(daemon.handle(request));
-            }
-            Err(RecvTimeoutError::Timeout) => {}
+        let wait = daemon
+            .deadline()
+            .saturating_duration_since(daemon.world.instant());
+        let first = match inbox.recv_timeout(wait) {
+            Ok(input) => Some(input),
+            Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => bail!("the socket listener stopped"),
-        }
+        };
+        let inputs: Vec<Input> = first.into_iter().chain(inbox.try_iter()).collect();
+        daemon.take(inputs);
         daemon.tick();
     }
     // The queue is saved with every change, and the new daemon rewrites the
@@ -227,7 +237,7 @@ pub fn run() -> Result<()> {
 }
 
 /// Listens on the socket, handing each request to the main loop with a way to answer it.
-fn listen() -> Result<Inbox> {
+fn listen(requests: Sender<Input>) -> Result<()> {
     let path = ipc::socket_path();
     std::fs::create_dir_all(state_dir())?;
     if UnixStream::connect(&path).is_ok() {
@@ -236,22 +246,21 @@ fn listen() -> Result<Inbox> {
     let _ = std::fs::remove_file(&path);
     let listener =
         UnixListener::bind(&path).with_context(|| format!("binding {}", path.display()))?;
-    let (requests, inbox) = mpsc::channel();
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            let requests: Sender<_> = requests.clone();
+            let requests = requests.clone();
             thread::spawn(move || {
                 ipc::serve(stream, |request| {
                     let (answer, answered) = mpsc::channel();
                     requests
-                        .send((request, answer))
+                        .send(Input::Request(request, answer))
                         .context("the daemon is shutting down")?;
                     answered.recv().context("the daemon is shutting down")?
                 })
             });
         }
     });
-    Ok(inbox)
+    Ok(())
 }
 
 /// How long to show something that was asked for, in milliseconds.
@@ -263,40 +272,106 @@ fn held_ms(seconds: f64) -> Result<u64> {
 }
 
 impl<W: World> Daemon<W> {
-    fn new(world: W, config: Config, mut queue: Queue) -> Daemon<W> {
-        // Nothing was listening while the daemon was down.
-        queue.woke(world.now_ms());
+    /// The daemon at startup: the queue is what the harnesses' files show
+    /// now, keeping what was saved where it is still about the same turn.
+    /// Nothing is written until the first check.
+    fn new(world: W, config: Config, saved: Queue) -> Daemon<W> {
         let now = world.instant();
-        Daemon {
-            checked: world.now_ms(),
+        let mut daemon = Daemon {
             world,
             config,
-            queue,
+            queue: Queue::default(),
             player: Player::default(),
             uptime: None,
             next_check: now,
             next_look: now,
             replaced: false,
-            claude_running: HashSet::new(),
+            undeclared: 0,
+            logged: HashSet::new(),
+        };
+        let seeded = daemon.world.read(Read::Seed(&saved.bound()));
+        let now = daemon.world.now_ms();
+        for o in seeded {
+            if daemon.declared(&o) {
+                daemon.queue.apply(&o, now);
+            }
+        }
+        daemon.queue = Queue::restore(saved, std::mem::take(&mut daemon.queue));
+        daemon
+    }
+
+    /// When the loop must next wake by itself.
+    fn deadline(&self) -> Instant {
+        [
+            Some(self.next_check),
+            self.player.deadline(),
+            // Looking is only needed while something is unread, or while a
+            // session's process may end without a word.
+            (self.queue.unread_since().is_some() || self.queue.tracked()).then_some(self.next_look),
+            // A source left bytes to read.
+            self.world.behind().then(|| self.world.instant()),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .expect("a check is always due")
+    }
+
+    /// Handles what arrived since the loop last woke. The files are read
+    /// first, so a hook or a status request sees them as they are now.
+    fn take(&mut self, inputs: Vec<Input>) {
+        let mut files = Vec::new();
+        let mut rescan = false;
+        let mut requests = Vec::new();
+        for input in inputs {
+            match input {
+                Input::Files(paths) => files.extend(paths),
+                Input::Rescan => rescan = true,
+                Input::Request(request, reply) => requests.push((request, reply)),
+            }
+        }
+        if rescan {
+            let read = self.world.read(Read::All);
+            self.observe(read);
+        } else if !files.is_empty() {
+            files.sort();
+            files.dedup();
+            let read = self.world.read(Read::Paths(&files));
+            self.observe(read);
+        }
+        for (request, reply) in requests {
+            let _ = reply.send(self.handle(request));
+        }
+        if self.world.behind() {
+            let read = self.world.read(Read::Behind);
+            self.observe(read);
         }
     }
 
     fn handle(&mut self, request: Request) -> Result<Value> {
         match request {
-            Request::Report(report) => self.report(report),
+            Request::Hook(hook) => {
+                let told = self.world.read(Read::Hook(&hook));
+                self.observe(told);
+                Ok(Value::Null)
+            }
             Request::Status => Ok(json!(Status {
                 version: env!("CARGO_PKG_VERSION").into(),
-                items: self.queue.items().into_iter().cloned().collect(),
+                items: self
+                    .queue
+                    .items()
+                    .into_iter()
+                    .filter_map(View::of)
+                    .collect(),
                 now: self.world.now_ms(),
                 config: self.config.clone(),
                 device: self.world.card(),
                 device_uptime_ms: self.world.uptime_ms().ok(),
+                undeclared: self.undeclared,
             })),
             Request::Dismiss { session } => {
-                if self.queue.dismiss(session.as_deref()) {
-                    self.save_queue();
-                    self.settle();
-                }
+                let dismissed = self.queue.dismissed(session.as_deref());
+                self.observe(dismissed);
                 Ok(Value::Null)
             }
             Request::Palette { name } => {
@@ -336,41 +411,63 @@ impl<W: World> Daemon<W> {
         }
     }
 
-    fn report(&mut self, report: Report) -> Result<Value> {
-        let Report {
-            harness,
-            session,
-            label,
-            update,
-        } = report;
-        match self
-            .queue
-            .apply(harness, &session, &label, update, self.world.now_ms())
-        {
-            Change::Entered(state) => {
-                if matches!(state, State::Stopped | State::Question) {
-                    // A session whose turn ends while the user is looking at it is read already.
-                    self.mark_read();
-                }
-                self.save_queue();
-                // Only a session that wants the user is announced.
-                match state {
-                    State::Working => self.settle(),
-                    State::Error | State::Question | State::Stopped => {
-                        let slots = self.slots();
-                        let now = self.world.instant();
-                        let program = self.player.announce(state, &slots, &self.config, now);
-                        self.write(program);
-                    }
-                }
-            }
-            Change::Left => {
-                self.save_queue();
-                self.settle();
-            }
-            Change::None => {}
+    /// Whether the observation's harness declares it, or the daemon told it.
+    /// One that is not declared is dropped, counted, and logged once per
+    /// kind: a source produced something its harness does not claim.
+    fn declared(&mut self, o: &Observation) -> bool {
+        let (harness, signal) = (o.key.harness, o.event.signal());
+        if o.channel == Channel::Daemon || harness::declares(harness, signal, o.channel) {
+            return true;
         }
-        Ok(Value::Null)
+        self.undeclared += 1;
+        if self.logged.insert((harness, signal, o.channel)) {
+            eprintln!(
+                "agent-leds: {} produced {signal:?} through {:?}, which it does not declare",
+                harness.title(),
+                o.channel
+            );
+        }
+        false
+    }
+
+    /// Applies a batch of observations, then saves and shows the result
+    /// once: the most urgent state any of them announces, or else the wave.
+    fn observe(&mut self, observations: Vec<Observation>) {
+        let mut wants: Option<State> = None;
+        let (mut save, mut settle) = (false, false);
+        for o in observations {
+            if !self.declared(&o) {
+                continue;
+            }
+            match self.queue.apply(&o, self.world.now_ms()) {
+                Change::None => {}
+                Change::Saved => save = true,
+                Change::Settle => {
+                    save = true;
+                    settle = true;
+                }
+                Change::Announce(state) => {
+                    save = true;
+                    wants = Some(wants.map_or(state, |wanted| wanted.min(state)));
+                }
+            }
+        }
+        if let Some(state) = wants {
+            if matches!(state, State::Stopped | State::Question) {
+                // A session whose turn ends while the user is looking at it is read already.
+                self.mark_read();
+            }
+            self.save_queue();
+            let slots = self.slots();
+            let now = self.world.instant();
+            let program = self.player.announce(state, &slots, &self.config, now);
+            self.write(program);
+        } else if settle {
+            self.save_queue();
+            self.settle();
+        } else if save {
+            self.save_queue();
+        }
     }
 
     fn configure(&mut self, config: Config) -> Result<Value> {
@@ -401,11 +498,13 @@ impl<W: World> Daemon<W> {
             self.next_look = now + LOOK;
             // Looking runs a system tool, which could delay an animation's next program.
             if !self.player.animating() {
-                if self.mark_read() {
-                    self.save_queue();
-                }
-                self.follow_claude();
+                let looked = self.looks();
+                self.observe(looked);
             }
+            // A session whose process ended, as when its terminal was closed
+            // or it crashed, ends even when nothing said so.
+            let swept = self.queue.sweep(|liveness| self.world.alive(liveness));
+            self.observe(swept);
         }
         if self.next_check <= now {
             // A check reads the card and the desktop app's files, which can
@@ -419,24 +518,18 @@ impl<W: World> Daemon<W> {
         }
     }
 
-    /// Drops the sessions whose light no longer means anything, and rewrites
-    /// the queue if the card restarted.
+    /// Lets the lights that no longer mean anything go, looks for roots
+    /// that have appeared, and rewrites the queue if the card restarted.
     fn check(&mut self) {
         let now = self.world.now_ms();
-        // The monotonic clock that times the checks stops while the Mac
-        // sleeps; the wall clock shows how long it was.
-        if now.saturating_sub(self.checked) > 4 * DEVICE_CHECK.as_millis() as u64 {
-            self.queue.woke(now);
-        }
-        self.checked = now;
         let expiry = Expiry {
             keep_read_ms: u64::from(self.config.keep_read_minutes) * 60_000,
             abandon_ms: u64::from(self.config.abandon_days) * 24 * 60 * 60_000,
         };
-        if self.queue.expire(now, expiry) {
-            self.save_queue();
-            self.settle();
-        }
+        let due = self.queue.due(now, expiry);
+        self.observe(due);
+        let found = self.world.read(Read::Roots);
+        self.observe(found);
         match self.world.uptime_ms() {
             Ok(uptime) => {
                 let restarted = self.uptime.is_none_or(|last| uptime < last);
@@ -452,32 +545,22 @@ impl<W: World> Daemon<W> {
         self.replaced = self.world.replaced();
     }
 
-    /// Drops the Claude Code sessions that their processes say are over.
-    fn follow_claude(&mut self) {
-        if !self.queue.has_claude() {
-            return;
-        }
-        let Some(live) = self.world.claude_sessions() else {
-            return;
-        };
-        let now = self.world.now_ms();
-        if self
-            .queue
-            .follow_claude(&live, &mut self.claude_running, now)
-        {
-            self.save_queue();
-            self.settle();
-        }
-    }
-
-    /// Notes which sessions the user has looked at since their turn ended.
-    fn mark_read(&mut self) -> bool {
+    /// The sessions the user has looked at since their turn ended, while any is unread.
+    fn looks(&mut self) -> Vec<Observation> {
         let Some(since) = self.queue.unread_since() else {
-            return false;
+            return Vec::new();
         };
         let now = self.world.now_ms();
         let looked_at = self.world.looked_at(since, now);
-        self.queue.mark_read(&looked_at)
+        self.queue.looked(&looked_at)
+    }
+
+    /// Marks the sessions the user has looked at as read, without showing anything.
+    fn mark_read(&mut self) {
+        let now = self.world.now_ms();
+        for o in self.looks() {
+            self.queue.apply(&o, now);
+        }
     }
 
     fn save_queue(&mut self) {
@@ -485,7 +568,12 @@ impl<W: World> Daemon<W> {
     }
 
     fn slots(&self) -> Vec<State> {
-        let states: Vec<State> = self.queue.items().iter().map(|item| item.state).collect();
+        let states: Vec<State> = self
+            .queue
+            .items()
+            .iter()
+            .filter_map(|session| session.phase.state())
+            .collect();
         render::slots(&states)
     }
 
@@ -512,15 +600,17 @@ impl<W: World> Daemon<W> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::time::Duration;
 
     use super::*;
-    use crate::harness::Harness;
-    use crate::state::Update;
+    use crate::liveness::StartCheck;
+    use crate::queue::Key;
+    use crate::source::{Event, Hook, Start};
 
     /// A world the test controls: a card that records what is written to
-    /// it, clocks that move only when told, and a user who has looked at
-    /// what the test says.
+    /// it, clocks that move only when told, sources that find what the test
+    /// says, and a user who has looked at what the test says.
     struct Fake {
         card: bool,
         written: Vec<String>,
@@ -531,7 +621,14 @@ mod tests {
         saved_queues: usize,
         saved_config: Option<Config>,
         replaced: bool,
-        claude: Option<Live>,
+        /// What a seed finds.
+        seed: Vec<Observation>,
+        /// What the next reads of files and hooks find, in turn.
+        reads: VecDeque<Vec<Observation>>,
+        /// The reads asked for, in order.
+        asked: Vec<&'static str>,
+        dead: HashSet<Liveness>,
+        behind: bool,
     }
 
     impl World for Fake {
@@ -579,13 +676,30 @@ mod tests {
             self.replaced
         }
 
-        fn claude_sessions(&mut self) -> Option<Live> {
-            self.claude.clone()
+        fn read(&mut self, what: Read) -> Vec<Observation> {
+            let (asked, found) = match what {
+                Read::Seed(_) => ("seed", std::mem::take(&mut self.seed)),
+                Read::Roots => ("roots", Vec::new()),
+                Read::Paths(_) => ("paths", self.reads.pop_front().unwrap_or_default()),
+                Read::All => ("all", self.reads.pop_front().unwrap_or_default()),
+                Read::Hook(_) => ("hook", self.reads.pop_front().unwrap_or_default()),
+                Read::Behind => ("behind", self.reads.pop_front().unwrap_or_default()),
+            };
+            self.asked.push(asked);
+            found
+        }
+
+        fn alive(&mut self, liveness: &Liveness) -> bool {
+            !self.dead.contains(liveness)
+        }
+
+        fn behind(&self) -> bool {
+            self.behind
         }
     }
 
-    fn daemon() -> Daemon<Fake> {
-        let world = Fake {
+    fn world() -> Fake {
+        Fake {
             card: true,
             written: Vec::new(),
             uptime: Ok(1_000),
@@ -595,19 +709,59 @@ mod tests {
             saved_queues: 0,
             saved_config: None,
             replaced: false,
-            claude: None,
-        };
-        Daemon::new(world, Config::default(), Queue::default())
+            seed: Vec::new(),
+            reads: VecDeque::new(),
+            asked: Vec::new(),
+            dead: HashSet::new(),
+            behind: false,
+        }
     }
 
-    fn report(daemon: &mut Daemon<Fake>, session: &str, update: Update) {
-        let report = Report {
-            harness: Harness::Claude,
-            session: session.into(),
-            label: "app".into(),
-            update,
-        };
-        daemon.handle(Request::Report(report)).unwrap();
+    fn daemon() -> Daemon<Fake> {
+        Daemon::new(world(), Config::default(), Queue::default())
+    }
+
+    fn process(session: &str) -> Liveness {
+        Liveness::Process {
+            pid: session.len() as i32,
+            start: StartCheck::Second(1),
+        }
+    }
+
+    fn observation(session: &str, event: Event) -> Observation {
+        Observation {
+            key: Key {
+                harness: Harness::Claude,
+                id: session.into(),
+            },
+            channel: Channel::File,
+            event,
+            turn: None,
+            quiet: false,
+        }
+    }
+
+    fn started(session: &str) -> Observation {
+        observation(
+            session,
+            Event::Started(Start {
+                cwd: "/Users/me/Code/app".into(),
+                liveness: process(session),
+            }),
+        )
+    }
+
+    /// What Claude Code's files say of a session in one batch of changes:
+    /// that it runs, then `signals`.
+    fn tell(daemon: &mut Daemon<Fake>, session: &str, signals: &[Signal]) {
+        let mut found = vec![started(session)];
+        found.extend(
+            signals
+                .iter()
+                .map(|&signal| observation(session, Event::Signal(signal))),
+        );
+        daemon.world.reads.push_back(found);
+        daemon.take(vec![Input::Files(vec!["/Users/me/.claude".into()])]);
     }
 
     /// Lets the clocks run on until whatever is playing has ended.
@@ -622,10 +776,23 @@ mod tests {
         render::steady(&daemon.slots(), &daemon.config)
     }
 
+    fn states(daemon: &Daemon<Fake>) -> Vec<State> {
+        daemon
+            .queue
+            .items()
+            .iter()
+            .filter_map(|session| session.phase.state())
+            .collect()
+    }
+
+    fn status(daemon: &mut Daemon<Fake>) -> Status {
+        serde_json::from_value(daemon.handle(Request::Status).unwrap()).unwrap()
+    }
+
     #[test]
     fn a_session_that_stops_is_announced_and_the_queue_follows() {
         let mut daemon = daemon();
-        report(&mut daemon, "s1", Update::Enter(State::Stopped));
+        tell(&mut daemon, "s1", &[Signal::TurnEnded]);
         let snake = render::change(Some(State::Stopped), &[], &[State::Stopped], &daemon.config);
         assert_eq!(daemon.world.written, [snake[0].program.clone()]);
         assert_eq!(daemon.world.saved_queues, 1);
@@ -636,12 +803,21 @@ mod tests {
     #[test]
     fn a_session_that_goes_to_work_settles_in_without_a_snake() {
         let mut daemon = daemon();
-        report(&mut daemon, "s1", Update::Enter(State::Working));
+        tell(&mut daemon, "s1", &[Signal::Prompted]);
         let wave = render::change(None, &[], &[State::Working], &daemon.config);
         assert_eq!(daemon.world.written, [wave[0].program.clone()]);
-        // A report that changes nothing writes and saves nothing.
-        report(&mut daemon, "s1", Update::Enter(State::Working));
+        // Being told again changes nothing, and writes and saves nothing.
+        tell(&mut daemon, "s1", &[Signal::Prompted]);
         assert_eq!(daemon.world.written.len(), 1);
+        assert_eq!(daemon.world.saved_queues, 1);
+    }
+
+    #[test]
+    fn a_batch_that_starts_and_ends_a_turn_plays_one_snake() {
+        let mut daemon = daemon();
+        tell(&mut daemon, "s1", &[Signal::Prompted, Signal::TurnEnded]);
+        let snake = render::change(Some(State::Stopped), &[], &[State::Stopped], &daemon.config);
+        assert_eq!(daemon.world.written, [snake[0].program.clone()]);
         assert_eq!(daemon.world.saved_queues, 1);
     }
 
@@ -649,8 +825,28 @@ mod tests {
     fn a_turn_that_ends_while_the_user_is_looking_is_read_already() {
         let mut daemon = daemon();
         daemon.world.looked_at = HashMap::from([("s1".to_owned(), daemon.world.now_ms)]);
-        report(&mut daemon, "s1", Update::Enter(State::Stopped));
-        assert_eq!(daemon.queue.items()[0].read, Some(daemon.world.now_ms));
+        tell(&mut daemon, "s1", &[Signal::Prompted, Signal::TurnEnded]);
+        let now = daemon.world.now_ms;
+        assert_eq!(status(&mut daemon).items[0].read, Some(now));
+    }
+
+    #[test]
+    fn startup_writes_nothing_until_the_first_check() {
+        let mut world = world();
+        let mut seeded = vec![
+            started("s1"),
+            observation("s1", Event::Signal(Signal::TurnEnded)),
+        ];
+        for o in &mut seeded {
+            o.quiet = true;
+        }
+        world.seed = seeded;
+        let mut daemon = Daemon::new(world, Config::default(), Queue::default());
+        assert_eq!(daemon.world.asked, ["seed"]);
+        assert!(daemon.world.written.is_empty());
+        assert_eq!(states(&daemon), [State::Stopped]);
+        daemon.check();
+        assert_eq!(daemon.world.written, [steady(&daemon)]);
     }
 
     #[test]
@@ -674,7 +870,7 @@ mod tests {
         daemon.check();
         daemon.world.card = false;
         daemon.world.uptime = Err(io::ErrorKind::NotFound.into());
-        report(&mut daemon, "s1", Update::Enter(State::Working));
+        tell(&mut daemon, "s1", &[Signal::Prompted]);
         assert_eq!(daemon.uptime, None);
         daemon.world.card = true;
         daemon.world.uptime = Ok(30_000);
@@ -686,7 +882,7 @@ mod tests {
     #[test]
     fn checks_wait_while_a_change_is_playing() {
         let mut daemon = daemon();
-        report(&mut daemon, "s1", Update::Enter(State::Stopped));
+        tell(&mut daemon, "s1", &[Signal::TurnEnded]);
         let checks = daemon.next_check;
         daemon.tick();
         assert!(daemon.next_check >= checks + ANIMATION_CHECK);
@@ -743,28 +939,132 @@ mod tests {
     }
 
     #[test]
-    fn dismissing_clears_what_is_not_working() {
+    fn dismissing_clears_what_is_not_working_through_the_table() {
         let mut daemon = daemon();
-        report(&mut daemon, "s1", Update::Enter(State::Stopped));
-        report(&mut daemon, "s2", Update::Enter(State::Working));
+        tell(&mut daemon, "s1", &[Signal::TurnEnded]);
+        tell(&mut daemon, "s2", &[Signal::Prompted]);
         play_out(&mut daemon);
         daemon.handle(Request::Dismiss { session: None }).unwrap();
         play_out(&mut daemon);
-        let states: Vec<State> = daemon.queue.items().iter().map(|item| item.state).collect();
-        assert_eq!(states, [State::Working]);
+        assert_eq!(states(&daemon), [State::Working]);
         assert_eq!(daemon.world.written.last(), Some(&steady(&daemon)));
+        // The dismissed session is still followed, and its next turn shows.
+        tell(&mut daemon, "s1", &[Signal::Prompted]);
+        assert_eq!(states(&daemon), [State::Working, State::Working]);
+    }
+
+    #[test]
+    fn a_read_session_leaves_after_keep_read_minutes() {
+        let mut daemon = daemon();
+        daemon.world.looked_at = HashMap::from([("s1".to_owned(), daemon.world.now_ms)]);
+        tell(&mut daemon, "s1", &[Signal::TurnEnded]);
+        play_out(&mut daemon);
+        daemon.world.now_ms += u64::from(daemon.config.keep_read_minutes) * 60_000;
+        daemon.check();
+        assert!(states(&daemon).is_empty());
+        assert!(daemon.queue.tracked());
+    }
+
+    #[test]
+    fn a_dead_process_clears_its_light_at_the_next_look() {
+        let mut daemon = daemon();
+        tell(&mut daemon, "s1", &[Signal::Prompted]);
+        tell(&mut daemon, "s22", &[Signal::Prompted]);
+        play_out(&mut daemon);
+        daemon.world.dead.insert(process("s1"));
+        daemon.world.instant = daemon.next_look;
+        daemon.tick();
+        play_out(&mut daemon);
+        let left: Vec<&str> = daemon
+            .queue
+            .items()
+            .iter()
+            .map(|session| session.key.id.as_str())
+            .collect();
+        assert_eq!(left, ["s22"]);
+        assert_eq!(daemon.world.written.last(), Some(&steady(&daemon)));
+    }
+
+    #[test]
+    fn an_undeclared_observation_is_dropped_and_counted() {
+        let mut daemon = daemon();
+        // Claude Code declares nothing through a hook.
+        let mut hooked = started("s1");
+        hooked.channel = Channel::Hook;
+        daemon.world.reads.push_back(vec![hooked.clone(), hooked]);
+        daemon.take(vec![Input::Files(vec!["/Users/me/.claude".into()])]);
+        assert!(!daemon.queue.tracked());
+        assert_eq!(status(&mut daemon).undeclared, 2);
+        assert_eq!(daemon.logged.len(), 1);
+    }
+
+    #[test]
+    fn files_are_read_before_a_request_in_the_same_drain() {
+        let mut daemon = daemon();
+        daemon.world.reads.push_back(vec![
+            started("s1"),
+            observation("s1", Event::Signal(Signal::Prompted)),
+        ]);
+        let (reply, replied) = mpsc::channel();
+        daemon.take(vec![
+            Input::Request(Request::Status, reply),
+            Input::Files(vec!["/Users/me/.claude/sessions/1.json".into()]),
+        ]);
+        let status: Status = serde_json::from_value(replied.recv().unwrap().unwrap()).unwrap();
+        assert_eq!(status.items.len(), 1);
+        assert_eq!(daemon.world.asked, ["seed", "paths"]);
+    }
+
+    #[test]
+    fn dropped_events_read_everything_again() {
+        let mut daemon = daemon();
+        daemon.take(vec![
+            Input::Files(vec!["/Users/me/.claude/sessions/1.json".into()]),
+            Input::Rescan,
+        ]);
+        assert_eq!(daemon.world.asked, ["seed", "all"]);
+    }
+
+    #[test]
+    fn a_source_left_behind_brings_the_deadline_to_now() {
+        let mut daemon = daemon();
+        play_out(&mut daemon);
+        daemon.next_check = daemon.world.instant + DEVICE_CHECK;
+        assert!(daemon.deadline() > daemon.world.instant);
+        daemon.world.behind = true;
+        assert_eq!(daemon.deadline(), daemon.world.instant);
+        daemon.take(Vec::new());
+        assert_eq!(daemon.world.asked, ["seed", "behind"]);
+    }
+
+    #[test]
+    fn a_hook_is_read_through_its_harness_s_source() {
+        let mut daemon = daemon();
+        daemon.world.reads.push_back(vec![
+            started("s1"),
+            observation("s1", Event::Signal(Signal::TurnEnded)),
+        ]);
+        let hook = Hook {
+            harness: Harness::Claude,
+            payload: json!({}),
+            ancestry: Vec::new(),
+        };
+        daemon.handle(Request::Hook(hook)).unwrap();
+        assert_eq!(daemon.world.asked, ["seed", "hook"]);
+        assert_eq!(states(&daemon), [State::Stopped]);
     }
 
     #[test]
     fn status_reports_the_queue_and_the_card() {
         let mut daemon = daemon();
-        report(&mut daemon, "s1", Update::Enter(State::Working));
-        let status: Status =
-            serde_json::from_value(daemon.handle(Request::Status).unwrap()).unwrap();
+        tell(&mut daemon, "s1", &[Signal::Prompted]);
+        tell(&mut daemon, "idle", &[]);
+        let status = status(&mut daemon);
         assert_eq!(status.items.len(), 1);
         assert_eq!(status.now, daemon.world.now_ms);
         assert_eq!(status.device_uptime_ms, Some(1_000));
         assert!(status.device.is_some());
+        assert_eq!(status.undeclared, 0);
     }
 
     #[test]
@@ -773,7 +1073,7 @@ mod tests {
         daemon.check();
         assert!(!daemon.replaced);
         daemon.world.replaced = true;
-        report(&mut daemon, "s1", Update::Enter(State::Stopped));
+        tell(&mut daemon, "s1", &[Signal::TurnEnded]);
         daemon.next_check = daemon.world.instant;
         daemon.tick();
         // The snake is playing, so the check waits.
@@ -782,38 +1082,5 @@ mod tests {
         daemon.world.instant = daemon.next_check;
         daemon.tick();
         assert!(daemon.replaced);
-    }
-
-    #[test]
-    fn a_claude_session_its_process_says_is_over_leaves() {
-        let mut daemon = daemon();
-        report(&mut daemon, "s1", Update::Enter(State::Working));
-        report(&mut daemon, "s2", Update::Enter(State::Stopped));
-        play_out(&mut daemon);
-        let turn = daemon.world.now_ms;
-        // Both are running, and s1 has just gone idle: its Stop may be on its way.
-        daemon.world.claude = Some(Live::from([
-            ("s1".to_owned(), Some(turn + 1)),
-            ("s2".to_owned(), Some(turn)),
-        ]));
-        daemon.world.now_ms += 1_000;
-        daemon.follow_claude();
-        assert_eq!(daemon.queue.items().len(), 2);
-        // No Stop came: the user interrupted s1.
-        daemon.world.now_ms += 5_000;
-        daemon.follow_claude();
-        let left: Vec<&str> = daemon
-            .queue
-            .items()
-            .iter()
-            .map(|item| item.session.as_str())
-            .collect();
-        assert_eq!(left, ["s2"]);
-        // s2's process ended without a SessionEnd.
-        daemon.world.claude = Some(Live::new());
-        daemon.follow_claude();
-        assert!(daemon.queue.items().is_empty());
-        play_out(&mut daemon);
-        assert_eq!(daemon.world.written.last(), Some(&steady(&daemon)));
     }
 }

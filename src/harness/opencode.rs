@@ -4,12 +4,78 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{Event, Hook, Plugin, ends_on_question, or_empty};
+use super::{Event, Hook, Plugin, ends_on_question, hooked, or_empty};
+use crate::coverage::{Declared, Evidence};
+use crate::fsm::Signal;
 
 pub const PLUGIN: Plugin = Plugin {
     path: ".config/opencode/plugins/agent-leds.js",
     source: include_str!("opencode.js"),
 };
+
+/// What OpenCode's hooks tell, until its own files are read.
+pub const SIGNALS: &[Declared] = &[
+    hooked(
+        Signal::Started,
+        Evidence::Observed,
+        "any event the plugin passes on, from the OpenCode process that runs the hook",
+        "0.5.0 plugin, probe-opencode T2–T17",
+    ),
+    hooked(
+        Signal::Prompted,
+        Evidence::Observed,
+        "session.status going busy, permission.replied, question.replied or question.rejected",
+        "0.5.0 plugin, probe-opencode T2–T17",
+    ),
+    hooked(
+        Signal::PermissionAsked,
+        Evidence::Observed,
+        "permission.asked",
+        "0.5.0 plugin, probe-opencode T2–T17",
+    ),
+    hooked(
+        Signal::QuestionAsked,
+        Evidence::Observed,
+        "question.asked",
+        "0.5.0 plugin, probe-opencode T2–T17",
+    ),
+    hooked(
+        Signal::TurnEnded,
+        Evidence::Observed,
+        "session.idle with no error",
+        "0.5.0 plugin, probe-opencode T2–T17",
+    ),
+    hooked(
+        Signal::TurnEndedAsking,
+        Evidence::Observed,
+        "session.idle whose last assistant message asks",
+        "0.5.0 plugin, probe-opencode T2–T17",
+    ),
+    hooked(
+        Signal::TurnFailed,
+        Evidence::Observed,
+        "session.idle after an error other than MessageAbortedError",
+        "0.5.0 plugin, probe-opencode T2–T17",
+    ),
+    hooked(
+        Signal::Interrupted,
+        Evidence::Observed,
+        "session.idle after MessageAbortedError",
+        "0.5.0 plugin, probe-opencode T2–T17",
+    ),
+    hooked(
+        Signal::Backgrounded,
+        Evidence::Observed,
+        "any event of a subagent's session, put to its parent",
+        "0.5.0 plugin, probe-opencode T2–T17",
+    ),
+    hooked(
+        Signal::Ended,
+        Evidence::Observed,
+        "session.deleted, or the OpenCode process gone",
+        "0.5.0 plugin, probe-opencode T2–T17",
+    ),
+];
 
 /// An event as the plugin passes it on: OpenCode's own name for it, and
 /// the session it belongs to. A subagent's event names the session that
@@ -53,7 +119,6 @@ pub fn event(payload: &Value) -> Option<Event> {
         session: payload.session,
         cwd: payload.directory,
         subagent: payload.subagent,
-        unfinished: false,
     })
 }
 
@@ -61,27 +126,30 @@ pub fn event(payload: &Value) -> Option<Event> {
 mod tests {
     use serde_json::json;
 
-    use super::super::tests::update;
-    use super::super::{Harness, Report, report};
+    use super::super::tests::signal;
+    use super::super::{Harness, interim};
     use super::*;
-    use crate::state::{State, Update};
+    use crate::fsm::Signal;
 
-    fn event(name: &str, extra: Value) -> Option<Update> {
+    fn event(name: &str, extra: Value) -> Option<Signal> {
         let mut event = json!({ "event": name, "session": "ses_1", "directory": "/Users/me/Code/app", "subagent": false });
         event
             .as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
-        update(Harness::OpenCode, event)
+        signal(Harness::OpenCode, event)
     }
 
     #[test]
     fn maps_a_run() {
         let none = json!({});
-        let working = Some(Update::Enter(State::Working));
-        let question = Some(Update::Enter(State::Question));
+        let working = Some(Signal::Prompted);
+        let question = Some(Signal::QuestionAsked);
         assert_eq!(event("session.busy", none.clone()), working);
-        assert_eq!(event("permission.asked", none.clone()), question);
+        assert_eq!(
+            event("permission.asked", none.clone()),
+            Some(Signal::PermissionAsked)
+        );
         assert_eq!(event("permission.replied", none.clone()), working);
         assert_eq!(event("question.asked", none.clone()), question);
         assert_eq!(event("question.rejected", none.clone()), working);
@@ -91,17 +159,20 @@ mod tests {
                 json!({ "error": error, "message": message }),
             )
         };
+        assert_eq!(idle(Value::Null, "done"), Some(Signal::TurnEnded));
         assert_eq!(
-            idle(Value::Null, "done"),
-            Some(Update::Enter(State::Stopped))
+            idle(Value::Null, "Red or blue?"),
+            Some(Signal::TurnEndedAsking)
         );
-        assert_eq!(idle(Value::Null, "Red or blue?"), Some(Update::Asked));
-        assert_eq!(idle(json!("MessageAbortedError"), ""), Some(Update::Leave));
+        assert_eq!(
+            idle(json!("MessageAbortedError"), ""),
+            Some(Signal::Interrupted)
+        );
         assert_eq!(
             idle(json!("ProviderAuthError"), ""),
-            Some(Update::Enter(State::Error))
+            Some(Signal::TurnFailed)
         );
-        assert_eq!(event("session.deleted", none.clone()), Some(Update::Leave));
+        assert_eq!(event("session.deleted", none.clone()), Some(Signal::Ended));
         assert_eq!(event("session.compacted", none), None);
     }
 
@@ -111,14 +182,14 @@ mod tests {
             "event": "session.idle", "session": "ses_parent", "directory": "/Users/me/Code/app",
             "subagent": true, "error": null, "message": "done"
         });
+        let state = tempfile::tempdir().unwrap();
         assert_eq!(
-            report(Harness::OpenCode, &idle),
-            Some(Report {
-                harness: Harness::OpenCode,
-                session: "ses_parent".into(),
-                label: "app".into(),
-                update: Update::Background,
-            })
+            interim(Harness::OpenCode, &idle, state.path()),
+            Some((
+                "ses_parent".into(),
+                "/Users/me/Code/app".into(),
+                Signal::Backgrounded
+            ))
         );
     }
 }

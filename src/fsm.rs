@@ -61,6 +61,7 @@ impl Phase {
     /// Where the phase sits in `ALL`. The match has no wildcard, so a new
     /// phase does not compile until it is placed here, and a test then holds
     /// it to its place in `ALL`.
+    #[cfg(test)]
     pub const fn index(self) -> usize {
         match self {
             Gone => 0,
@@ -160,6 +161,7 @@ impl Signal {
     ];
 
     /// Where the signal sits in `ALL`, exhaustive as `Phase::index` is.
+    #[cfg(test)]
     pub const fn index(self) -> usize {
         match self {
             Started => 0,
@@ -413,6 +415,7 @@ pub fn announces(from: Phase, on: Signal, to: Phase) -> bool {
 
 /// Whether applying the signal twice is the same as applying it once, in
 /// phase and in what is announced.
+#[cfg(test)]
 pub fn idempotent(on: Signal) -> bool {
     Phase::ALL
         .into_iter()

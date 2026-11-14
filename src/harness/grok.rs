@@ -6,8 +6,10 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use super::{Event, Harness, Hook, commands, ends_on_question, or_empty, read_hooks};
+use super::{Event, Harness, Hook, commands, ends_on_question, hooked, or_empty, read_hooks};
+use crate::coverage::{Declared, Evidence};
 use crate::files;
+use crate::fsm::Signal;
 
 /// Grok reads every JSON file in the folder, so this one holds nothing but
 /// what an install wrote.
@@ -26,6 +28,64 @@ pub const EVENTS: [(&str, Option<&str>); 9] = [
     ("StopFailure", None),
     ("StopCancelled", None),
     ("SessionEnd", None),
+];
+
+/// What Grok's hooks tell, until its own files are read.
+pub const SIGNALS: &[Declared] = &[
+    hooked(
+        Signal::Started,
+        Evidence::Observed,
+        "any hook but a subagent's, run under the process named grok-native",
+        "0.5.0 hooks, probe-grok runs a–l",
+    ),
+    hooked(
+        Signal::Prompted,
+        Evidence::Observed,
+        "user_prompt_submit, pre_tool_use, post_tool_use or post_tool_use_failure",
+        "0.5.0 hooks, probe-grok runs a–l",
+    ),
+    hooked(
+        Signal::PermissionAsked,
+        Evidence::Observed,
+        "notification of a permission_prompt",
+        "0.5.0 hooks, probe-grok runs a–l",
+    ),
+    hooked(
+        Signal::QuestionAsked,
+        Evidence::Observed,
+        "pre_tool_use for ask_user_question",
+        "0.5.0 hooks, probe-grok runs a–l",
+    ),
+    hooked(
+        Signal::TurnEnded,
+        Evidence::Observed,
+        "stop with reason end_turn, or stop_cancelled that Grok gave up on itself",
+        "0.5.0 hooks, probe-grok runs a–l",
+    ),
+    hooked(
+        Signal::TurnEndedAsking,
+        Evidence::Observed,
+        "stop with reason end_turn whose last message asks",
+        "0.5.0 hooks, probe-grok runs a–l",
+    ),
+    hooked(
+        Signal::TurnFailed,
+        Evidence::Inferred,
+        "stop_failure; no terminal API error was produced in the probe",
+        "0.5.0 hooks, probe-grok runs a–l",
+    ),
+    hooked(
+        Signal::Interrupted,
+        Evidence::Observed,
+        "stop_cancelled by the user",
+        "0.5.0 hooks, probe-grok runs a–l",
+    ),
+    hooked(
+        Signal::Ended,
+        Evidence::Observed,
+        "session_end, or the grok-native process gone",
+        "0.5.0 hooks, probe-grok runs a–l",
+    ),
 ];
 
 /// A hook payload as Grok spells it: its fields in camelCase and its
@@ -86,7 +146,6 @@ pub fn event(payload: &Value) -> Option<Event> {
         session: payload.session_id,
         cwd: payload.cwd,
         subagent: false,
-        unfinished: false,
     })
 }
 
@@ -134,12 +193,12 @@ pub fn uninstall(home: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{Home, update};
+    use super::super::tests::{Home, signal};
     use super::*;
-    use crate::state::{State, Update};
+    use crate::fsm::Signal;
 
     /// A payload with the fields Grok sends on every event.
-    fn event(name: &str, extra: Value) -> Option<Update> {
+    fn event(name: &str, extra: Value) -> Option<Signal> {
         let mut event = json!({
             "hookEventName": name,
             "sessionId": "019f0a3c-6f0e-7a51-8d2b-5d2f4c0e9a11",
@@ -153,12 +212,12 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
-        update(Harness::Grok, event)
+        signal(Harness::Grok, event)
     }
 
     #[test]
     fn maps_a_turn() {
-        let working = Some(Update::Enter(State::Working));
+        let working = Some(Signal::Prompted);
         assert_eq!(
             event("user_prompt_submit", json!({ "prompt": "fix it" })),
             working
@@ -172,7 +231,7 @@ mod tests {
         );
         assert_eq!(
             event("pre_tool_use", json!({ "toolName": "ask_user_question" })),
-            Some(Update::Enter(State::Question))
+            Some(Signal::QuestionAsked)
         );
         assert_eq!(
             event("post_tool_use", json!({ "toolName": "read_file" })),
@@ -184,11 +243,11 @@ mod tests {
         );
         assert_eq!(
             event("stop_failure", json!({ "error": "rate_limit" })),
-            Some(Update::Enter(State::Error))
+            Some(Signal::TurnFailed)
         );
         assert_eq!(
             event("session_end", json!({ "reason": "exit" })),
-            Some(Update::Leave)
+            Some(Signal::Ended)
         );
         assert_eq!(event("session_start", json!({ "source": "startup" })), None);
     }
@@ -201,11 +260,11 @@ mod tests {
                 json!({ "reason": reason, "lastAssistantMessage": message }),
             )
         };
+        assert_eq!(stop("end_turn", "Done."), Some(Signal::TurnEnded));
         assert_eq!(
-            stop("end_turn", "Done."),
-            Some(Update::Enter(State::Stopped))
+            stop("end_turn", "Shall I push it?"),
+            Some(Signal::TurnEndedAsking)
         );
-        assert_eq!(stop("end_turn", "Shall I push it?"), Some(Update::Asked));
         assert_eq!(stop("channel_closed", "Done."), None);
         assert_eq!(stop("shutdown", "Done."), None);
     }
@@ -215,7 +274,7 @@ mod tests {
         let notification = |kind: &str| event("notification", json!({ "notificationType": kind }));
         assert_eq!(
             notification("permission_prompt"),
-            Some(Update::Enter(State::Question))
+            Some(Signal::PermissionAsked)
         );
         assert_eq!(notification("idle_prompt"), None);
     }
@@ -228,15 +287,15 @@ mod tests {
                 json!({ "reason": reason, "cancelledBy": by }),
             )
         };
-        assert_eq!(cancelled("user_interrupt", "user"), Some(Update::Leave));
+        assert_eq!(
+            cancelled("user_interrupt", "user"),
+            Some(Signal::Interrupted)
+        );
         assert_eq!(
             cancelled("permission_rejected", "user"),
-            Some(Update::Leave)
+            Some(Signal::Interrupted)
         );
-        assert_eq!(
-            cancelled("max_turns", "runtime"),
-            Some(Update::Enter(State::Stopped))
-        );
+        assert_eq!(cancelled("max_turns", "runtime"), Some(Signal::TurnEnded));
     }
 
     #[test]
@@ -257,8 +316,7 @@ mod tests {
             "sessionId": "s1", "session_id": "s1",
             "reason": "end_turn", "lastAssistantMessage": "ok", "backgroundTasks": [],
         });
-        assert_eq!(update(Harness::Claude, stop.clone()), None);
-        assert_eq!(update(Harness::Codex, stop), None);
+        assert_eq!(signal(Harness::Codex, stop), None);
     }
 
     #[test]

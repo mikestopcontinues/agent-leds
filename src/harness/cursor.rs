@@ -7,8 +7,10 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Event, Harness, Hook, commands, edit_hooks, read_hooks, register, unregister};
+use super::{Event, Harness, Hook, commands, edit_hooks, hooked, read_hooks, register, unregister};
+use crate::coverage::{Declared, Evidence};
 use crate::files;
+use crate::fsm::Signal;
 
 pub const HOOKS: &str = ".cursor/hooks.json";
 
@@ -21,6 +23,46 @@ pub const EVENTS: [&str; 5] = [
     "postToolUseFailure",
     "stop",
     "sessionEnd",
+];
+
+/// What Cursor's hooks tell, until its own files are read.
+pub const SIGNALS: &[Declared] = &[
+    hooked(
+        Signal::Started,
+        Evidence::Observed,
+        "any hook, run under the cursor-agent process its .running marker names",
+        "0.5.0 hooks, probe-cursor runs A–I",
+    ),
+    hooked(
+        Signal::Prompted,
+        Evidence::Observed,
+        "beforeSubmitPrompt, postToolUse or postToolUseFailure",
+        "0.5.0 hooks, probe-cursor runs A–I",
+    ),
+    hooked(
+        Signal::TurnEnded,
+        Evidence::Observed,
+        "stop with status completed",
+        "0.5.0 hooks, probe-cursor runs A–I",
+    ),
+    hooked(
+        Signal::TurnFailed,
+        Evidence::Inferred,
+        "stop with status error; not reproduced in the probe",
+        "0.5.0 hooks, probe-cursor runs A–I",
+    ),
+    hooked(
+        Signal::Interrupted,
+        Evidence::Observed,
+        "stop with status aborted, or postToolUseFailure cut short by an interrupt",
+        "0.5.0 hooks, probe-cursor runs A–I",
+    ),
+    hooked(
+        Signal::Ended,
+        Evidence::Observed,
+        "sessionEnd, or the cursor-agent process gone",
+        "0.5.0 hooks, probe-cursor runs A–I",
+    ),
 ];
 
 /// A hook payload as Cursor spells it.
@@ -68,7 +110,6 @@ pub fn event(payload: &Value) -> Option<Event> {
         // Cursor does not pass the agent's last message to a hook.
         asks: false,
         subagent: false,
-        unfinished: false,
     })
 }
 
@@ -107,12 +148,12 @@ pub fn uninstall(home: &Path) -> Result<()> {
 mod tests {
     use std::fs;
 
-    use super::super::tests::{Home, update};
+    use super::super::tests::{Home, signal};
     use super::*;
-    use crate::state::{State, Update};
+    use crate::fsm::Signal;
 
     /// A payload with the fields Cursor sends on every event of a turn.
-    fn event(name: &str, extra: Value) -> Option<Update> {
+    fn event(name: &str, extra: Value) -> Option<Signal> {
         let mut event = json!({
             "conversation_id": "5b1f3c1e-7d0a-4a55-9a34-0c7f5f1f2b10",
             "session_id": "5b1f3c1e-7d0a-4a55-9a34-0c7f5f1f2b10",
@@ -128,12 +169,12 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
-        update(Harness::Cursor, event)
+        signal(Harness::Cursor, event)
     }
 
     #[test]
     fn maps_a_turn() {
-        let working = Some(Update::Enter(State::Working));
+        let working = Some(Signal::Prompted);
         assert_eq!(
             event("beforeSubmitPrompt", json!({ "prompt": "fix it" })),
             working
@@ -154,11 +195,11 @@ mod tests {
                 "postToolUseFailure",
                 json!({ "tool_name": "Shell", "failure_type": "error", "is_interrupt": true })
             ),
-            Some(Update::Leave)
+            Some(Signal::Interrupted)
         );
         assert_eq!(
             event("sessionEnd", json!({ "reason": "user_close" })),
-            Some(Update::Leave)
+            Some(Signal::Ended)
         );
         assert_eq!(event("preToolUse", json!({ "tool_name": "Shell" })), None);
     }
@@ -166,22 +207,9 @@ mod tests {
     #[test]
     fn a_stop_says_how_the_turn_ended() {
         let stop = |status: &str| event("stop", json!({ "status": status, "loop_count": 0 }));
-        assert_eq!(stop("completed"), Some(Update::Enter(State::Stopped)));
-        assert_eq!(stop("aborted"), Some(Update::Leave));
-        assert_eq!(stop("error"), Some(Update::Enter(State::Error)));
-    }
-
-    #[test]
-    fn a_payload_cursor_sends_to_the_hooks_of_claude_code_is_not_claude_codes() {
-        let stop = json!({
-            "conversation_id": "c1", "session_id": "c1", "hook_event_name": "stop",
-            "status": "completed", "workspace_roots": ["/Users/me/Code/app"]
-        });
-        assert_eq!(update(Harness::Claude, stop.clone()), None);
-        assert_eq!(
-            update(Harness::Cursor, stop),
-            Some(Update::Enter(State::Stopped))
-        );
+        assert_eq!(stop("completed"), Some(Signal::TurnEnded));
+        assert_eq!(stop("aborted"), Some(Signal::Interrupted));
+        assert_eq!(stop("error"), Some(Signal::TurnFailed));
     }
 
     #[test]

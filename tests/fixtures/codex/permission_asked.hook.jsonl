@@ -1,0 +1,7 @@
+{"cite": "0.5.0 hooks, probe-codex runA", "evidence": "observed"}
+{"alive": 71001, "started_us": 1794693357000000}
+{"expect": []}
+{"hook": {"session_id": "019f0a3c-6f0e-7a51-8d2b-5d2f4c0e9a11", "turn_id": "019f0a3c-7b1d-7c03-9d1e-0f6c1c2b3a44", "transcript_path": "/Users/me/.codex/sessions/2026/11/14/rollout-2026-11-14T21-55-57-019f0a3c-6f0e-7a51-8d2b-5d2f4c0e9a11.jsonl", "cwd": "/Users/me/Code/app", "hook_event_name": "UserPromptSubmit", "model": "gpt-6.1-sol", "permission_mode": "default", "prompt": "fix it"}, "ancestry": [{"pid": 71050, "started_us": 1794693362000000, "name": "sh"}, {"pid": 71001, "started_us": 1794693357000000, "name": "codex"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
+{"expect": [["started", "hook"], ["prompted", "hook"]]}
+{"hook": {"session_id": "019f0a3c-6f0e-7a51-8d2b-5d2f4c0e9a11", "turn_id": "019f0a3c-7b1d-7c03-9d1e-0f6c1c2b3a44", "transcript_path": "/Users/me/.codex/sessions/2026/11/14/rollout-2026-11-14T21-55-57-019f0a3c-6f0e-7a51-8d2b-5d2f4c0e9a11.jsonl", "cwd": "/Users/me/Code/app", "hook_event_name": "PermissionRequest", "model": "gpt-6.1-sol", "permission_mode": "default", "tool_name": "exec_command"}, "ancestry": [{"pid": 71050, "started_us": 1794693362000000, "name": "sh"}, {"pid": 71001, "started_us": 1794693357000000, "name": "codex"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
+{"expect": [["started", "hook"], ["permission_asked", "hook"]]}

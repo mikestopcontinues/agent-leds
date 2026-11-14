@@ -9,8 +9,7 @@
 pub mod claude;
 #[cfg(test)]
 pub mod fixture;
-// Read by the harness sources, which come in the next layer.
-#[allow(dead_code)]
+pub mod interim;
 pub mod tail;
 
 use std::path::{Path, PathBuf};
@@ -122,10 +121,6 @@ impl Told {
         }
     }
 
-    pub fn phase(&self) -> Phase {
-        self.phase
-    }
-
     /// The shortest signals from Idle to the same phase.
     pub fn current(&self) -> Vec<Signal> {
         match self.phase {
@@ -140,9 +135,17 @@ impl Told {
     }
 }
 
-/// Every harness's source, reading the harnesses' files in `home`.
-pub fn all(home: &Path, _state: &Path) -> Vec<Box<dyn Source>> {
-    vec![Box::new(claude::Claude::new(home))]
+/// Every harness's source, reading the harnesses' files in `home`. The
+/// hooks of the harnesses whose files are not read yet keep what they need
+/// between events in `state`.
+pub fn all(home: &Path, state: &Path) -> Vec<Box<dyn Source>> {
+    let mut sources: Vec<Box<dyn Source>> = vec![Box::new(claude::Claude::new(home))];
+    for harness in Harness::ALL {
+        if harness != Harness::Claude {
+            sources.push(Box::new(interim::Interim::new(harness, home, state)));
+        }
+    }
+    sources
 }
 
 /// What the daemon asks the sources to read.

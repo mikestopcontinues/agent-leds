@@ -1,6 +1,7 @@
 //! agent-leds: shows a queue of agent sessions on a SidePulse Pro.
 
 mod config;
+// The daemon reads only the declarations; the document is rendered by its test.
 #[allow(dead_code)]
 mod coverage;
 mod daemon;
@@ -9,22 +10,15 @@ mod device;
 mod doctor;
 mod eject;
 mod files;
-#[allow(dead_code)]
 mod fsm;
 mod harness;
 mod ipc;
 mod launchd;
-mod live;
-// The sources that read harness files are the first to use it.
-#[allow(dead_code)]
 mod liveness;
 mod player;
-// Applied by the daemon once the sources feed it.
-#[allow(dead_code)]
 mod queue;
 mod render;
 mod settings;
-#[allow(dead_code)]
 mod source;
 mod state;
 
@@ -43,6 +37,7 @@ use config::{Config, PALETTES, home};
 use harness::Harness;
 use ipc::{Request, Status};
 use render::Scene;
+use source::Hook;
 use state::State;
 
 #[derive(Parser)]
@@ -171,7 +166,13 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Status { json } => status(json),
-        Command::Dismiss { session } => ipc::request(&Request::Dismiss { session }).map(drop),
+        Command::Dismiss { session } => {
+            if session.as_deref() == Some("") {
+                // An empty prefix would name every session, working ones too.
+                anyhow::bail!("name the session to clear by the start of its id, or name none");
+            }
+            ipc::request(&Request::Dismiss { session }).map(drop)
+        }
         Command::Palette {
             name: Some(name), ..
         } => ipc::request(&Request::Palette { name }).map(drop),
@@ -210,12 +211,18 @@ fn main() -> Result<()> {
         }
         Command::Hook { harness } => {
             // A hook must never disturb the agent: stay silent and succeed whatever happens.
-            if let Some(report) = stdin()
+            if let Some(payload) = stdin()
                 .ok()
                 .and_then(|text| serde_json::from_str(&text).ok())
-                .and_then(|payload| harness::hook(harness, &payload))
             {
-                let _ = ipc::send(&Request::Report(report));
+                // The processes the hook runs under say which one runs the session.
+                let ancestry = liveness::ancestry(8);
+                let hook = Hook {
+                    harness,
+                    payload,
+                    ancestry,
+                };
+                let _ = ipc::send(&Request::Hook(hook));
             }
             Ok(())
         }
@@ -343,33 +350,45 @@ fn render_scene() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{Queue, Update};
+    use crate::ipc::View;
 
     #[test]
     fn status_lists_each_session_with_its_age() {
-        let mut queue = Queue::default();
         let minute = 60_000;
-        queue.apply(
-            Harness::Codex,
-            "0123456789",
-            "app",
-            Update::Enter(State::Working),
-            0,
-        );
-        queue.apply(
-            Harness::Claude,
-            "abcdefghij",
-            "web",
-            Update::Asked,
-            2 * minute,
-        );
+        let view = |harness, session: &str, label: &str, state, since, weak| View {
+            harness,
+            session: session.into(),
+            label: label.into(),
+            state,
+            since,
+            weak,
+            read: None,
+        };
         let status = Status {
             version: "0".into(),
-            items: queue.items().into_iter().cloned().collect(),
+            items: vec![
+                view(
+                    Harness::Claude,
+                    "abcdefghij",
+                    "web",
+                    State::Question,
+                    2 * minute,
+                    true,
+                ),
+                view(
+                    Harness::Codex,
+                    "0123456789",
+                    "app",
+                    State::Working,
+                    0,
+                    false,
+                ),
+            ],
             now: 3 * 3600 * 1000 + 5 * minute,
             config: Config::default(),
             device: Some("/Volumes/SidePulse".into()),
             device_uptime_ms: Some(1),
+            undeclared: 0,
         };
         let text = status_text(&status);
         let lines: Vec<&str> = text.lines().collect();
@@ -388,6 +407,7 @@ mod tests {
             config: Config::default(),
             device: None,
             device_uptime_ms: None,
+            undeclared: 0,
         };
         assert_eq!(
             status_text(&status),

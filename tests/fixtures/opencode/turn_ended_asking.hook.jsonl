@@ -1,0 +1,7 @@
+{"cite": "0.5.0 plugin, probe-opencode T2–T17", "evidence": "observed"}
+{"alive": 71001, "started_us": 1794693357000000}
+{"expect": []}
+{"hook": {"event": "session.busy", "session": "ses_1", "directory": "/Users/me/Code/app", "subagent": false}, "ancestry": [{"pid": 71001, "started_us": 1794693357000000, "name": "opencode"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
+{"expect": [["started", "hook"], ["prompted", "hook"]]}
+{"hook": {"event": "session.idle", "session": "ses_1", "directory": "/Users/me/Code/app", "subagent": false, "error": null, "message": "Red or blue?"}, "ancestry": [{"pid": 71001, "started_us": 1794693357000000, "name": "opencode"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
+{"expect": [["started", "hook"], ["turn_ended_asking", "hook"]]}

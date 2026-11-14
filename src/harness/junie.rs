@@ -9,10 +9,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{
-    Event, Harness, Payload, commands, edit_hooks, owns_group, read_hooks, register_groups,
+    Event, Harness, Payload, commands, edit_hooks, hooked, owns_group, read_hooks, register_groups,
     unregister,
 };
+use crate::coverage::{Declared, Evidence};
 use crate::files;
+use crate::fsm::Signal;
 
 pub const CONFIG: &str = ".junie/config.json";
 
@@ -26,6 +28,46 @@ pub const EVENTS: [&str; 5] = [
     "Stop",
     "StopFailure",
     "SessionEnd",
+];
+
+/// What Junie's hooks tell, until its own files are read.
+pub const SIGNALS: &[Declared] = &[
+    hooked(
+        Signal::Started,
+        Evidence::Inferred,
+        "any hook of the session the last prompt named, run under the process named junie",
+        "0.5.0 hooks; Junie was not installed for the probe",
+    ),
+    hooked(
+        Signal::Prompted,
+        Evidence::Inferred,
+        "UserPromptSubmit or PostToolUse",
+        "0.5.0 hooks; Junie was not installed for the probe",
+    ),
+    hooked(
+        Signal::TurnEnded,
+        Evidence::Inferred,
+        "Stop",
+        "0.5.0 hooks; Junie was not installed for the probe",
+    ),
+    hooked(
+        Signal::TurnEndedAsking,
+        Evidence::Inferred,
+        "Stop whose last message asks",
+        "0.5.0 hooks; Junie was not installed for the probe",
+    ),
+    hooked(
+        Signal::TurnFailed,
+        Evidence::Inferred,
+        "StopFailure",
+        "0.5.0 hooks; Junie was not installed for the probe",
+    ),
+    hooked(
+        Signal::Ended,
+        Evidence::Inferred,
+        "SessionEnd, or the junie process gone",
+        "0.5.0 hooks; Junie was not installed for the probe",
+    ),
 ];
 
 pub fn event(payload: &Value) -> Option<Event> {
@@ -86,7 +128,7 @@ pub fn uninstall(home: &Path) -> Result<()> {
 mod tests {
     use super::super::tests::Home;
     use super::*;
-    use crate::state::{State, Update};
+    use crate::fsm::Signal;
 
     #[test]
     fn every_event_registered_is_one_the_daemon_follows() {
@@ -95,10 +137,10 @@ mod tests {
         }
     }
 
-    /// The session and what the event means for it, as the hook reads it.
-    fn update(payload: Value, state: &Path) -> Option<(String, Update)> {
-        let event = event(&*with_session(&payload, state)?)?;
-        Some((event.session.clone(), event.update()?))
+    /// The session and what the event means for it, as the daemon reads it.
+    fn update(payload: Value, state: &Path) -> Option<(String, Signal)> {
+        let (session, _, signal) = super::super::interim(Harness::Junie, &payload, state)?;
+        Some((session, signal))
     }
 
     #[test]
@@ -115,34 +157,22 @@ mod tests {
                 "cwd": "/Users/me/Code/app", "project_path": "/Users/me/Code/app", "prompt": "fix it"
             })
         };
-        assert_eq!(
-            update(prompt("j1"), &state),
-            of("j1", Update::Enter(State::Working))
-        );
+        assert_eq!(update(prompt("j1"), &state), of("j1", Signal::Prompted));
         let tool = json!({
             "hook_event_name": "PostToolUse", "tool_name": "Bash",
             "tool_input": { "command": "pytest" }, "tool_response": "ok", "duration_ms": 12
         });
-        assert_eq!(
-            update(tool, &state),
-            of("j1", Update::Enter(State::Working))
-        );
-        assert_eq!(
-            update(stop.clone(), &state),
-            of("j1", Update::Enter(State::Stopped))
-        );
+        assert_eq!(update(tool, &state), of("j1", Signal::Prompted));
+        assert_eq!(update(stop.clone(), &state), of("j1", Signal::TurnEnded));
         let asks =
             json!({ "hook_event_name": "Stop", "last_assistant_message": "Shall I push it?" });
-        assert_eq!(update(asks, &state), of("j1", Update::Asked));
+        assert_eq!(update(asks, &state), of("j1", Signal::TurnEndedAsking));
         let failed = json!({ "hook_event_name": "StopFailure", "error": "rate_limit", "error_details": "429 Too Many Requests" });
-        assert_eq!(
-            update(failed, &state),
-            of("j1", Update::Enter(State::Error))
-        );
+        assert_eq!(update(failed, &state), of("j1", Signal::TurnFailed));
 
         update(prompt("j2"), &state);
         let ended = json!({ "hook_event_name": "SessionEnd", "reason": "prompt_input_exit" });
-        assert_eq!(update(ended, &state), of("j2", Update::Leave));
+        assert_eq!(update(ended, &state), of("j2", Signal::Ended));
     }
 
     #[test]
