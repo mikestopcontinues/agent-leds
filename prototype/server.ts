@@ -41,10 +41,11 @@ const server = Bun.serve({
       }),
     },
     "/api/config": {
-      POST: handler(async ({ colors, brightness, front_led }) => {
+      POST: handler(async ({ colors, brightness, front_led, balance }) => {
         for (const [state, color] of Object.entries(colors)) await leds(["color", state, String(color)]);
         await leds(["brightness", String(brightness)]);
         await leds(["front", String(front_led)]);
+        await leds(["balance", ...balance.map(String)]);
       }),
     },
   },

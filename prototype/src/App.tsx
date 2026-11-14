@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { DEFAULT_MODEL, appearanceHex, css, deviceColorFor, fromHex, toHex, type Gamut, type Model, type RGB } from "./color";
-import { DESIGNS, STATES, type Config, type Palette, type Rendering, type Scene, type State } from "./designs";
+import { DESIGNS, STATES, scaled, type Config, type Palette, type Rendering, type Scene, type State } from "./designs";
 import { Engine, LED_COUNT } from "./engine";
 
 type Item = { id: number; state: State };
@@ -131,7 +131,7 @@ export function App() {
   async function saveToService() {
     try {
       await api("/api/config", config);
-      setMessage({ text: "Saved. The service now uses these colors, brightness and front light.", bad: false });
+      setMessage({ text: "Saved. The service now uses these colors, brightness, die balance and front light.", bad: false });
     } catch (error) {
       fail(error);
     }
@@ -140,6 +140,12 @@ export function App() {
   if (!engine || !config) return <p className="loading">{message?.text ?? "Loading…"}</p>;
 
   const setColor = (state: State, color: string) => setConfig({ ...config, colors: { ...config.colors, [state]: color } });
+  const setBalance = (die: number, value: number) =>
+    setConfig({ ...config, balance: config.balance.map((old, index) => (index === die ? value : old)) as Config["balance"] });
+  // The three dies side by side, each scaled so that all look as bright as the dimmest one at full value.
+  const dimmest = Math.min(...config.balance);
+  const dies = ["#FF0000", "#00FF00", "#0000FF"].map((die, index) => scaled(die, dimmest / config.balance[index]!));
+  const diesProgram = `${dies[0]} ${dies[0]} #000000 ${dies[1]} ${dies[1]} #000000 ${dies[2]} ${dies[2]}`;
 
   return (
     <main>
@@ -238,7 +244,7 @@ export function App() {
           <h2>Colors</h2>
           <table className="colors">
             <thead>
-              <tr><th>State</th><th>Value sent</th><th>Pick the look</th></tr>
+              <tr><th>State</th><th>Hue</th><th>Pick the look</th><th>Sent</th></tr>
             </thead>
             <tbody>
               {STATES.map((state) => (
@@ -252,11 +258,15 @@ export function App() {
                       onChange={(event) => setColor(state, toHex(deviceColorFor(event.target.value, model)!))}
                     />
                   </td>
+                  <td><code>{rendering?.lit[state]}</code></td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <p className="note">"Pick the look" chooses the color you want to see and works out the value to send for it.</p>
+          <p className="note">
+            A state's color sets its hue. "Pick the look" chooses the color you want to see and works out the hue for it.
+            "Sent" is that hue scaled so every state looks equally bright.
+          </p>
           <div className="row">
             {palettes.map((palette) => (
               <button key={palette.name} title={palette.about} onClick={() => setConfig({ ...config, colors: palette.colors })}>
@@ -272,6 +282,18 @@ export function App() {
               <option value={0}>light 0</option>
             </select>
           </label>
+          <h2>Equal brightness</h2>
+          <p className="note">
+            How bright each die looks at full value, relative to the others. Show the dies on the device and move the
+            sliders until the red, green and blue pairs look equally bright.
+          </p>
+          {["Red", "Green", "Blue"].map((die, index) => (
+            <Slider key={die} label={die} value={config.balance[index]!} min={0.02} max={1} step={0.01} onChange={(value) => setBalance(index, value)} />
+          ))}
+          <div className="row">
+            <button onClick={() => run(diesProgram) && setMessage(null)}>Show dies here</button>
+            <button onClick={() => showOnDevice(diesProgram)}>Show dies on device</button>
+          </div>
           <button onClick={saveToService}>Save to the service</button>
         </section>
       </div>

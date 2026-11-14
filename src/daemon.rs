@@ -42,6 +42,9 @@ pub enum Request {
     Front {
         led: u8,
     },
+    Balance {
+        weights: [f64; 3],
+    },
     /// Show a raw program for a while, then return to the queue.
     Play {
         program: String,
@@ -211,6 +214,16 @@ impl Daemon {
                     return Err("the front light is 0 or 7".into());
                 }
                 self.config.front_led = led;
+                self.configured()
+            }
+            Request::Balance { weights } => {
+                if !weights
+                    .iter()
+                    .all(|weight| weight.is_finite() && *weight > 0.0)
+                {
+                    return Err("each die's brightness must be above 0".into());
+                }
+                self.config.balance = weights;
                 self.configured()
             }
             Request::Play { program, seconds } => {

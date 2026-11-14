@@ -17,9 +17,10 @@ pub struct Color(pub u8, pub u8, pub u8);
 impl Color {
     pub const OFF: Color = Color(0, 0, 0);
 
-    /// The color a stacked light dips to when it breathes.
-    pub fn dimmed(self) -> Color {
-        Color(self.0 / 8, self.1 / 8, self.2 / 8)
+    /// The same hue with its light multiplied by `factor`.
+    pub fn scaled(self, factor: f64) -> Color {
+        let channel = |value: u8| (f64::from(value) * factor).round().clamp(0.0, 255.0) as u8;
+        Color(channel(self.0), channel(self.1), channel(self.2))
     }
 }
 
@@ -105,9 +106,9 @@ const fn palette(error: u32, question: u32, stopped: u32, working: u32) -> Palet
 
 /// Palettes chosen for the Pro's RGB LEDs. Their light is linear in the value
 /// sent and their three dies are nearly single-wavelength, so a mixed color
-/// needs far less of its second die than the same color on a screen, and the
-/// single-die colors are the most dependable.
-pub const PALETTES: [NamedPalette; 5] = [
+/// needs far less of its second die than the same color on a screen. A palette
+/// sets hues only: the renderer scales the colors to look equally bright.
+pub const PALETTES: [NamedPalette; 11] = [
     NamedPalette {
         name: "signal",
         about: "red, orange, green, blue: one die each, orange the only mix",
@@ -115,8 +116,38 @@ pub const PALETTES: [NamedPalette; 5] = [
     },
     NamedPalette {
         name: "bright",
-        about: "signal with a yellower orange and a lighter blue, further apart at a glance",
+        about: "signal with a yellower orange and a lighter blue",
         colors: palette(0xFF0000, 0xFF7000, 0x00FF30, 0x0050FF),
+    },
+    NamedPalette {
+        name: "terminal",
+        about: "red, yellow, green, cyan, like a terminal's colors",
+        colors: palette(0xFF0000, 0xFFC000, 0x40FF00, 0x00A0FF),
+    },
+    NamedPalette {
+        name: "neon",
+        about: "pink, amber, mint, violet",
+        colors: palette(0xFF0060, 0xFFA000, 0x00FF80, 0x3000FF),
+    },
+    NamedPalette {
+        name: "vapor",
+        about: "pink, yellow, cyan, purple: the widest spread of hues",
+        colors: palette(0xFF0080, 0xFFD000, 0x00E0FF, 0x5000FF),
+    },
+    NamedPalette {
+        name: "candy",
+        about: "pink-red, orange, lime, cyan: no deep blue, so it runs brighter",
+        colors: palette(0xFF0040, 0xFF8000, 0xA0FF00, 0x00C0FF),
+    },
+    NamedPalette {
+        name: "sunset",
+        about: "red, yellow, magenta, violet: no green states",
+        colors: palette(0xFF2000, 0xFFD000, 0xFF00C0, 0x4000FF),
+    },
+    NamedPalette {
+        name: "ice",
+        about: "magenta, white, cyan, violet: cool, with white for questions",
+        colors: palette(0xFF00C0, 0xFFFFFF, 0x00FFE0, 0x3000FF),
     },
     NamedPalette {
         name: "colorblind",
@@ -124,14 +155,14 @@ pub const PALETTES: [NamedPalette; 5] = [
         colors: palette(0xFF0050, 0xFFB000, 0xFFFFFF, 0x0030FF),
     },
     NamedPalette {
-        name: "neon",
-        about: "pink, amber, mint, violet: two dies each, the brightest set",
-        colors: palette(0xFF0060, 0xFFA000, 0x00FF80, 0x3000FF),
+        name: "soft",
+        about: "signal with a little of every die in each color, less saturated",
+        colors: palette(0xFF2010, 0xFF7020, 0x30FF40, 0x2040FF),
     },
     NamedPalette {
-        name: "soft",
-        about: "signal with a little of every die in each color, gentler in a dark room",
-        colors: palette(0xFF2010, 0xFF7020, 0x30FF40, 0x2040FF),
+        name: "pastel",
+        about: "washed-out red, yellow, green, blue: the brightest and gentlest",
+        colors: palette(0xFF6050, 0xFFD060, 0x70FF90, 0x7090FF),
     },
 ];
 
@@ -142,6 +173,11 @@ pub struct Config {
     pub brightness: u8,
     /// The light that shows the front of the queue: 0 or 7.
     pub front_led: u8,
+    /// How bright the red, green and blue dies look at full value, relative to
+    /// each other. The renderer uses it to make every state equally bright.
+    /// The default is an estimate from the dies' luminance and how much
+    /// brighter saturated colors look than their luminance; tune it by eye.
+    pub balance: [f64; 3],
     pub colors: Palette,
 }
 
@@ -150,6 +186,7 @@ impl Default for Config {
         Config {
             brightness: 255,
             front_led: 7,
+            balance: [0.32, 0.54, 0.14],
             colors: PALETTES[0].colors,
         }
     }

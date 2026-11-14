@@ -54,6 +54,9 @@ enum Command {
     Brightness { level: u8 },
     /// Set which light shows the front of the queue: 0 or 7
     Front { led: u8 },
+    /// Set how bright the red, green and blue dies look relative to each other,
+    /// which is what keeps every state equally bright
+    Balance { red: f64, green: f64, blue: f64 },
     /// Show a LEDS.LED program from a file (or - for stdin), then return to the queue
     Play {
         file: PathBuf,
@@ -81,6 +84,7 @@ struct Scene {
     colors: Option<Palette>,
     brightness: Option<u8>,
     front_led: Option<u8>,
+    balance: Option<[f64; 3]>,
 }
 
 fn main() -> Result<()> {
@@ -115,6 +119,10 @@ fn main() -> Result<()> {
         }
         Command::Brightness { level } => daemon::request(&Request::Brightness { level }).map(drop),
         Command::Front { led } => daemon::request(&Request::Front { led }).map(drop),
+        Command::Balance { red, green, blue } => daemon::request(&Request::Balance {
+            weights: [red, green, blue],
+        })
+        .map(drop),
         Command::Play { file, seconds } => {
             let program = if file.as_os_str() == "-" {
                 stdin()?
@@ -209,6 +217,7 @@ fn render_scene() -> Result<()> {
     let config = Config {
         brightness: scene.brightness.unwrap_or(saved.brightness),
         front_led: scene.front_led.unwrap_or(saved.front_led),
+        balance: scene.balance.unwrap_or(saved.balance),
         colors: scene.colors.unwrap_or(saved.colors),
     };
     scene.states.sort();
@@ -218,6 +227,7 @@ fn render_scene() -> Result<()> {
         "steady": render::steady(&slots, &config),
         "announce": scene.announce.map(|state| render::announce(state, &slots, &config)),
         "announce_ms": render::ANNOUNCE_MS,
+        "lit": render::balanced(&config),
         "config": config,
     });
     println!("{output}");
