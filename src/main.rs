@@ -201,7 +201,7 @@ fn main() -> Result<()> {
             if let Some(report) = stdin()
                 .ok()
                 .and_then(|text| serde_json::from_str(&text).ok())
-                .and_then(|payload| harness::report(harness, &payload))
+                .and_then(|payload| harness::hook(harness, &payload))
             {
                 let _ = ipc::send(&Request::Report(report));
             }

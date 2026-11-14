@@ -100,7 +100,7 @@ impl Harness {
             Harness::Codex => codex::event(payload),
             Harness::Grok => grok::event(payload),
             Harness::Cursor => cursor::event(payload),
-            Harness::Junie => junie::event(payload, &state_dir()),
+            Harness::Junie => junie::event(payload),
         }
     }
 
@@ -184,15 +184,68 @@ struct Event {
     unfinished: bool,
 }
 
+/// A hook payload as Claude Code spells it, which Codex and Junie follow.
+/// Each harness reads the fields it sends.
+#[derive(Deserialize)]
+struct Payload {
+    hook_event_name: String,
+    /// Junie names the session only when a prompt is submitted.
+    session_id: Option<String>,
+    #[serde(default, deserialize_with = "or_empty")]
+    cwd: String,
+    #[serde(default, deserialize_with = "or_empty")]
+    last_assistant_message: String,
+    /// Set when a subagent sent the event.
+    agent_id: Option<String>,
+    tool_name: Option<String>,
+    /// Whether a failed tool was cut short by the user.
+    #[serde(default)]
+    is_interrupt: bool,
+    #[serde(default)]
+    background_tasks: Vec<Task>,
+    /// Codex sends null for a session it keeps no record of.
+    #[serde(default, deserialize_with = "present")]
+    transcript_path: Option<Option<String>>,
+}
+
+/// Work a Claude Code session runs in the background.
+#[derive(Deserialize)]
+struct Task {
+    #[serde(rename = "type", default)]
+    kind: String,
+    #[serde(default)]
+    status: String,
+}
+
+/// Reads text that may be null as empty.
+fn or_empty<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    Option::deserialize(deserializer).map(Option::unwrap_or_default)
+}
+
+/// Reads a field that may be null, so that a null tells apart from a field left out.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::deserialize(deserializer).map(Some)
+}
+
+impl Payload {
+    fn read(payload: &Value) -> Option<Payload> {
+        Payload::deserialize(payload).ok()
+    }
+}
+
 impl Event {
-    /// Reads a payload that spells its fields and events the way Claude Code does.
-    fn read(payload: &Value) -> Option<Event> {
+    /// The event a payload spelled the way Claude Code spells them stands for.
+    fn read(payload: &Payload) -> Option<Event> {
         Some(Event {
-            hook: Hook::named(text(payload, "hook_event_name")?)?,
-            session: text(payload, "session_id")?.to_owned(),
-            cwd: text(payload, "cwd").unwrap_or_default().to_owned(),
-            asks: ends_on_question(text(payload, "last_assistant_message").unwrap_or_default()),
-            subagent: payload.get("agent_id").is_some(),
+            hook: Hook::named(&payload.hook_event_name)?,
+            session: payload.session_id.clone()?,
+            cwd: payload.cwd.clone(),
+            asks: ends_on_question(&payload.last_assistant_message),
+            subagent: payload.agent_id.is_some(),
             unfinished: false,
         })
     }
@@ -234,8 +287,18 @@ pub struct Report {
     pub update: Update,
 }
 
+/// Translates one hook payload from a harness into a report for the daemon,
+/// as the hook does. Junie names the session only when a prompt is
+/// submitted, so the hook keeps that between events.
+pub fn hook(harness: Harness, payload: &Value) -> Option<Report> {
+    if harness == Harness::Junie {
+        return report(harness, &*junie::with_session(payload, &state_dir())?);
+    }
+    report(harness, payload)
+}
+
 /// Translates one hook payload from a harness into a report for the daemon.
-pub fn report(harness: Harness, payload: &Value) -> Option<Report> {
+fn report(harness: Harness, payload: &Value) -> Option<Report> {
     let event = harness.event(payload)?;
     let update = event.update()?;
     let label = Path::new(&event.cwd)
@@ -248,10 +311,6 @@ pub fn report(harness: Harness, payload: &Value) -> Option<Report> {
         label,
         update,
     })
-}
-
-fn text<'a>(payload: &'a Value, key: &str) -> Option<&'a str> {
-    payload.get(key).and_then(Value::as_str)
 }
 
 /// Whether a final message ends by asking the user something.

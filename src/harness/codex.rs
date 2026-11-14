@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, value};
 
-use super::{Event, Harness, Hook, text};
+use super::{Event, Harness, Hook, Payload};
 use crate::files;
 
 const CONFIG: &str = ".codex/config.toml";
@@ -34,12 +34,16 @@ const ANSWER: Duration = Duration::from_secs(15);
 pub fn event(payload: &Value) -> Option<Event> {
     // Codex runs agents of its own as sessions it keeps no record of, such
     // as the one that consolidates its memories. Those are not the user's.
-    if payload.get("transcript_path") == Some(&Value::Null) {
+    let payload = Payload::read(payload)?;
+    if payload.transcript_path == Some(None) {
         return None;
     }
-    let mut event = Event::read(payload)?;
+    let mut event = Event::read(&payload)?;
     // Codex names a tool with or without its namespace.
-    let tool = text(payload, "tool_name").and_then(|tool| tool.rsplit('.').next());
+    let tool = payload
+        .tool_name
+        .as_deref()
+        .and_then(|tool| tool.rsplit('.').next());
     let asks_user = matches!(
         tool,
         Some("request_user_input" | "request_user_input_async")
@@ -50,9 +54,7 @@ pub fn event(payload: &Value) -> Option<Event> {
         // does not answer it.
         Hook::PostToolUse if tool == Some("request_user_input_async") => return None,
         // A turn that ends on a plan waits for the user to accept it.
-        Hook::Stop => {
-            event.asks |= proposes_plan(text(payload, "last_assistant_message").unwrap_or_default())
-        }
+        Hook::Stop => event.asks |= proposes_plan(&payload.last_assistant_message),
         _ => {}
     }
     Some(event)

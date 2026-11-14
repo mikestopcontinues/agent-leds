@@ -4,9 +4,10 @@
 use std::path::Path;
 
 use anyhow::Result;
+use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Event, Harness, Hook, edit_hooks, register, text, unregister};
+use super::{Event, Harness, Hook, edit_hooks, register, unregister};
 use crate::files;
 
 const HOOKS: &str = ".cursor/hooks.json";
@@ -22,16 +23,32 @@ const EVENTS: [&str; 5] = [
     "sessionEnd",
 ];
 
+/// A hook payload as Cursor spells it.
+#[derive(Deserialize)]
+struct Payload {
+    hook_event_name: String,
+    /// How a turn ended.
+    status: Option<String>,
+    /// Whether a failed tool was cut short by the user.
+    #[serde(default)]
+    is_interrupt: bool,
+    /// Cursor calls the session a conversation everywhere but at its end.
+    conversation_id: Option<String>,
+    session_id: Option<String>,
+    #[serde(default)]
+    workspace_roots: Vec<String>,
+}
+
 pub fn event(payload: &Value) -> Option<Event> {
-    let text = |key| text(payload, key);
-    let hook = match text("hook_event_name")? {
+    let payload = Payload::deserialize(payload).ok()?;
+    let hook = match payload.hook_event_name.as_str() {
         "beforeSubmitPrompt" => Hook::UserPromptSubmit,
         "postToolUse" => Hook::PostToolUse,
         // An aborted tool means the user interrupted the turn.
-        "postToolUseFailure" if payload["is_interrupt"] == true => Hook::Interrupt,
+        "postToolUseFailure" if payload.is_interrupt => Hook::Interrupt,
         "postToolUseFailure" => Hook::PostToolUseFailure,
         // Cursor has one event for the end of a turn and says how it ended.
-        "stop" => match text("status")? {
+        "stop" => match payload.status.as_deref()? {
             "completed" => Hook::Stop,
             "aborted" => Hook::Interrupt,
             "error" => Hook::StopFailure,
@@ -42,12 +59,12 @@ pub fn event(payload: &Value) -> Option<Event> {
     };
     Some(Event {
         hook,
-        // Cursor calls the session a conversation everywhere but at its end.
-        session: text("conversation_id").or(text("session_id"))?.to_owned(),
-        cwd: payload["workspace_roots"][0]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned(),
+        session: payload.conversation_id.or(payload.session_id)?,
+        cwd: payload
+            .workspace_roots
+            .into_iter()
+            .next()
+            .unwrap_or_default(),
         // Cursor does not pass the agent's last message to a hook.
         asks: false,
         subagent: false,

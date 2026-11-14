@@ -3,9 +3,10 @@
 use std::path::Path;
 
 use anyhow::Result;
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use super::{Event, Harness, Hook, ends_on_question, text};
+use super::{Event, Harness, Hook, ends_on_question, or_empty};
 use crate::files;
 
 /// Grok reads every JSON file in the folder, so this one holds nothing but
@@ -27,43 +28,63 @@ const EVENTS: [(&str, Option<&str>); 9] = [
     ("SessionEnd", None),
 ];
 
-/// Grok spells its payloads in camelCase and its event names in snake_case.
+/// A hook payload as Grok spells it: its fields in camelCase and its
+/// event names in snake_case.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Payload {
+    hook_event_name: String,
+    session_id: String,
+    #[serde(default, deserialize_with = "or_empty")]
+    cwd: String,
+    /// Set when a subagent sent the event.
+    subagent_type: Option<String>,
+    notification_type: Option<String>,
+    /// Why a turn stopped.
+    reason: Option<String>,
+    cancelled_by: Option<String>,
+    tool_name: Option<String>,
+    #[serde(default, deserialize_with = "or_empty")]
+    last_assistant_message: String,
+}
+
 pub fn event(payload: &Value) -> Option<Event> {
+    let payload = Payload::deserialize(payload).ok()?;
     // A subagent runs as a session of its own, which says what kind it is
     // and not which session started it, so its events cannot be put to the
     // session they belong to.
-    if payload.get("subagentType").is_some() {
+    if payload.subagent_type.is_some() {
         return None;
     }
-    let text = |key| text(payload, key);
-    let hook = match text("hookEventName")? {
+    let is = |field: &Option<String>, value: &str| field.as_deref() == Some(value);
+    let hook = match payload.hook_event_name.as_str() {
         "user_prompt_submit" => Hook::UserPromptSubmit,
         "pre_tool_use" => Hook::PreToolUse,
         // Grok has no event for a permission request. It sends this
         // notification while its prompt is waiting.
-        "notification" if text("notificationType") == Some("permission_prompt") => {
+        "notification" if is(&payload.notification_type, "permission_prompt") => {
             Hook::PermissionRequest
         }
         "post_tool_use" => Hook::PostToolUse,
         "post_tool_use_failure" => Hook::PostToolUseFailure,
         // Stop fires again when the session closes, which says nothing about a turn.
-        "stop" if text("reason") == Some("end_turn") => Hook::Stop,
+        "stop" if is(&payload.reason, "end_turn") => Hook::Stop,
         "stop_failure" => Hook::StopFailure,
         // The user was there to cancel the turn. One that Grok gave up on by
         // itself is left for them to find.
-        "stop_cancelled" if text("cancelledBy") == Some("user") => Hook::Interrupt,
+        "stop_cancelled" if is(&payload.cancelled_by, "user") => Hook::Interrupt,
         "stop_cancelled" => Hook::Stop,
         "session_end" => Hook::SessionEnd,
         _ => return None,
     };
     Some(Event {
         hook,
-        session: text("sessionId")?.to_owned(),
-        cwd: text("cwd").unwrap_or_default().to_owned(),
         asks: match hook {
-            Hook::PreToolUse => text("toolName") == Some("ask_user_question"),
-            _ => ends_on_question(text("lastAssistantMessage").unwrap_or_default()),
+            Hook::PreToolUse => is(&payload.tool_name, "ask_user_question"),
+            _ => ends_on_question(&payload.last_assistant_message),
         },
+        session: payload.session_id,
+        cwd: payload.cwd,
         subagent: false,
         unfinished: false,
     })

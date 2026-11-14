@@ -1,12 +1,14 @@
 //! Junie: its hooks live in `~/.junie/config.json`, in the shape Claude
 //! Code's have.
 
+use std::borrow::Cow;
 use std::path::Path;
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{Event, Harness, edit_hooks, owns_group, register_groups, unregister};
+use super::{Event, Harness, Payload, edit_hooks, owns_group, register_groups, unregister};
 use crate::files;
 
 const CONFIG: &str = ".junie/config.json";
@@ -23,23 +25,35 @@ const EVENTS: [&str; 5] = [
     "SessionEnd",
 ];
 
+pub fn event(payload: &Value) -> Option<Event> {
+    Event::read(&Payload::read(payload)?)
+}
+
+/// The session a prompt named, as the hook keeps it between events.
+#[derive(Serialize, Deserialize)]
+struct Session {
+    session_id: String,
+    #[serde(default)]
+    cwd: String,
+}
+
 /// Junie names the session only when a prompt is submitted. The hook keeps
 /// that in `state`, and takes the events that name no session to belong to
-/// the session that submitted a prompt last.
-pub fn event(payload: &Value, state: &Path) -> Option<Event> {
+/// the session that submitted a prompt last: this is `payload` with that
+/// session in it.
+pub fn with_session<'a>(payload: &'a Value, state: &Path) -> Option<Cow<'a, Value>> {
     let last = state.join("junie-session.json");
-    if payload.get("session_id").is_some() {
-        let session = json!({ "session_id": payload["session_id"], "cwd": payload["cwd"] });
+    if let Ok(session) = Session::deserialize(payload) {
         // Written whole, since the next event's hook may be reading it already.
-        let _ = files::replace(&last, &session.to_string());
-        return Event::read(payload);
+        let _ = files::replace(&last, &serde_json::to_string(&session).ok()?);
+        return Some(Cow::Borrowed(payload));
     }
-    let session: Value = serde_json::from_str(&files::read_optional(&last).ok()??).ok()?;
+    let session: Session = serde_json::from_str(&files::read_optional(&last).ok()??).ok()?;
     let mut payload = payload.clone();
-    payload
-        .as_object_mut()?
-        .extend(session.as_object()?.clone());
-    Event::read(&payload)
+    let fields = payload.as_object_mut()?;
+    fields.insert("session_id".into(), session.session_id.into());
+    fields.insert("cwd".into(), session.cwd.into());
+    Some(Cow::Owned(payload))
 }
 
 pub fn install(home: &Path, exe: &Path) -> Result<()> {
@@ -74,9 +88,9 @@ mod tests {
         }
     }
 
-    /// The session and what the event means for it.
+    /// The session and what the event means for it, as the hook reads it.
     fn update(payload: Value, state: &Path) -> Option<(String, Update)> {
-        let event = event(&payload, state)?;
+        let event = event(&*with_session(&payload, state)?)?;
         Some((event.session.clone(), event.update()?))
     }
 
@@ -128,8 +142,9 @@ mod tests {
     fn a_session_is_labelled_by_the_folder_its_prompt_named() {
         let state = Home::new();
         let prompt = json!({ "hook_event_name": "UserPromptSubmit", "session_id": "j1", "cwd": "/Users/me/Code/app" });
-        event(&prompt, &state);
-        let stop = event(&json!({ "hook_event_name": "Stop" }), &state).unwrap();
+        with_session(&prompt, &state);
+        let stop = json!({ "hook_event_name": "Stop" });
+        let stop = event(&with_session(&stop, &state).unwrap()).unwrap();
         assert_eq!(stop.cwd, "/Users/me/Code/app");
     }
 

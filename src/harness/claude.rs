@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::Result;
 use serde_json::{Value, json};
 
-use super::{Event, Harness, Hook, edit_hooks, owns_group, register_groups, text, unregister};
+use super::{Event, Harness, Hook, Payload, edit_hooks, owns_group, register_groups, unregister};
 
 /// The hook events the daemon needs, in the order a turn produces them.
 const EVENTS: [&str; 10] = [
@@ -22,11 +22,12 @@ const EVENTS: [&str; 10] = [
 ];
 
 pub fn event(payload: &Value) -> Option<Event> {
-    let mut event = Event::read(payload)?;
-    event.asks |= text(payload, "tool_name") == Some("AskUserQuestion");
-    event.unfinished = event.hook == Hook::Stop && has_work_running(payload);
+    let payload = Payload::read(payload)?;
+    let mut event = Event::read(&payload)?;
+    event.asks |= payload.tool_name.as_deref() == Some("AskUserQuestion");
+    event.unfinished = event.hook == Hook::Stop && has_work_running(&payload);
     // An aborted tool means the user interrupted the turn.
-    if event.hook == Hook::PostToolUseFailure && payload["is_interrupt"] == true {
+    if event.hook == Hook::PostToolUseFailure && payload.is_interrupt {
         event.hook = Hook::Interrupt;
     }
     Some(event)
@@ -37,11 +38,9 @@ pub fn event(payload: &Value) -> Option<Event> {
 /// commands as background tasks too, but those can run for as long as the
 /// session does, and a session held as working for one would never show
 /// that it had stopped.
-fn has_work_running(payload: &Value) -> bool {
-    let tasks = payload.get("background_tasks").and_then(Value::as_array);
-    tasks.into_iter().flatten().any(|task| {
-        matches!(text(task, "type"), Some("subagent" | "workflow"))
-            && text(task, "status") == Some("running")
+fn has_work_running(payload: &Payload) -> bool {
+    payload.background_tasks.iter().any(|task| {
+        matches!(task.kind.as_str(), "subagent" | "workflow") && task.status == "running"
     })
 }
 
