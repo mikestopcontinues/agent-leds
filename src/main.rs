@@ -8,7 +8,11 @@ mod eject;
 mod harness;
 mod launchd;
 mod render;
+mod settings;
 mod state;
+
+#[cfg(not(target_os = "macos"))]
+compile_error!("leds runs only on macOS: the card sits in a MacBook's SD slot");
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -18,13 +22,20 @@ use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use config::{Color, Config, PALETTES, home};
+use config::{Config, PALETTES, home};
 use daemon::Request;
 use harness::Harness;
 use state::State;
 
 #[derive(Parser)]
-#[command(version, about = "Shows a queue of agent sessions on a SidePulse Pro")]
+#[command(
+    version,
+    about = "Shows a queue of agent sessions on a SidePulse Pro, the eight-light card in a \
+             MacBook's SD slot: red for an error, orange for a question, green for stopped and \
+             unread, blue for working",
+    after_help = "Run `leds install` once to start the service and register its hooks with \
+                  Claude Code, Codex, Grok, Cursor and Junie."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -32,45 +43,62 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the service in the foreground (launchd runs this)
-    Daemon,
     /// Start the service at login and register the hooks of every agent harness in use
+    #[command(
+        after_help = "A harness is in use when its folder is in your home directory: ~/.claude, \
+                      ~/.codex, ~/.grok, ~/.cursor or ~/.junie. Other hooks are left as they are. \
+                      Run it again after you start using another harness, or after you move or \
+                      upgrade the leds binary; running it twice changes nothing."
+    )]
     Install,
-    /// Stop the service and remove the hooks
+    /// Stop the service and remove its hooks, and nothing else
     Uninstall,
-    /// Show the queue
+    /// Show the queue: state, age, session, harness and folder of each light
     Status {
+        /// Print the queue, the settings and the card's state as JSON
         #[arg(long)]
         json: bool,
     },
-    /// Clear everything that is not working, or one session by id prefix
-    Dismiss { session: Option<String> },
-    /// Set the color of one state, e.g. `leds color question ff5000`
-    Color { state: State, color: Color },
+    /// Clear every light that is not working, or one session's
+    Dismiss {
+        /// The session to clear, by the start of its id as `leds status` shows it
+        session: Option<String>,
+    },
     /// List the palettes, or switch to one
     Palette {
+        /// The palette to switch to, such as `bright`
         name: Option<String>,
-        #[arg(long)]
+        /// List the palettes as JSON
+        #[arg(long, conflicts_with = "name")]
         json: bool,
     },
-    /// Set overall brightness, 0-255
-    Brightness { level: u8 },
-    /// Set which light shows the front of the queue: 0 or 7
-    Front { led: u8 },
-    /// Set how bright the red, green and blue dies look relative to each other,
-    /// which is what keeps every state equally bright
-    Balance { red: f64, green: f64, blue: f64 },
-    /// Show a LEDS.LED program from a file (or - for stdin), then return to the queue
+    /// Show the settings, or change one
+    #[command(after_help = settings::help())]
+    Config {
+        /// The setting to show or change, such as `snake.step_ms`; every setting without one
+        key: Option<String>,
+        /// The new value; a list such as `balance` takes one value per item
+        #[arg(requires = "key", allow_negative_numbers = true)]
+        value: Vec<String>,
+    },
+    /// Show a program in the card's own LEDS.LED language, then return to the queue
     Play {
+        /// The file that holds the program, or - to read it from stdin
         file: PathBuf,
+        /// How long to show it
         #[arg(long, default_value_t = 5.0)]
         seconds: f64,
     },
+    /// Run the service in the foreground; launchd runs this
+    Daemon,
     /// Replace every setting with a config read from stdin as JSON; used by the workshop
+    #[command(hide = true)]
     Configure,
     /// Render a scene read from stdin as JSON; used by the workshop
+    #[command(hide = true)]
     Render,
     /// Show a scene read from stdin as JSON on the device, then return to the queue; used by the workshop
+    #[command(hide = true)]
     Show {
         #[arg(long, default_value_t = 10.0)]
         seconds: f64,
@@ -127,9 +155,6 @@ fn main() -> Result<()> {
         }
         Command::Status { json } => status(json),
         Command::Dismiss { session } => daemon::request(&Request::Dismiss { session }).map(drop),
-        Command::Color { state, color } => {
-            daemon::request(&Request::Color { state, color }).map(drop)
-        }
         Command::Palette {
             name: Some(name), ..
         } => daemon::request(&Request::Palette { name }).map(drop),
@@ -137,12 +162,7 @@ fn main() -> Result<()> {
             palettes(json);
             Ok(())
         }
-        Command::Brightness { level } => daemon::request(&Request::Brightness { level }).map(drop),
-        Command::Front { led } => daemon::request(&Request::Front { led }).map(drop),
-        Command::Balance { red, green, blue } => daemon::request(&Request::Balance {
-            weights: [red, green, blue],
-        })
-        .map(drop),
+        Command::Config { key, value } => configure(key.as_deref(), &value),
         Command::Play { file, seconds } => {
             let program = if file.as_os_str() == "-" {
                 stdin()?
@@ -253,6 +273,35 @@ fn status(json: bool) -> Result<()> {
     }
     if status["device"].is_null() {
         println!("No SidePulse volume is mounted.");
+    }
+    Ok(())
+}
+
+/// Shows every setting, shows one, or changes one.
+fn configure(key: Option<&str>, values: &[String]) -> Result<()> {
+    let status = daemon::request(&Request::Status)?;
+    let config: Config =
+        serde_json::from_value(status["config"].clone()).context("reading the settings")?;
+    if let Some(key) = key
+        && !values.is_empty()
+    {
+        let config = settings::set(&config, key, values)?;
+        return daemon::request(&Request::Configure { config }).map(drop);
+    }
+    let shown: Vec<_> = settings::settings(&config)
+        .into_iter()
+        .filter(|(name, _)| {
+            key.is_none_or(|key| name == key || name.starts_with(&format!("{key}.")))
+        })
+        .collect();
+    if shown.is_empty() {
+        anyhow::bail!(
+            "no setting named {:?}; see `leds config -h`",
+            key.unwrap_or_default()
+        );
+    }
+    for (name, value) in shown {
+        println!("{name} = {value}");
     }
     Ok(())
 }

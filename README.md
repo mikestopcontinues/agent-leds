@@ -1,8 +1,49 @@
 # leds
 
-`leds` shows a queue of agent sessions on a SidePulse Pro, the eight-light card in the MacBook's SD slot. Each session that is doing something or needs something gets one light: red for an error, orange for a question, green for stopped and unread, blue for working. The queue is sorted in that order with its front on the light furthest from you, and the lights are off when there is nothing to show.
+`leds` shows a queue of agent sessions on a SidePulse Pro, the eight-light card in a MacBook's SD slot. Each session that is doing something or needs something gets one light: red for an error, orange for a question, green for stopped and unread, blue for working. The queue is sorted in that order with its front on the light furthest from you, and the lights are off when there is nothing to show.
 
-It works with Claude Code, Codex, Grok, Cursor and Junie. The colors that reach your eye have not been measured, so the workshop's "true color" view is a datasheet model to tune against the device.
+It works with Claude Code, Codex, Grok, Cursor and Junie, and runs on macOS only. It replaces SidePulse's own software, which must not drive the same card.
+
+## Install
+
+You need a Mac with an SD slot, a SidePulse Pro in it, and Rust (from [rustup](https://rustup.rs)). From a checkout of this repository:
+
+```sh
+cargo install --path .
+leds install
+```
+
+`cargo install` builds `leds` into `~/.cargo/bin`. `leds install` starts the service, which runs at login from then on, and registers its hooks with every harness whose folder is in your home directory (`~/.claude`, `~/.codex`, `~/.grok`, `~/.cursor`, `~/.junie`). It says which. It leaves every hook that is not its own as it is, and running it twice changes nothing. Sessions that start after it report to the lights.
+
+Run `leds install` again after you start using another harness, and after every upgrade: it restarts the service with the new binary and points the hooks at it.
+
+If SidePulse's own software is installed, remove it first: its hooks, its service and its eject prevention helper. Two programs writing to the card would overwrite each other, and `leds` does all that SidePulse's helper did.
+
+To remove `leds`:
+
+```sh
+leds uninstall
+cargo uninstall leds
+```
+
+`leds uninstall` stops the service and removes its LaunchAgent and its own hooks, and nothing else. Settings stay in `~/.config/leds/`, and the queue, socket and log in `~/.local/state/leds/`.
+
+## Use
+
+```sh
+leds status                        # the queue: state, age, session, harness, folder
+leds dismiss                       # clear every light that is not working
+leds palette                       # list the palettes; `leds palette bright` switches
+leds config                        # every setting
+leds config snake.step_ms 150      # change one
+leds config colors.question ff7000
+```
+
+Every command takes `-h`. `leds config -h` lists the settings with their ranges and defaults. The settings decide the colors, overall brightness, which end of the card is the front, the die balance that keeps the states equally bright, when lights clear, and how the snake that announces a change looks and moves. [How it works](#how-it-works) and [When lights clear](#when-lights-clear) explain what they do.
+
+The service keeps its settings in `~/.config/leds/config.toml` and reads the file only when it starts, so change them with `leds config`, which applies them at once. A key the service does not know is ignored, so a config from an older version still loads; a value it cannot use stops the service with a message in its log, `~/.local/state/leds/daemon.log`.
+
+`leds play` shows a program of your own, written in the card's LEDS.LED language, for a few seconds.
 
 ## How it works
 
@@ -10,7 +51,7 @@ A small daemon owns the queue and the device. Each harness reports to it through
 
 The device runs whatever program is written to its `LEDS.LED` file, in SidePulse's own animation language, limited to 512 bytes and 20 lines. The daemon writes programs only when the queue changes, so a steady display costs nothing on the Mac:
 
-- **Every state is equally bright.** A state's color sets its hue only. The renderer scales the four colors to the brightness of the dimmest hue at full strength, using the `balance` setting: how bright the red, green and blue dies look relative to each other. The default balance is an estimate and should be tuned by eye in the workshop.
+- **Every state is equally bright.** A state's color sets its hue only. The renderer scales the four colors to the brightness of the dimmest hue at full strength, using the `balance` setting: how bright the red, green and blue dies look relative to each other. The default balance is an estimate; tune it by eye with `leds config balance`.
 - **A session that comes to want you** (stopped, a question, an error) is announced by a snake. The lights fade out. A head in the color of the state a session just entered crosses the strip toward the front of the queue: up to three lights, then a dark one if wanted. It pulls the new queue in behind it as a dimmed tail and runs off the front end. The queue then rises to full brightness in a wave from its front to its back. One setting, `step_ms`, paces everything after the fade out: the head moves on a light every step, and so does the crest of the wave. Each light, the front one included, goes dark in the step before the wave reaches it, so the crest always stands against a dark light, and then rises at an even pace over seven steps. A queue of n lights therefore rises in n + 7 steps. The whole change takes two to three seconds and spans one to three programs, which the daemon writes one after another, each when the one before it ends.
 
   To fit more lines in a program, a line names only the lights that change, or gives a row cut off after its last lit light, whichever is shorter. The rise is kept in one program where it fits, so that no write falls in the middle of it.
@@ -131,11 +172,11 @@ The lights have to mean something, so every one of them has a way out:
 | Light | Clears |
 | --- | --- |
 | Working | When the turn ends with no subagent or workflow left running, or after 30 minutes of silence. |
-| Stopped | At the next prompt, or `keep_read_minutes` after you have looked at the session (15 by default, 0 to 1440). |
+| Stopped | At the next prompt, or `keep_read_minutes` after you have looked at the session. |
 | Question, weak: the turn ended on a question | The same as stopped. You may read it and leave it unanswered. |
 | Question, strong: a permission request, `AskUserQuestion` or an elicitation | When it is answered. The agent is blocked on it. |
 | Error | At the next prompt. |
-| Any | When the session ends, at `leds dismiss`, or after `abandon_days` without a word from the session (3 by default, 1 to 365). |
+| Any | When the session ends, at `leds dismiss`, or after `abandon_days` without a word from the session. |
 
 A turn that ends again in a session that had already stopped counts as new: the light is unread again and the change is announced.
 
@@ -143,41 +184,13 @@ No harness has a hook for a session being read. For Claude Code the daemon reads
 
 The files are undocumented. If the app changes them, or a session runs in a terminal or in another harness, the session is never read: its light stays until its next prompt, until the session ends, or until `abandon_days` pass. If the daemon cannot tell which session is open, because the newest file is half written or is not a Claude Code session, it marks none.
 
-## Use
+## Development
 
-```sh
-cargo install --path .
-leds install          # LaunchAgent plus the hooks of every harness in use
-leds status           # the queue: state, age, session, harness, folder
-leds dismiss          # clear everything that is not working
-leds palette          # list palettes; `leds palette bright` switches
-leds color question ff7000
-leds brightness 128
-leds balance 0.32 0.54 0.14   # how bright the red, green and blue dies look
-leds front 0          # light 7, the default, is the far end of the card in the MacBook's slot
-```
+`cargo test` runs the service's tests, and `cargo clippy --all-targets` should be clean.
 
-`leds install` registers the hook with each harness that has its folder in your home directory (`~/.claude`, `~/.codex`, `~/.grok`, `~/.cursor`, `~/.junie`) and says which. Run it again after you start using another harness. It leaves every hook that is not its own as it is, and running it twice changes nothing. `leds uninstall` removes the LaunchAgent and its own hooks, and nothing else. Settings live in `~/.config/leds/config.toml`; the socket and log are in `~/.local/state/leds/`.
+### Workshop
 
-`keep_read_minutes` and `abandon_days` set when lights clear; see [When lights clear](#when-lights-clear).
-
-The snake's settings are the `[snake]` table of the config. Levels run from 0 to 1 and timings are milliseconds:
-
-| Setting | Meaning |
-| --- | --- |
-| `head` | Brightness of the head's front, middle and back lights. A front or back at 0 is left out, which shortens the head. |
-| `gap` | Whether a dark light separates the head from the tail. |
-| `tail` | Brightness of the queue while it is pulled in. |
-| `fade_out_ms` | How long the old queue takes to go dark. |
-| `step_ms` | The pace of the rest: how long the head, and then the wave, takes to move on one light. Each step of the head is half hold, half move. |
-
-The workshop is the way to tune them. The daemon reads the file only when it starts, so change settings through the CLI or the workshop. A key the service does not know is ignored, so a config from an older version still loads; a value it cannot use stops the daemon with a message in its log.
-
-SidePulse's own software must not drive the same card, and none of it is needed. Its hooks, service and eject prevention helper can all be removed.
-
-## Workshop
-
-`prototype/` is a page for tuning the service's settings against the device.
+`prototype/` is a page for tuning the service's settings against the device. It is not part of the package: it needs [Bun](https://bun.sh) and `leds` on the `PATH`, and talks to the running service. The colors that reach your eye have not been measured, so its "true color" view is a datasheet model to tune against the device.
 
 ```sh
 cd prototype && bun install && bun run dev

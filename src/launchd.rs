@@ -3,6 +3,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
@@ -76,9 +78,22 @@ pub fn uninstall() -> Result<()> {
     }
 }
 
-/// Stops the running daemon, if launchd has one.
+/// Stops the running daemon, if launchd has one, and waits for launchd to
+/// let it go: `bootout` can return while the service is still being removed,
+/// and a `bootstrap` then fails with an input/output error.
 fn stop() {
+    let service = format!("{}/{LABEL}", domain());
     let _ = Command::new("launchctl")
-        .args(["bootout", &format!("{}/{LABEL}", domain())])
+        .args(["bootout", &service])
         .output();
+    let loaded = || {
+        Command::new("launchctl")
+            .args(["print", &service])
+            .output()
+            .is_ok_and(|output| output.status.success())
+    };
+    let started = Instant::now();
+    while loaded() && started.elapsed() < Duration::from_secs(10) {
+        thread::sleep(Duration::from_millis(100));
+    }
 }

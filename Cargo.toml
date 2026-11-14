@@ -2,6 +2,13 @@
 name = "leds"
 version = "0.1.0"
 edition = "2024"
+description = "Shows a queue of agent sessions on a SidePulse Pro's eight lights"
+license = "MIT"
+readme = "README.md"
+keywords = ["sidepulse", "claude-code", "codex", "hooks", "macos"]
+categories = ["command-line-utilities"]
+# The workshop is a page for tuning the settings and is not part of the package.
+exclude = ["/prototype", "/.claude"]
 
 [dependencies]
 anyhow = "1.0.104"

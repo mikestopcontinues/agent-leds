@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::config::{Color, Config, PALETTES, state_dir};
+use crate::config::{Config, PALETTES, state_dir};
 use crate::desktop::Desktop;
 use crate::device;
 use crate::eject;
@@ -34,21 +34,8 @@ pub enum Request {
     Dismiss {
         session: Option<String>,
     },
-    Color {
-        state: State,
-        color: Color,
-    },
     Palette {
         name: String,
-    },
-    Brightness {
-        level: u8,
-    },
-    Front {
-        led: u8,
-    },
-    Balance {
-        weights: [f64; 3],
     },
     /// Replace every setting.
     Configure {
@@ -284,11 +271,6 @@ impl Daemon {
                 }
                 Ok(Value::Null)
             }
-            Request::Color { state, color } => {
-                let mut config = self.config.clone();
-                config.colors.set(state, color);
-                self.configure(config)
-            }
             Request::Palette { name } => {
                 let named = PALETTES.iter().find(|palette| palette.name == name);
                 let colors = named
@@ -299,18 +281,6 @@ impl Daemon {
                     ..self.config.clone()
                 })
             }
-            Request::Brightness { level } => self.configure(Config {
-                brightness: level,
-                ..self.config.clone()
-            }),
-            Request::Front { led } => self.configure(Config {
-                front_led: led,
-                ..self.config.clone()
-            }),
-            Request::Balance { weights } => self.configure(Config {
-                balance: weights,
-                ..self.config.clone()
-            }),
             Request::Configure { config } => self.configure(config),
             Request::Play { program, seconds } => {
                 device::check(&program)?;
