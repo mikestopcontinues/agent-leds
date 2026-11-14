@@ -21,6 +21,7 @@ const CONFIG: Config = {
   front_led: 7,
   balance: [0.32, 0.54, 0.14],
   keep_read_minutes: 15,
+  abandon_days: 3,
   colors: { error: "#FF0060", question: "#FFA000", stopped: "#00FF80", working: "#3000FF" },
   snake: SNAKE,
 };

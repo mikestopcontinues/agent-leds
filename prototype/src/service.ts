@@ -23,6 +23,8 @@ export type Config = {
   balance: [number, number, number];
   /** How many minutes a stopped session keeps its light after it has been looked at, 0 to 1440. */
   keep_read_minutes: number;
+  /** How many days a session can stay silent before its light is dropped, whatever its state, 1 to 365. */
+  abandon_days: number;
   colors: Palette;
   snake: Snake;
 };

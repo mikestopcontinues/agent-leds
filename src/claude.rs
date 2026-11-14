@@ -47,9 +47,7 @@ pub fn report(event: &Value) -> Option<Request> {
             }
             "PostToolUseFailure" => Update::Enter(State::Working),
             "PermissionRequest" | "Elicitation" => Update::Enter(State::Question),
-            "Stop" if asks(text("last_assistant_message").unwrap_or_default()) => {
-                Update::Enter(State::Question)
-            }
+            "Stop" if asks(text("last_assistant_message").unwrap_or_default()) => Update::Asked,
             "Stop" => Update::Enter(State::Stopped),
             "StopFailure" => Update::Enter(State::Error),
             "SessionEnd" => Update::Leave,
@@ -226,7 +224,7 @@ mod tests {
         );
         assert_eq!(
             stop("I found two options.\n\n**Which should I use?**\n"),
-            Some(Update::Enter(State::Question))
+            Some(Update::Asked)
         );
         assert_eq!(
             update(event("Stop", json!({}))),

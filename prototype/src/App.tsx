@@ -286,15 +286,20 @@ export function App() {
         </section>
 
         <section>
-          <h2>Read sessions</h2>
+          <h2>Clearing lights</h2>
           <p className="note">
-            A stopped session keeps its light until you have looked at it in the desktop app, and then for this many
-            minutes more. At 0 it goes as soon as the service notices, which takes up to 15 seconds.
+            A session whose turn has ended keeps its light until you have looked at it in the desktop app, and then
+            for the minutes below. That covers stopped sessions and ones that only ended on a question. A prompt the
+            agent is blocked on, or an error, stays until it is dealt with. Any session that has been silent for the
+            days below is dropped, whatever its state.
           </p>
           <label className="field">
-            Keep minutes
-            <input type="number" min={0} max={1440} step={1} value={config.keep_read_minutes}
-              onChange={(event) => set({ keep_read_minutes: Math.min(1440, Math.max(0, Math.round(Number(event.target.value) || 0))) })} />
+            After read, minutes
+            <Whole value={config.keep_read_minutes} min={0} max={1440} onChange={(keep_read_minutes) => set({ keep_read_minutes })} />
+          </label>
+          <label className="field">
+            Silent, days
+            <Whole value={config.abandon_days} min={1} max={365} onChange={(abandon_days) => set({ abandon_days })} />
           </label>
         </section>
 
@@ -435,6 +440,15 @@ function Program(props: { title: string; text: string }) {
       </figcaption>
       <pre>{props.text}</pre>
     </figure>
+  );
+}
+
+/** A whole number within a range. */
+function Whole(props: { value: number; min: number; max: number; onChange: (value: number) => void }) {
+  const { min, max } = props;
+  return (
+    <input type="number" min={min} max={max} step={1} value={props.value}
+      onChange={(event) => props.onChange(Math.min(max, Math.max(min, Math.round(Number(event.target.value) || 0))))} />
   );
 }
 

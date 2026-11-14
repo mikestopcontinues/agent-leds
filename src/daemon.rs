@@ -14,9 +14,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::config::{Color, Config, PALETTES, state_dir};
+use crate::desktop::Desktop;
+use crate::device;
 use crate::render::{self, Step};
-use crate::state::{Change, Queue, State, Update};
-use crate::{desktop, device};
+use crate::state::{Change, Expiry, Queue, State, Update};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -108,6 +109,8 @@ fn saved_queue() -> Queue {
 
 /// How often to read the device's uptime, which also keeps the SD reader awake.
 const DEVICE_CHECK: Duration = Duration::from_secs(15);
+/// How long a check that falls in the middle of an animation waits before trying again.
+const ANIMATION_CHECK: Duration = Duration::from_secs(1);
 
 struct Daemon {
     config: Config,
@@ -121,6 +124,9 @@ struct Daemon {
     /// The device's last uptime, or None while it is missing or needs a rewrite.
     uptime: Option<u64>,
     next_check: Instant,
+    /// When the last check ran, in Unix milliseconds. A long gap means the Mac slept.
+    checked: u64,
+    desktop: Desktop,
 }
 
 pub fn run() -> Result<()> {
@@ -141,14 +147,19 @@ pub fn run() -> Result<()> {
         }
     });
 
+    let mut queue = saved_queue();
+    // Nothing was listening while the daemon was down.
+    queue.woke(now_ms());
     let mut daemon = Daemon {
         config: Config::load()?,
-        queue: saved_queue(),
+        queue,
         pending: VecDeque::new(),
         settle_at: None,
         holding: false,
         uptime: None,
         next_check: Instant::now(),
+        checked: now_ms(),
+        desktop: Desktop::default(),
     };
     loop {
         let deadline = daemon
@@ -215,8 +226,8 @@ impl Daemon {
             } => {
                 match self.queue.apply(&session, &label, update, now_ms()) {
                     Change::Entered(state) => {
-                        if state == State::Stopped {
-                            // A session that stops while the user is looking at it is read already.
+                        if matches!(state, State::Stopped | State::Question) {
+                            // A session whose turn ends while the user is looking at it is read already.
                             self.mark_read();
                         }
                         self.save_queue();
@@ -322,34 +333,59 @@ impl Daemon {
             self.advance();
         }
         if self.next_check <= now {
+            // A check reads the card and the desktop app's files, which can
+            // take long enough to delay the next program of an animation.
+            if !self.pending.is_empty() {
+                self.next_check = now + ANIMATION_CHECK;
+                return;
+            }
             self.next_check = now + DEVICE_CHECK;
-            let read = self.mark_read();
-            let keep_read_ms = u64::from(self.config.keep_read_minutes) * 60_000;
-            let left = self.queue.expire(now_ms(), keep_read_ms);
-            if read || left {
-                self.save_queue();
-            }
-            if left {
-                self.refresh();
-            }
-            match device::uptime_ms() {
-                Ok(uptime) => {
-                    if self.uptime.is_none_or(|last| uptime < last) {
-                        self.steady();
-                    }
-                    self.uptime = Some(uptime);
-                }
-                Err(_) => self.uptime = None,
-            }
+            self.check();
         }
     }
 
-    /// Notes which stopped sessions the user has looked at since they stopped.
+    /// Drops the sessions whose light no longer means anything, and rewrites
+    /// the queue if the card restarted.
+    fn check(&mut self) {
+        let now = now_ms();
+        // The monotonic clock that times the checks stops while the Mac
+        // sleeps; the wall clock shows how long it was.
+        if now.saturating_sub(self.checked) > 4 * DEVICE_CHECK.as_millis() as u64 {
+            self.queue.woke(now);
+        }
+        self.checked = now;
+        let read = self.mark_read();
+        let expiry = Expiry {
+            keep_read_ms: u64::from(self.config.keep_read_minutes) * 60_000,
+            abandon_ms: u64::from(self.config.abandon_days) * 24 * 60 * 60_000,
+        };
+        let left = self.queue.expire(now, expiry);
+        if read || left {
+            self.save_queue();
+        }
+        if left {
+            self.refresh();
+        }
+        match device::uptime_ms() {
+            Ok(uptime) => {
+                let restarted = self.uptime.is_none_or(|last| uptime < last);
+                self.uptime = Some(uptime);
+                if restarted {
+                    // If this write fails it clears the uptime, so the next check tries again.
+                    self.steady();
+                }
+            }
+            Err(_) => self.uptime = None,
+        }
+    }
+
+    /// Notes which sessions the user has looked at since their turn ended.
     fn mark_read(&mut self) -> bool {
         let Some(since) = self.queue.unread_since() else {
             return false;
         };
-        self.queue.mark_read(&desktop::looked_at(since, now_ms()))
+        let looked_at = self.desktop.looked_at(since, now_ms());
+        self.queue.mark_read(&looked_at)
     }
 
     fn save_queue(&self) {

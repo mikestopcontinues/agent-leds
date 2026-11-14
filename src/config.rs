@@ -217,6 +217,9 @@ pub struct Config {
     /// How long a stopped session keeps its light after the user has looked
     /// at it, in minutes. One that has not been looked at keeps it.
     pub keep_read_minutes: u32,
+    /// How many days a session can go without reporting anything before its
+    /// light is dropped, whatever its state.
+    pub abandon_days: u32,
     pub colors: Palette,
     pub snake: Snake,
 }
@@ -228,6 +231,7 @@ impl Default for Config {
             front_led: 7,
             balance: [0.32, 0.54, 0.14],
             keep_read_minutes: 15,
+            abandon_days: 3,
             colors: PALETTES[0].colors,
             snake: Snake::default(),
         }
@@ -266,6 +270,9 @@ impl Config {
         }
         if self.keep_read_minutes > 24 * 60 {
             return Err("a read session keeps its light for 0-1440 minutes".into());
+        }
+        if !(1..=365).contains(&self.abandon_days) {
+            return Err("a silent session is dropped after 1-365 days".into());
         }
         let snake = &self.snake;
         if !snake
@@ -363,6 +370,11 @@ mod tests {
         );
         assert!(with(|config| config.snake.fade_out_ms = 5001).is_err());
         assert!(with(|config| config.keep_read_minutes = 1440).is_ok());
+        assert!(
+            with(|config| config.abandon_days = 0)
+                .unwrap_err()
+                .contains("days")
+        );
         assert!(
             with(|config| config.keep_read_minutes = 1441)
                 .unwrap_err()

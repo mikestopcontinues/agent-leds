@@ -27,7 +27,7 @@ The daemon reads the card's uptime every 15 seconds. The read keeps the SD reade
 | --- | --- |
 | `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `ElicitationResult` | working |
 | `PreToolUse` for `AskUserQuestion`, `PermissionRequest`, `Elicitation` | question |
-| `Stop` whose last line ends in a question mark | question |
+| `Stop` whose last line ends in a question mark | question, as a weak signal |
 | `Stop` otherwise | stopped |
 | `StopFailure` | error |
 | `SessionEnd`, or a tool aborted by an interrupt | removed |
@@ -35,15 +35,26 @@ The daemon reads the card's uptime every 15 seconds. The read keeps the SD reade
 Events from subagents never say what the session needs, but they do say that work is going on. A stopped session whose background subagent runs a tool goes back to working; a session with a question or an error stays as it is. Two gaps follow from what Claude Code reports:
 
 - A subagent's permission request does not turn the session orange, because nothing after it says which agent was answered.
-- Claude Code fires no hook when you interrupt a turn between tool calls, so that session stays blue until its next prompt, or for 30 minutes of silence.
+- Claude Code fires no hook when you interrupt a turn between tool calls, so that session stays blue until its next prompt, or for 30 minutes of silence. Time the Mac spent asleep, or the daemon spent stopped, does not count as silence.
 
-### Read sessions
+### When lights clear
 
-A stopped session keeps its light until you have looked at it, and then for `keep_read_minutes` more (15 by default, 0 to 1440). Its next prompt, `leds dismiss` or the end of the session still clear it at once. A question or an error stays until it is dealt with.
+The lights have to mean something, so every one of them has a way out:
 
-Claude Code has no hook for a session being read, so the daemon reads the desktop app's own session files, under `~/Library/Application Support/Claude/claude-code-sessions/`. Each records the session id the hooks report and when the session was last opened. A stopped session counts as read when it was opened after it stopped, or when it is the session open in the app while the app is the frontmost one, which the daemon asks `lsappinfo`. It checks when a session stops and every 15 seconds while a stopped session is unread. `leds status` shows when each was read.
+| Light | Clears |
+| --- | --- |
+| Working | When the turn ends, or after 30 minutes of silence. |
+| Stopped | At the next prompt, or `keep_read_minutes` after you have looked at the session (15 by default, 0 to 1440). |
+| Question, weak: the turn ended on a question | The same as stopped. You may read it and leave it unanswered. |
+| Question, strong: a permission request, `AskUserQuestion` or an elicitation | When it is answered. The agent is blocked on it. |
+| Error | At the next prompt. |
+| Any | When the session ends, at `leds dismiss`, or after `abandon_days` without a word from the session (3 by default, 1 to 365). |
 
-The files are undocumented. If the app changes them, or a session runs in a terminal, the session is never read and keeps its light as before.
+A turn that ends again in a session that had already stopped counts as new: the light is unread again and the change is announced.
+
+Claude Code has no hook for a session being read, so the daemon reads the desktop app's own session files, under `~/Library/Application Support/Claude/claude-code-sessions/`. Each records the session id the hooks report and when the session was last opened. A session counts as read when it was opened after its turn ended, or when it is the session open in the app while the app is the frontmost one, which the daemon asks `lsappinfo`. It checks when a turn ends and every 15 seconds while a session is unread. `leds status` shows when each was read.
+
+The files are undocumented. If the app changes them, or a session runs in a terminal, the session is never read: its light stays until its next prompt or until `abandon_days` pass. If the daemon cannot tell which session is open, because the newest file is half written or is not a Claude Code session, it marks none.
 
 ## Use
 
@@ -61,7 +72,7 @@ leds front 0          # light 7, the default, is the far end of the card in the 
 
 `leds uninstall` removes the LaunchAgent and the hooks. Settings live in `~/.config/leds/config.toml`; the socket and log are in `~/.local/state/leds/`.
 
-`keep_read_minutes` is how long a stopped session keeps its light after you have looked at it; see [Read sessions](#read-sessions).
+`keep_read_minutes` and `abandon_days` set when lights clear; see [When lights clear](#when-lights-clear).
 
 The snake's settings are the `[snake]` table of the config. Levels run from 0 to 1 and timings are milliseconds:
 
@@ -86,7 +97,7 @@ cd prototype && bun install && bun run dev
 ```
 
 - The lights on the page are what the installed `leds` binary renders for a test queue, run in the firmware's own interpreter (`vendor/sdled.wasm`, from the SidePulse project). So the page shows what the device will do.
-- Every setting is on the page: the snake, how long a read session keeps its light, the state colors and palettes, overall brightness, the front light and the die balance. Changes apply to the page only until "Save to the service", which replaces the service's settings at once. "Revert" returns to what the service has.
+- Every setting is on the page: the snake, when lights clear, the state colors and palettes, overall brightness, the front light and the die balance. Changes apply to the page only until "Save to the service", which replaces the service's settings at once. "Revert" returns to what the service has.
 - "Show on device" plays the page's queue and unsaved settings on the real card for ten seconds, then the real queue returns.
 - "Equal brightness" shows the three dies side by side, on the page or the device, so the balance can be set by eye.
 - "Preview look" is how the page draws the lights and is not saved. "True color" shows how a value looks on the Pro's WS2816 LEDs rather than as the same hex on a screen; `src/color.ts` explains the model and its assumptions. Its defaults (response 0.6, diffusion 0.2) were matched against the device by eye.
@@ -97,6 +108,7 @@ cd prototype && bun install && bun run dev
 
 - Whether the desktop app records a session as opened when its window comes back to the front with that session already showing. If it does not, the session is read at the daemon's next check, up to 15 seconds later.
 - "The app is in front" does not mean you are at the screen, or on the Code tab. A session that stops in the open tab while you are away is read at once and leaves after `keep_read_minutes`.
+- Whether "the last line ends in a question mark" is the right weak signal. SidePulse's own software uses a narrower rule: the line must open with a question word or an offer such as "want me to", and casual closers such as "anything else?" do not count.
 - How the snake looks on the card. Each program is written when the one before it should end, so a slow write shows as a short pause in the snake.
 - The default die balance (0.32, 0.54, 0.14) starts from the dies' luminance and allows for saturated red and blue looking brighter than their luminance. It has not been checked against the device.
 - The color model assumes the firmware's white balance lands on D65 and uses estimated die chromaticities. Its response was matched by eye at 0.6, below the 1 the datasheet's linear light gives, so dim values look brighter than their share of the light. Hue accuracy has not been checked the same way.

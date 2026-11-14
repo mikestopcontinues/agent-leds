@@ -205,12 +205,16 @@ fn status(json: bool) -> Result<()> {
             seconds @ 60..3600 => format!("{}m", seconds / 60),
             seconds => format!("{}h{:02}m", seconds / 3600, seconds % 3600 / 60),
         };
+        let weak = match item["weak"].as_bool() {
+            Some(true) => "  ended on a question",
+            _ => "",
+        };
         let read = match &item["read"] {
             Value::Null => String::new(),
             at => format!("  read {} ago", age(at)),
         };
         println!(
-            "{:<9} {:>6}  {}  {}{read}",
+            "{:<9} {:>6}  {}  {}{weak}{read}",
             item["state"].as_str().unwrap_or_default(),
             age(&item["since"]),
             item["session"]
