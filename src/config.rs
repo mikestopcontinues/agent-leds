@@ -182,14 +182,12 @@ pub struct Snake {
     pub gap: bool,
     /// How bright the queue is while it trails the head, as a share of its resting brightness.
     pub tail: f64,
-    /// How long each step holds still before the snake moves on.
-    pub hold_ms: u32,
-    /// How long the move to the next light takes.
-    pub move_ms: u32,
-    /// How long the old queue takes to fade out before the snake enters.
+    /// How long the old queue takes to fade out, in milliseconds.
     pub fade_out_ms: u32,
-    /// How long the new queue takes to rise to full brightness once it is in place.
-    pub fade_in_ms: u32,
+    /// The pace of everything after that: how long it takes to move on one
+    /// light, in milliseconds. The snake's head advances a light in this
+    /// time, and so does the crest of the wave that follows it.
+    pub step_ms: u32,
 }
 
 impl Default for Snake {
@@ -198,10 +196,8 @@ impl Default for Snake {
             head: [0.6, 1.0, 0.0],
             gap: true,
             tail: 0.3,
-            hold_ms: 60,
-            move_ms: 90,
             fade_out_ms: 300,
-            fade_in_ms: 500,
+            step_ms: 120,
         }
     }
 }
@@ -273,11 +269,11 @@ impl Config {
         {
             return Err("the snake's brightness levels are between 0 and 1".into());
         }
-        let timings = [snake.move_ms, snake.fade_out_ms, snake.fade_in_ms];
-        if timings.iter().any(|&ms| ms == 0 || ms > LONGEST_MS) || snake.hold_ms > LONGEST_MS {
-            return Err(format!(
-                "the snake's hold takes up to {LONGEST_MS} ms and its other timings 1-{LONGEST_MS} ms"
-            ));
+        if ![snake.fade_out_ms, snake.step_ms]
+            .iter()
+            .all(|ms| (1..=LONGEST_MS).contains(ms))
+        {
+            return Err(format!("the snake's timings are 1-{LONGEST_MS} ms"));
         }
         Ok(())
     }
@@ -354,12 +350,11 @@ mod tests {
         assert!(with(|config| config.snake.head[0] = f64::NAN).is_err());
         assert!(with(|config| config.snake.head[2] = -0.1).is_err());
         assert!(
-            with(|config| config.snake.move_ms = 0)
+            with(|config| config.snake.step_ms = 0)
                 .unwrap_err()
                 .contains("timings")
         );
-        assert!(with(|config| config.snake.fade_in_ms = 6000).is_err());
-        assert_eq!(with(|config| config.snake.hold_ms = 0), Ok(()));
+        assert!(with(|config| config.snake.fade_out_ms = 5001).is_err());
     }
 
     #[test]

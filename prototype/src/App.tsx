@@ -251,7 +251,7 @@ export function App() {
           <h2>Change animation</h2>
           <p className="note">
             The lights fade out. A head in the new state's color crosses the strip toward the front of the queue and
-            pulls the new queue in as its tail. The queue then rises to full in a wave from its front to its back: each light goes dark just before the wave reaches it, then rises at an even pace.
+            pulls the new queue in as its tail. The queue then rises to full in a wave from its front to its back: each light, the front one included, goes dark just before the wave reaches it, then rises at an even pace.
           </p>
           <h3>Head</h3>
           {["Front", "Middle", "Back"].map((light, index) => (
@@ -267,15 +267,10 @@ export function App() {
           <Slider label="Brightness" title="brightness of the queue while it is pulled in" value={snake.tail}
             min={0} max={1} step={0.05} onChange={(tail) => setSnake({ tail })} />
           <h3>Timing</h3>
-          <Slider label="Hold ms" title="how long each step stays still" value={snake.hold_ms}
-            min={0} max={400} step={10} onChange={(hold_ms) => setSnake({ hold_ms })} />
-          <Slider label="Move ms" title="how long the move to the next light takes" value={snake.move_ms}
-            min={10} max={400} step={10} onChange={(move_ms) => setSnake({ move_ms })} />
           <Slider label="Fade out ms" title="how long the old queue takes to go dark" value={snake.fade_out_ms}
             min={10} max={1500} step={10} onChange={(fade_out_ms) => setSnake({ fade_out_ms })} />
-          <h3>Arrival</h3>
-          <Slider label="Fade in ms" title="how long the wave takes to bring a full strip of eight lights to full; each light takes half of it, and a shorter queue is done sooner" value={snake.fade_in_ms}
-            min={10} max={1500} step={10} onChange={(fade_in_ms) => setSnake({ fade_in_ms })} />
+          <Slider label="Step ms" title="the pace of the rest: how long the head, and then the wave, takes to move on one light; each light rises over seven steps" value={snake.step_ms}
+            min={20} max={400} step={5} onChange={(step_ms) => setSnake({ step_ms })} />
           <p className="note">
             {change
               ? `The change takes ${(changeMs / 1000).toFixed(2)} s in ${rendering?.steps.length === 1 ? "one program" : `${rendering?.steps.length ?? 0} programs`}.`

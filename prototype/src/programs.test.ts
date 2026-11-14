@@ -13,10 +13,8 @@ const SNAKE: Snake = {
   head: [0.6, 1, 0],
   gap: true,
   tail: 0.3,
-  hold_ms: 60,
-  move_ms: 90,
   fade_out_ms: 300,
-  fade_in_ms: 500,
+  step_ms: 150,
 };
 const CONFIG: Config = {
   brightness: 255,
@@ -64,8 +62,8 @@ function settled(rendering: Rendering): RGB[] {
   return play(rendering.steady, 330)[0]!;
 }
 
-/** How long the rise takes for this many lights: it is timed for a full strip of eight, and each light fewer saves a fourteenth. */
-const riseMs = (lights: number, snake: Snake = SNAKE) => Math.floor((snake.fade_in_ms * (lights + 6)) / 14);
+/** How long the rise takes for this many lights: each goes dark a step after the one in front, then rises over seven. */
+const riseMs = (lights: number, snake: Snake = SNAKE) => snake.step_ms * (lights + 7);
 
 const many = (count: number, state: State) => Array<State>(count).fill(state);
 const OVERFLOW = [...many(9, "error"), ...many(9, "question"), ...many(9, "stopped"), ...many(9, "working")];
@@ -102,7 +100,7 @@ test("a change: a dim nose, a bright light and a dark one lead the dimmed queue 
   const dim = (state: State) => rgb(scaled(lit[state], SNAKE.tail));
   const nose = rgb(scaled(lit.stopped, SNAKE.head[0]));
   const bright = rgb(lit.stopped);
-  const stepMs = SNAKE.hold_ms + SNAKE.move_ms;
+  const stepMs = SNAKE.step_ms;
   const at = (ms: number) => {
     play(`${lit.working} ${lit.working}`, 100);
     return during(rendering, ms);
@@ -114,8 +112,8 @@ test("a change: a dim nose, a bright light and a dark one lead the dimmed queue 
   const step = (n: number) => at(SNAKE.fade_out_ms + (n + 1) * stepMs);
   expect(step(1)).toEqual([bright, nose, BLACK, BLACK, BLACK, BLACK, BLACK, BLACK]);
   expect(step(5)).toEqual([dim("working"), dim("stopped"), dim("question"), BLACK, bright, nose, BLACK, BLACK]);
-  // Each step holds before the snake moves on, so each light is seen at its level.
-  expect(at(SNAKE.fade_out_ms + 6 * stepMs + SNAKE.hold_ms - 10)).toEqual(step(5));
+  // Each step holds for half its time before the snake moves on, so each light is seen at its level.
+  expect(at(SNAKE.fade_out_ms + 6 * stepMs + stepMs / 2 - 10)).toEqual(step(5));
   // The head has left the far end and the dimmed queue is in place, then it rises to full.
   expect(step(10)).toEqual([BLACK, BLACK, BLACK, BLACK, BLACK, dim("working"), dim("stopped"), dim("question")]);
   const full = [BLACK, BLACK, BLACK, BLACK, BLACK, rgb(lit.working), rgb(lit.stopped), rgb(lit.question)];
@@ -125,45 +123,44 @@ test("a change: a dim nose, a bright light and a dark one lead the dimmed queue 
 });
 
 test("the queue rises in a wave from its front, each light dark just before the wave reaches it", async () => {
-  // A full strip would take 560 ms: each light takes 280 ms and starts 40 ms after the one in front.
-  const snake: Snake = { ...SNAKE, tail: 0.5, fade_in_ms: 560 };
+  const snake: Snake = { ...SNAKE, tail: 0.5, step_ms: 40 };
   const rendering = await render(scene(["error", "question", "stopped", "working"], "working", { snake }));
-  const arrived = snake.fade_out_ms + 11 * (snake.hold_ms + snake.move_ms);
+  const arrived = snake.fade_out_ms + 11 * snake.step_ms;
   const full = play(rendering.steady, 1000)[0]!;
   /** How bright each of the four lights is, as a share of full, front of the queue first. */
-  const levels = (ms: number) => {
+  const levels = (steps: number) => {
     play("off", 100);
-    const lights = during(rendering, arrived + ms);
+    const lights = during(rendering, arrived + steps * snake.step_ms);
     return [7, 6, 5, 4].map((led) => Math.max(...lights[led]!) / Math.max(...full[led]!));
   };
   const tail = levels(0);
   for (const level of tail) expect(level).toBeCloseTo(0.5, 1);
 
-  // As the second light starts it is dark, the front one is the crest, and the rest wait at the tail's brightness.
-  const [crest, ahead, ...waiting] = levels(40);
-  expect(crest).toBeGreaterThan(0.55);
-  expect(ahead).toBe(0);
-  expect(waiting).toEqual(tail.slice(2));
+  // The front light goes dark first, while the rest wait at the tail's brightness.
+  const [front, ...waiting] = levels(1);
+  expect(front).toBe(0);
+  expect(waiting).toEqual(tail.slice(1));
 
-  // One start later the dark light has moved on: the wave runs toward the back.
-  const later = levels(80);
-  expect(later[0]).toBeGreaterThan(crest!);
-  expect(later[1]).toBeGreaterThan(0.1);
-  expect(later[2]).toBe(0);
+  // A step later the front light is the crest and the dark light has moved on: the wave runs toward the back.
+  const later = levels(2);
+  expect(later[0]).toBeCloseTo(1 / 7, 1);
+  expect(later[1]).toBe(0);
+  expect(later.slice(2)).toEqual(tail.slice(2));
 
-  // A light rises at an even pace: the front one is halfway from the tail's brightness at half its time.
-  expect(levels(140)[0]).toBeCloseTo(0.75, 1);
-  // Four lights are done in ten fourteenths of the time a full strip takes.
-  expect(riseMs(4, snake)).toBe(400);
-  expect(levels(400)).toEqual([1, 1, 1, 1]);
+  // A light rises from dark at an even pace over seven steps: the front one is halfway at four and a half.
+  expect(levels(4.5)[0]).toBeCloseTo(0.5, 1);
+  // Four lights are done in eleven steps.
+  expect(riseMs(4, snake)).toBe(440);
+  expect(levels(10)[3]).toBeLessThan(1);
+  expect(levels(11)).toEqual([1, 1, 1, 1]);
 });
 
 test("every change is accepted by the firmware and ends on the queue, in the hardest cases", async () => {
   const snakes: Snake[] = [
     SNAKE,
-    { ...SNAKE, tail: 0.5, fade_in_ms: 750 },
-    { head: [0, 0, 0], gap: false, tail: 0, hold_ms: 0, move_ms: 1, fade_out_ms: 1, fade_in_ms: 1 },
-    { head: [1, 1, 1], gap: true, tail: 1, hold_ms: 5000, move_ms: 5000, fade_out_ms: 5000, fade_in_ms: 5000 },
+    { ...SNAKE, tail: 0.5, step_ms: 55 },
+    { head: [0, 0, 0], gap: false, tail: 0, fade_out_ms: 1, step_ms: 1 },
+    { head: [1, 1, 1], gap: true, tail: 1, fade_out_ms: 5000, step_ms: 5000 },
   ];
   for (const states of [["error"], STATES.slice(), many(8, "working"), OVERFLOW] as State[][]) {
     for (const announce of [null, ...new Set(states)]) {
@@ -183,7 +180,7 @@ test("every change is accepted by the firmware and ends on the queue, in the har
 
 test("the service refuses settings it cannot render", async () => {
   const child = Bun.spawn(["leds", "render"], {
-    stdin: new Blob([JSON.stringify(scene(["error"], "error", { snake: { ...SNAKE, move_ms: 0 } }))]),
+    stdin: new Blob([JSON.stringify(scene(["error"], "error", { snake: { ...SNAKE, step_ms: 0 } }))]),
     stdout: "pipe",
     stderr: "pipe",
   });

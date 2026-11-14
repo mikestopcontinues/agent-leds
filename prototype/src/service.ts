@@ -11,10 +11,10 @@ export type Snake = {
   /** Whether a dark light separates the head from the tail. */
   gap: boolean;
   tail: number;
-  hold_ms: number;
-  move_ms: number;
+  /** How long the old queue takes to fade out. */
   fade_out_ms: number;
-  fade_in_ms: number;
+  /** The pace of everything after that: how long the head, and then the wave, takes to move on one light. */
+  step_ms: number;
 };
 
 export type Config = {
