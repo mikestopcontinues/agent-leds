@@ -1,0 +1,234 @@
+//! Saved settings: the color of each state, brightness and which end is the front.
+
+use std::fmt;
+use std::fs;
+use std::path::PathBuf;
+use std::str::FromStr;
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
+use crate::state::State;
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Color(pub u8, pub u8, pub u8);
+
+impl Color {
+    pub const OFF: Color = Color(0, 0, 0);
+
+    /// The color a stacked light dips to when it breathes.
+    pub fn dimmed(self) -> Color {
+        Color(self.0 / 8, self.1 / 8, self.2 / 8)
+    }
+}
+
+impl FromStr for Color {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, String> {
+        let digits = text.strip_prefix('#').unwrap_or(text);
+        if digits.len() != 6 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!("{text:?} is not a color; use RRGGBB"));
+        }
+        let channel = |at: usize| u8::from_str_radix(&digits[at..at + 2], 16).unwrap();
+        Ok(Color(channel(0), channel(2), channel(4)))
+    }
+}
+
+impl TryFrom<String> for Color {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        text.parse()
+    }
+}
+
+impl From<Color> for String {
+    fn from(color: Color) -> String {
+        color.to_string()
+    }
+}
+
+impl fmt::Display for Color {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "#{:02X}{:02X}{:02X}", self.0, self.1, self.2)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Palette {
+    pub error: Color,
+    pub question: Color,
+    pub stopped: Color,
+    pub working: Color,
+}
+
+impl Palette {
+    pub fn of(&self, state: State) -> Color {
+        match state {
+            State::Error => self.error,
+            State::Question => self.question,
+            State::Stopped => self.stopped,
+            State::Working => self.working,
+        }
+    }
+
+    pub fn set(&mut self, state: State, color: Color) {
+        match state {
+            State::Error => self.error = color,
+            State::Question => self.question = color,
+            State::Stopped => self.stopped = color,
+            State::Working => self.working = color,
+        }
+    }
+}
+
+pub struct NamedPalette {
+    pub name: &'static str,
+    pub about: &'static str,
+    pub colors: Palette,
+}
+
+const fn palette(error: u32, question: u32, stopped: u32, working: u32) -> Palette {
+    const fn color(hex: u32) -> Color {
+        Color((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
+    }
+    Palette {
+        error: color(error),
+        question: color(question),
+        stopped: color(stopped),
+        working: color(working),
+    }
+}
+
+/// Palettes chosen for RGB LEDs, which mix colors from three narrow-band dies
+/// whose light output is linear in the value sent. Single-die colors are the
+/// most reliable; mixed colors carry far less green than their screen
+/// equivalents because the green die is the brightest.
+pub const PALETTES: [NamedPalette; 6] = [
+    NamedPalette {
+        name: "signal",
+        about: "red, orange, green, blue; orange is the only mixed color",
+        colors: palette(0xFF0000, 0xFF3000, 0x00FF00, 0x0000FF),
+    },
+    NamedPalette {
+        name: "azure",
+        about: "signal with a lighter blue and amber, easier to tell apart off-axis",
+        colors: palette(0xFF0000, 0xFF5000, 0x00FF20, 0x0050FF),
+    },
+    NamedPalette {
+        name: "colorblind",
+        about: "separates the states on the blue-yellow axis for red-green color blindness",
+        colors: palette(0xFF0030, 0xFF9000, 0x00FFC0, 0x0030FF),
+    },
+    NamedPalette {
+        name: "neon",
+        about: "two-die colors, the brightest the LEDs can make",
+        colors: palette(0xFF0050, 0xFFA000, 0x00FF80, 0x6000FF),
+    },
+    NamedPalette {
+        name: "soft",
+        about: "a little of every die in each color, gentler in a dark room",
+        colors: palette(0xFF1808, 0xFF5810, 0x30FF28, 0x1838FF),
+    },
+    NamedPalette {
+        name: "ember",
+        about: "warm states with working in violet instead of blue",
+        colors: palette(0xFF0000, 0xFF4000, 0x90FF00, 0x9000FF),
+    },
+];
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Config {
+    /// Overall brightness, 0-255.
+    pub brightness: u8,
+    /// The light that shows the front of the queue: 0 or 7.
+    pub front_led: u8,
+    pub colors: Palette,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            brightness: 255,
+            front_led: 7,
+            colors: PALETTES[0].colors,
+        }
+    }
+}
+
+impl Config {
+    pub fn load() -> Result<Config> {
+        let path = config_file();
+        match fs::read_to_string(&path) {
+            Ok(text) => {
+                toml::from_str(&text).with_context(|| format!("reading {}", path.display()))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+            Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
+        }
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let path = config_file();
+        fs::create_dir_all(path.parent().unwrap())?;
+        fs::write(&path, toml::to_string(self)?)
+            .with_context(|| format!("writing {}", path.display()))
+    }
+}
+
+pub fn home() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").expect("HOME is set"))
+}
+
+fn config_file() -> PathBuf {
+    home().join(".config/leds/config.toml")
+}
+
+/// Where the daemon keeps its socket and log.
+pub fn state_dir() -> PathBuf {
+    home().join(".local/state/leds")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn colors_parse_and_print() {
+        assert_eq!("ff3a00".parse::<Color>().unwrap(), Color(0xFF, 0x3A, 0x00));
+        assert_eq!("#00FF66".parse::<Color>().unwrap().to_string(), "#00FF66");
+        assert!("red".parse::<Color>().is_err());
+        assert!("#fff".parse::<Color>().is_err());
+    }
+
+    #[test]
+    fn config_round_trips_and_fills_defaults() {
+        let config = Config {
+            brightness: 90,
+            ..Config::default()
+        };
+        assert_eq!(
+            toml::from_str::<Config>(&toml::to_string(&config).unwrap()).unwrap(),
+            config
+        );
+        assert_eq!(toml::from_str::<Config>("brightness = 90").unwrap(), config);
+    }
+
+    #[test]
+    fn palettes_keep_the_states_distinct() {
+        for named in &PALETTES {
+            let colors = State::ALL.map(|state| named.colors.of(state));
+            for (index, color) in colors.iter().enumerate() {
+                assert!(
+                    !colors[..index].contains(color),
+                    "{} repeats {color}",
+                    named.name
+                );
+            }
+        }
+    }
+}
