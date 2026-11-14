@@ -179,7 +179,8 @@ pub enum FadeIn {
 
 /// The animation that announces a change: a head in the new state's color
 /// crosses the dark strip and pulls the new queue in behind it as a dimmed
-/// tail, which can crunch against the front end before it settles.
+/// tail, which then rises to full brightness and can crunch against the
+/// front end as it does.
 ///
 /// Brightness levels are shares from 0 to 1 and timings are milliseconds.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -198,21 +199,13 @@ pub struct Snake {
     pub move_ms: u32,
     /// How long the old queue takes to fade out before the snake enters.
     pub fade_out_ms: u32,
-    /// How long the new queue takes to rise to full brightness once it is in
-    /// place. The rise and the crunch start together.
+    /// How long the new queue takes to rise to full brightness once it is in place.
     pub fade_in_ms: u32,
     /// The order in which the queue's lights rise.
     pub fade_in: FadeIn,
-    /// How far the queue squeezes toward the front end when it arrives, as a
-    /// share of its length. 0 is no crunch.
+    /// How far each item presses toward the front end in the middle of its
+    /// rise, as a share of its distance from that end. 0 is no crunch.
     pub crunch: f64,
-    /// How long the squeeze takes.
-    pub crunch_ms: u32,
-    /// How far past its resting length the queue springs back, as a share of
-    /// the squeeze. 0 returns straight to rest.
-    pub bounce: f64,
-    /// How long the queue takes to spring back and come to rest.
-    pub spring_ms: u32,
 }
 
 impl Default for Snake {
@@ -227,9 +220,6 @@ impl Default for Snake {
             fade_in_ms: 500,
             fade_in: FadeIn::FrontToBack,
             crunch: 0.0,
-            crunch_ms: 120,
-            bounce: 0.4,
-            spring_ms: 350,
         }
     }
 }
@@ -293,24 +283,16 @@ impl Config {
             return Err("each die's brightness must be above 0".into());
         }
         let snake = &self.snake;
-        let levels = [snake.tail, snake.crunch, snake.bounce];
+        let levels = [snake.tail, snake.crunch];
         if !snake
             .head
             .iter()
             .chain(&levels)
             .all(|level| (0.0..=1.0).contains(level))
         {
-            return Err(
-                "the snake's brightness levels, crunch and bounce are between 0 and 1".into(),
-            );
+            return Err("the snake's brightness levels and crunch are between 0 and 1".into());
         }
-        let timings = [
-            snake.move_ms,
-            snake.fade_out_ms,
-            snake.fade_in_ms,
-            snake.crunch_ms,
-            snake.spring_ms,
-        ];
+        let timings = [snake.move_ms, snake.fade_out_ms, snake.fade_in_ms];
         if timings.iter().any(|&ms| ms == 0 || ms > LONGEST_MS) || snake.hold_ms > LONGEST_MS {
             return Err(format!(
                 "the snake's hold takes up to {LONGEST_MS} ms and its other timings 1-{LONGEST_MS} ms"
@@ -395,7 +377,7 @@ mod tests {
                 .unwrap_err()
                 .contains("timings")
         );
-        assert!(with(|config| config.snake.spring_ms = 6000).is_err());
+        assert!(with(|config| config.snake.fade_in_ms = 6000).is_err());
         assert_eq!(with(|config| config.snake.hold_ms = 0), Ok(()));
     }
 

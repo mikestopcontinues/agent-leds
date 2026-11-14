@@ -17,12 +17,8 @@ export type Snake = {
   fade_in_ms: number;
   /** Whether the queue's lights rise all at once or the front of the queue first. */
   fade_in: "together" | "front_to_back";
-  /** How far the queue squeezes toward the front end when it arrives; 0 is no crunch. */
+  /** How far each item presses toward the front end in the middle of its rise; 0 is no crunch. */
   crunch: number;
-  crunch_ms: number;
-  /** How far past its resting length the queue springs back, as a share of the squeeze. */
-  bounce: number;
-  spring_ms: number;
 };
 
 export type Config = {

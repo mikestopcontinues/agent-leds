@@ -251,7 +251,7 @@ export function App() {
           <h2>Change animation</h2>
           <p className="note">
             The lights fade out. A head in the new state's color crosses the strip toward the front of the queue and
-            pulls the new queue in as its tail. The queue then rises to full, and can crunch against the front end while it does.
+            pulls the new queue in as its tail. The queue then rises to full. With a crunch, each light presses toward the front end and comes back along the same curve as its rise.
           </p>
           <h3>Head</h3>
           {["Front", "Middle", "Back"].map((light, index) => (
@@ -273,7 +273,8 @@ export function App() {
             min={10} max={400} step={10} onChange={(move_ms) => setSnake({ move_ms })} />
           <Slider label="Fade out ms" title="how long the old queue takes to go dark" value={snake.fade_out_ms}
             min={10} max={1500} step={10} onChange={(fade_out_ms) => setSnake({ fade_out_ms })} />
-          <Slider label="Fade in ms" title="how long the new queue takes to rise to full; the rise and the crunch start together" value={snake.fade_in_ms}
+          <h3>Arrival</h3>
+          <Slider label="Fade in ms" title="how long the new queue takes to rise to full" value={snake.fade_in_ms}
             min={10} max={1500} step={10} onChange={(fade_in_ms) => setSnake({ fade_in_ms })} />
           <label className="field" title="whether the queue's lights rise all at once, or the front of the queue first with each light starting a little after the one in front">
             Fade in
@@ -282,15 +283,8 @@ export function App() {
               <option value="together">all at once</option>
             </select>
           </label>
-          <h3>Crunch</h3>
-          <Slider label="Amount" title="how far the queue squeezes toward the front end when it arrives; 0 is no crunch"
+          <Slider label="Crunch" title="how far each light presses toward the front end in the middle of its rise, before it comes back to its place; 0 is no crunch"
             value={snake.crunch} min={0} max={1} step={0.05} onChange={(crunch) => setSnake({ crunch })} />
-          <Slider label="Squeeze ms" title="how long the squeeze takes" value={snake.crunch_ms}
-            min={10} max={600} step={10} onChange={(crunch_ms) => setSnake({ crunch_ms })} />
-          <Slider label="Bounce" title="how far past its resting length the queue springs back, as a share of the squeeze; 0 returns straight to rest"
-            value={snake.bounce} min={0} max={1} step={0.05} onChange={(bounce) => setSnake({ bounce })} />
-          <Slider label="Spring ms" title="how long the queue takes to spring back and come to rest" value={snake.spring_ms}
-            min={10} max={1500} step={10} onChange={(spring_ms) => setSnake({ spring_ms })} />
           <p className="note">
             {change
               ? `The change takes ${(changeMs / 1000).toFixed(2)} s in ${rendering?.steps.length ?? 0} programs.`

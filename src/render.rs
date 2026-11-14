@@ -11,6 +11,10 @@ use crate::state::State;
 
 pub const LEDS: usize = 8;
 
+/// The colors of the lights by position along the strip, position 0 being
+/// the front of the queue.
+type Lights = [Color; LEDS];
+
 /// One program of an animation and how long it runs before the next is written.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Step {
@@ -75,11 +79,18 @@ pub fn balanced(config: &Config) -> Palette {
 
 /// The program that holds the queue on the lights.
 pub fn steady(slots: &[State], config: &Config) -> String {
-    let colors = balanced(config);
-    let queue = row(config, |position| {
-        queue_color(slots, &colors, position, 1.0)
-    });
-    format!("{}{queue} ease", settings(config))
+    let lights = in_led_order(&queue(slots, &balanced(config), 1.0), config);
+    let row = lights.map(|color| color.to_string()).join(" ");
+    format!("{}{row} ease", settings(config))
+}
+
+/// What the lights reach by the end of one line of an animation.
+struct Frame {
+    lights: Lights,
+    /// How long the lights first stay as they are, in milliseconds.
+    hold_ms: u32,
+    /// How long they then take to get there, at an even pace.
+    move_ms: u32,
 }
 
 /// A line of a program and how long it runs.
@@ -91,16 +102,36 @@ type Line = (String, u32);
 /// The lights fade out. A head in the state's color enters at the end
 /// furthest from the front of the queue and pulls the new queue in behind it
 /// as a dimmed tail. The head runs off the front end, which leaves the queue
-/// in place. The queue then rises to full brightness, and can crunch against
-/// that end and spring back while it does.
-///
-/// Every step is a full row of colors, so the whole animation does not fit
-/// in one program.
+/// in place, and the queue rises to full brightness.
 pub fn announce(state: State, slots: &[State], config: &Config) -> Vec<Step> {
     let colors = balanced(config);
     let snake = &config.snake;
-    let color = colors.of(state);
 
+    let mut shown = [Color::OFF; LEDS];
+    let mut line = |frame: &Frame| {
+        let text = written(&shown, frame, config);
+        shown = frame.lights;
+        (text, frame.hold_ms + frame.move_ms)
+    };
+    // The fade and the snake's steps can be split between programs anywhere.
+    let mut groups: Vec<Vec<Line>> = vec![vec![(
+        format!("off {}ms ease", snake.fade_out_ms),
+        snake.fade_out_ms,
+    )]];
+    for frame in crossing(state, slots, &colors, snake) {
+        groups.push(vec![line(&frame)]);
+    }
+    // The arrival is many short lines, so it is kept in one program where it
+    // fits: a write in the middle of it could show as a hitch.
+    let arrival = arrival(slots, &colors, snake);
+    groups.push(arrival.iter().map(&mut line).collect());
+    packed(&groups, config)
+}
+
+/// The snake crossing the dark strip, one light at a time, until its head
+/// has run off the front end and the dimmed queue is in place.
+fn crossing(state: State, slots: &[State], colors: &Palette, snake: &Snake) -> Vec<Frame> {
+    let color = colors.of(state);
     // The head from its front back, then the dark light that sets it apart
     // from the tail. A front or back light with no brightness is left out.
     let [front, middle, back] = snake.head;
@@ -114,193 +145,163 @@ pub fn announce(state: State, slots: &[State], config: &Config) -> Vec<Step> {
     if snake.gap {
         head.push(Color::OFF);
     }
+    let tail = queue(slots, colors, snake.tail);
 
     // With the head's front `reach` lights in, queue item k trails the head at reach - head.len() - k.
-    let frame = |reach: usize| {
-        row(config, |position| {
-            match reach.checked_sub(LEDS - 1 - position) {
+    (0..LEDS + head.len())
+        .map(|reach| Frame {
+            lights: std::array::from_fn(|position| match reach.checked_sub(LEDS - 1 - position) {
                 None => Color::OFF,
                 Some(behind) if behind < head.len() => head[behind],
-                Some(behind) => queue_color(slots, &colors, behind - head.len(), snake.tail),
+                Some(behind) => tail[behind - head.len()],
+            }),
+            // Each step holds still, then moves. Without the hold a light is at
+            // its level only for an instant, so a bright light never looks bright.
+            hold_ms: snake.hold_ms,
+            move_ms: snake.move_ms,
+        })
+        .collect()
+}
+
+/// The longest a line of the arrival runs. The firmware moves the lights at
+/// an even pace within a line, so the curves are only as smooth as the lines
+/// are short.
+const ARRIVAL_LINE_MS: u32 = 45;
+/// The most lines the arrival is cut into, which a long rise spreads out over.
+const ARRIVAL_LINES: u32 = 12;
+
+/// The dimmed queue, in place, rising to full brightness.
+///
+/// Each item follows one curve from the start of its rise to the end. Its
+/// brightness climbs gently, quickens, and settles. If the queue crunches,
+/// the item also presses toward the front end and comes back to its place
+/// along the same curve, furthest in at the middle of its rise. So when the
+/// lights rise front to back the crunch runs down the queue with them.
+fn arrival(slots: &[State], colors: &Palette, snake: &Snake) -> Vec<Frame> {
+    let lines = snake
+        .fade_in_ms
+        .div_ceil(ARRIVAL_LINE_MS)
+        .clamp(1, ARRIVAL_LINES);
+    // When each item rises, as shares of the whole rise. Front to back, each
+    // takes half of it, and they start evenly spaced so that the last one
+    // ends as the rise does.
+    let (each, stagger) = match snake.fade_in {
+        FadeIn::FrontToBack if slots.len() > 1 => (0.5, 0.5 / (slots.len() - 1) as f64),
+        _ => (1.0, 0.0),
+    };
+
+    (1..=lines)
+        .map(|line| {
+            let from_ms = snake.fade_in_ms * (line - 1) / lines;
+            let to_ms = snake.fade_in_ms * line / lines;
+            let elapsed = f64::from(to_ms) / f64::from(snake.fade_in_ms);
+            let mut light = [[0.0_f64; 3]; LEDS];
+            for (item, &state) in slots.iter().enumerate() {
+                let progress = ((elapsed - item as f64 * stagger) / each).clamp(0.0, 1.0);
+                // Gentle at both ends.
+                let risen = progress * progress * (3.0 - 2.0 * progress);
+                let pressed = if risen < 1.0 {
+                    snake.crunch * (std::f64::consts::PI * risen).sin()
+                } else {
+                    0.0
+                };
+                // An item between two lights shares its light between them.
+                let at = item as f64 * (1.0 - pressed);
+                let level = brightness(snake.tail, risen);
+                let color = colors.of(state);
+                for (position, share) in [
+                    (at as usize, 1.0 - at.fract()),
+                    (at as usize + 1, at.fract()),
+                ] {
+                    if position < LEDS {
+                        for (sum, value) in
+                            light[position].iter_mut().zip([color.0, color.1, color.2])
+                        {
+                            *sum += f64::from(value) * level * share;
+                        }
+                    }
+                }
+            }
+            Frame {
+                lights: light.map(|dies| {
+                    let [red, green, blue] =
+                        dies.map(|value| value.round().clamp(0.0, 255.0) as u8);
+                    Color(red, green, blue)
+                }),
+                hold_ms: 0,
+                move_ms: to_ms - from_ms,
             }
         })
+        .collect()
+}
+
+/// How bright a light is, as a share of full, when it has risen this far from
+/// the tail's brightness.
+///
+/// Brightness is seen roughly as the 1/2.2 power of light, so a rise that
+/// looks even is even in what is seen, not in the light sent.
+fn brightness(tail: f64, risen: f64) -> f64 {
+    const SEEN: f64 = 2.2;
+    let dim = tail.powf(1.0 / SEEN);
+    (dim + (1.0 - dim) * risen).powf(SEEN)
+}
+
+/// The queue at rest, at a share of its brightness.
+fn queue(slots: &[State], colors: &Palette, level: f64) -> Lights {
+    std::array::from_fn(|position| {
+        slots
+            .get(position)
+            .map_or(Color::OFF, |&state| colors.of(state).scaled(level))
+    })
+}
+
+/// The lights by number, as the device counts them, rather than by position along the queue.
+fn in_led_order(lights: &Lights, config: &Config) -> [Color; LEDS] {
+    std::array::from_fn(|led| {
+        lights[if config.front_led == 0 {
+            led
+        } else {
+            LEDS - 1 - led
+        }]
+    })
+}
+
+/// The line that takes the lights from what they show to a frame, written
+/// whichever of two ways is shorter, so that more lines fit in a program.
+fn written(shown: &Lights, frame: &Frame, config: &Config) -> String {
+    let (from, to) = (
+        in_led_order(shown, config),
+        in_led_order(&frame.lights, config),
+    );
+    // A row of colors from light 0. Lights past the end of a row go dark, so
+    // trailing dark lights are left off. A single color would fill the strip,
+    // so a row has at least two.
+    let length = to
+        .iter()
+        .rposition(|&color| color != Color::OFF)
+        .map_or(0, |last| last + 1)
+        .max(2);
+    let row = to[..length]
+        .iter()
+        .map(Color::to_string)
+        .collect::<Vec<_>>()
+        .join(" ");
+    // Only the lights that change, each by its number.
+    let changed = (0..LEDS)
+        .filter(|&led| to[led] != from[led])
+        .map(|led| format!("{led}:{}", to[led]))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let colors = if changed.is_empty() || row.len() <= changed.len() {
+        row
+    } else {
+        changed
     };
-    // Each step holds still, then moves. Without the hold a light is at its
-    // level only for an instant, so the bright light never looks bright.
-    let hold = match snake.hold_ms {
+    let hold = match frame.hold_ms {
         0 => String::new(),
         ms => format!(" {ms}ms"),
     };
-
-    // The fade and the snake's steps can be split between programs anywhere.
-    let mut groups: Vec<Vec<Line>> = vec![vec![(
-        format!("off {}ms ease", snake.fade_out_ms),
-        snake.fade_out_ms,
-    )]];
-    // The last step has the whole head past the front end and the queue in place.
-    groups.extend((0..LEDS + head.len()).map(|reach| {
-        vec![(
-            format!("{} {}ms linear{hold}", frame(reach), snake.move_ms),
-            snake.hold_ms + snake.move_ms,
-        )]
-    }));
-    // The arrival is quick, so it is kept in one program: a write in the
-    // middle of the crunch would show as a hitch.
-    groups.push(arrival(slots, &colors, config));
-    packed(&groups, config)
-}
-
-/// When each item of the arriving queue rises from the tail's brightness to full.
-struct Rise {
-    /// How long one item takes, in milliseconds.
-    each_ms: f64,
-    /// How long after the item in front of it an item starts.
-    stagger_ms: f64,
-}
-
-impl Rise {
-    fn new(snake: &Snake, items: usize) -> Rise {
-        let whole_ms = f64::from(snake.fade_in_ms);
-        match snake.fade_in {
-            // Each item takes half the rise, and they start evenly spaced so
-            // that the last one ends as the rise does.
-            FadeIn::FrontToBack if items > 1 => Rise {
-                each_ms: whole_ms / 2.0,
-                stagger_ms: whole_ms / 2.0 / (items - 1) as f64,
-            },
-            _ => Rise {
-                each_ms: whole_ms,
-                stagger_ms: 0.0,
-            },
-        }
-    }
-
-    fn start_ms(&self, item: usize) -> f64 {
-        item as f64 * self.stagger_ms
-    }
-
-    /// How far an item has risen this long into the rise, from 0 to 1.
-    fn risen(&self, item: usize, elapsed_ms: u32) -> f64 {
-        ((f64::from(elapsed_ms) - self.start_ms(item)) / self.each_ms).clamp(0.0, 1.0)
-    }
-}
-
-/// The lines for the dimmed queue arriving at the front end: it rises to
-/// full brightness, and if it crunches it meanwhile squeezes toward that end,
-/// springs back a little past its resting length if it bounces, and comes to
-/// rest.
-fn arrival(slots: &[State], colors: &Palette, config: &Config) -> Vec<Line> {
-    let snake = &config.snake;
-    // Each stage of the crunch: the queue's length, how long it takes to get there, and the easing.
-    let mut stages = Vec::new();
-    if snake.crunch > 0.0 {
-        stages.push((1.0 - snake.crunch, snake.crunch_ms, "ease-out"));
-        let mut rest_ms = snake.spring_ms;
-        if snake.bounce > 0.0 {
-            let out_ms = (snake.spring_ms * 3 / 5).max(1);
-            rest_ms = (snake.spring_ms - out_ms).max(1);
-            stages.push((1.0 + snake.crunch * snake.bounce, out_ms, "ease-in-out"));
-        }
-        stages.push((1.0, rest_ms, "ease-in-out"));
-    }
-
-    // The rise starts with the crunch, so each stage shows every item as
-    // bright as it has got by the time that stage ends.
-    let rise = Rise::new(snake, slots.len());
-    let mut elapsed_ms = 0;
-    let mut lines: Vec<Line> = stages
-        .into_iter()
-        .map(|(length, ms, easing)| {
-            elapsed_ms += ms;
-            let lights = stretched(slots, colors, length, |item| {
-                snake.tail + (1.0 - snake.tail) * rise.risen(item, elapsed_ms)
-            });
-            let colors = row(config, |position| lights[position]);
-            (format!("{colors} {ms}ms {easing}"), ms)
-        })
-        .collect();
-    lines.extend(rest_of_rise(slots, colors, config, &rise, elapsed_ms));
-    lines
-}
-
-/// The line that takes the queue, at rest, the rest of the way to full
-/// brightness from `elapsed_ms` into the rise, if any of the rise is left.
-fn rest_of_rise(
-    slots: &[State],
-    colors: &Palette,
-    config: &Config,
-    rise: &Rise,
-    elapsed_ms: u32,
-) -> Option<Line> {
-    let left_ms = config.snake.fade_in_ms.checked_sub(elapsed_ms)?;
-    // A light that has not started rising eases in and out; one on its way eases out.
-    let easing = |started: bool| if started { "ease-out" } else { "ease" };
-    if rise.stagger_ms == 0.0 {
-        let queue = row(config, |position| queue_color(slots, colors, position, 1.0));
-        let line = format!("{queue} {left_ms}ms {}", easing(elapsed_ms > 0));
-        return (left_ms > 0).then_some((line, left_ms));
-    }
-    // Each light has its own start and duration, so each is its own segment.
-    let lights: Vec<String> = slots
-        .iter()
-        .enumerate()
-        .filter_map(|(item, &state)| {
-            let from_ms = rise.start_ms(item).max(f64::from(elapsed_ms));
-            let ms = (rise.start_ms(item) + rise.each_ms - from_ms).round() as u32;
-            let delay = match (from_ms - f64::from(elapsed_ms)).round() as u32 {
-                0 => String::new(),
-                ms => format!(" {ms}ms"),
-            };
-            let started = rise.start_ms(item) < f64::from(elapsed_ms);
-            (ms > 0).then(|| {
-                format!(
-                    "{}:{} {ms}ms {}{delay}",
-                    led(item, config),
-                    colors.of(state),
-                    easing(started)
-                )
-            })
-        })
-        .collect();
-    (!lights.is_empty()).then(|| (lights.join(";"), left_ms))
-}
-
-/// The queue with its length scaled from the front end and each item at a
-/// share of its brightness, as the color at each position along the strip.
-///
-/// Each item covers `length` lights, centered `length` apart, and a light
-/// shows the items that cover it, in proportion. A stretched queue is as
-/// bright as it is at rest and simply reaches further; what reaches past the
-/// last light is not shown. A squeezed queue keeps all its light, so its
-/// items add up on fewer lights and it is brightest at the end it is pressed
-/// against. At a length of 1 this is the queue as it rests.
-fn stretched(
-    slots: &[State],
-    colors: &Palette,
-    length: f64,
-    level: impl Fn(usize) -> f64,
-) -> [Color; LEDS] {
-    // A queue squeezed to nothing still sits on the front light.
-    let length = length.max(0.01);
-    let mut light = [[0.0_f64; 3]; LEDS];
-    for (item, &state) in slots.iter().enumerate() {
-        let color = colors.of(state);
-        let density = level(item) / length.min(1.0);
-        let center = item as f64 * length;
-        for (position, sums) in light.iter_mut().enumerate() {
-            let covered = (center + length / 2.0).min(position as f64 + 0.5)
-                - (center - length / 2.0).max(position as f64 - 0.5);
-            if covered > 0.0 {
-                for (sum, value) in sums.iter_mut().zip([color.0, color.1, color.2]) {
-                    *sum += f64::from(value) * covered * density;
-                }
-            }
-        }
-    }
-    light.map(|dies| {
-        let [red, green, blue] = dies.map(|value| value.round().clamp(0.0, 255.0) as u8);
-        Color(red, green, blue)
-    })
+    format!("{colors} {}ms linear{hold}", frame.move_ms)
 }
 
 /// Packs an animation's lines into as few programs as the device accepts.
@@ -342,32 +343,6 @@ fn packed(groups: &[Vec<Line>], config: &Config) -> Vec<Step> {
     steps
 }
 
-/// The color of the queue's item at `position`, position 0 being the front, at a share of its brightness.
-fn queue_color(slots: &[State], colors: &Palette, position: usize, level: f64) -> Color {
-    slots
-        .get(position)
-        .map_or(Color::OFF, |&state| colors.of(state).scaled(level))
-}
-
-/// The light at a position along the strip, position 0 being the front of the queue.
-fn led(position: usize, config: &Config) -> usize {
-    if config.front_led == 0 {
-        position
-    } else {
-        LEDS - 1 - position
-    }
-}
-
-/// The colors of the eight lights in physical order, given the color for each
-/// position along the strip.
-fn row(config: &Config, color_at: impl Fn(usize) -> Color) -> String {
-    let mut lights = [Color::OFF; LEDS];
-    for position in 0..LEDS {
-        lights[led(position, config)] = color_at(position);
-    }
-    lights.map(|color| color.to_string()).join(" ")
-}
-
 fn settings(config: &Config) -> String {
     if config.brightness == 255 {
         String::new()
@@ -380,6 +355,8 @@ fn settings(config: &Config) -> String {
 mod tests {
     use super::*;
     use State::*;
+
+    const DARK: &str = "#000000 #000000 #000000 #000000 #000000 #000000 #000000 #000000";
 
     /// One letter per light.
     fn shape(states: &[State]) -> String {
@@ -401,7 +378,49 @@ mod tests {
 
     /// Every line of an animation, across its programs.
     fn lines(steps: &[Step]) -> Vec<&str> {
-        steps.iter().flat_map(|step| step.program.lines()).collect()
+        steps
+            .iter()
+            .flat_map(|step| step.program.lines())
+            .filter(|line| !line.starts_with("brightness"))
+            .collect()
+    }
+
+    /// The lights by number after each line of an animation, read as the
+    /// firmware reads them, with the rest of the line: its timing.
+    fn played(steps: &[Step]) -> Vec<(String, String)> {
+        let mut lights = vec!["#000000"; LEDS];
+        lines(steps)
+            .into_iter()
+            .map(|line| {
+                let (colors, timing): (Vec<&str>, Vec<&str>) = line
+                    .split(' ')
+                    .partition(|token| token.contains('#') || *token == "off");
+                if colors[0].contains(':') {
+                    for (led, color) in colors.iter().map(|token| token.split_once(':').unwrap()) {
+                        lights[led.parse::<usize>().unwrap()] = color;
+                    }
+                } else if colors == ["off"] {
+                    lights.fill("#000000");
+                } else {
+                    assert!(colors.len() > 1, "a single color would fill the strip");
+                    for (led, light) in lights.iter_mut().enumerate() {
+                        *light = colors.get(led).copied().unwrap_or("#000000");
+                    }
+                }
+                (lights.join(" "), timing.join(" "))
+            })
+            .collect()
+    }
+
+    /// A snake over this many milliseconds of rise, for looking at the arrival alone.
+    fn rising(fade_in: FadeIn, fade_in_ms: u32, tail: f64, crunch: f64) -> Snake {
+        Snake {
+            fade_in,
+            fade_in_ms,
+            tail,
+            crunch,
+            ..Snake::default()
+        }
     }
 
     #[test]
@@ -473,35 +492,52 @@ mod tests {
     #[test]
     fn the_snake_leads_the_dimmed_queue_in_then_the_queue_rises() {
         let steps = announce(Stopped, &slots(&[Error, Stopped]), &plain(7));
-        let lines = lines(&steps);
-        assert_eq!(lines.len(), 13);
-        assert_eq!(lines[0], "off 300ms ease");
-        // The nose enters at light 0, the end furthest from the front, at 60%.
+        let played = played(&steps);
+        assert_eq!(played[0], (DARK.to_owned(), "300ms ease".to_owned()));
+        // The head's front enters at light 0, the end furthest from the front, at 60%.
         assert_eq!(
-            lines[1],
-            "#009900 #000000 #000000 #000000 #000000 #000000 #000000 #000000 90ms linear 60ms"
+            played[1],
+            (
+                "#009900 #000000 #000000 #000000 #000000 #000000 #000000 #000000".to_owned(),
+                "90ms linear 60ms".to_owned()
+            )
         );
-        // Nose, bright light, dark light, then the queue at 30% with its front first.
+        // Front light, bright light, dark light, then the queue at 30% with its front first.
         assert_eq!(
-            lines[6],
-            "#000000 #004D00 #4D0000 #000000 #00FF00 #009900 #000000 #000000 90ms linear 60ms"
+            played[6].0,
+            "#000000 #004D00 #4D0000 #000000 #00FF00 #009900 #000000 #000000"
         );
         // The head has left the front end and the dimmed queue is in place.
         assert_eq!(
-            lines[11],
-            "#000000 #000000 #000000 #000000 #000000 #000000 #004D00 #4D0000 90ms linear 60ms"
+            played[11].0,
+            "#000000 #000000 #000000 #000000 #000000 #000000 #004D00 #4D0000"
         );
-        // The queue rises front first: each light takes half the rise, the second starting as the first ends.
-        assert_eq!(lines[12], "7:#FF0000 250ms ease;6:#00FF00 250ms ease 250ms");
+        // The rise is cut into twelve lines and ends on the queue.
+        assert_eq!(played.len(), 1 + 11 + 12);
+        assert_eq!(
+            played[23].0,
+            "#000000 #000000 #000000 #000000 #000000 #000000 #00FF00 #FF0000"
+        );
         // Its running time is the fades plus eleven steps.
         let total: u64 = steps.iter().map(|step| step.ms).sum();
         assert_eq!(total, 300 + 11 * 150 + 500);
     }
 
     #[test]
-    fn the_snake_runs_toward_whichever_end_is_the_front() {
+    fn a_line_is_written_the_shorter_way() {
+        let steps = announce(Stopped, &slots(&[Error, Stopped]), &plain(7));
+        let lines = lines(&steps);
+        // One light changes: it is named.
+        assert_eq!(lines[1], "0:#009900 90ms linear 60ms");
+        // The first two lights change and the rest are dark: a short row says so in less.
+        assert_eq!(lines[2], "#00FF00 #009900 90ms linear 60ms");
+        // With the front on light 0 the snake enters at light 7.
         let steps = announce(Stopped, &[], &plain(0));
-        assert!(lines(&steps)[1].ends_with("#009900 90ms linear 60ms"));
+        assert_eq!(lines_of(&steps)[1], "7:#009900 90ms linear 60ms");
+
+        fn lines_of(steps: &[Step]) -> Vec<&str> {
+            steps.iter().flat_map(|step| step.program.lines()).collect()
+        }
     }
 
     #[test]
@@ -517,19 +553,22 @@ mod tests {
             fade_in_ms: 200,
             ..Snake::default()
         };
-        let steps = announce(Error, &slots(&[Error]), &config);
-        let lines = lines(&steps);
-        // A front light at 0 is left out and there is no gap, so the head is two lights: ten steps.
-        assert_eq!(lines.len(), 12);
-        assert_eq!(lines[0], "off 100ms ease");
+        let played = played(&announce(Error, &slots(&[Error]), &config));
+        // A front light at 0 is left out and there is no gap, so the head is
+        // two lights: ten steps. Then the rise, in five lines.
+        assert_eq!(played.len(), 1 + 10 + 5);
+        assert_eq!(played[0].1, "100ms ease");
         // No hold, so no delay is written.
-        assert_eq!(
-            lines[1],
-            "#FF0000 #000000 #000000 #000000 #000000 #000000 #000000 #000000 40ms linear"
-        );
+        assert_eq!(played[1].1, "40ms linear");
+        assert!(played[1].0.starts_with("#FF0000 #000000 "));
         // The bright light, the back light at half, then the queue at half with nothing between.
-        assert!(lines[4].starts_with("#000000 #800000 #800000 #FF0000 #000000 "));
-        assert!(lines[11].ends_with("#FF0000 200ms ease"));
+        assert!(
+            played[4]
+                .0
+                .starts_with("#000000 #800000 #800000 #FF0000 #000000 ")
+        );
+        assert_eq!(played[10].0, format!("{} #800000", &DARK[..55]));
+        assert_eq!(played[15].0, format!("{} #FF0000", &DARK[..55]));
     }
 
     #[test]
@@ -537,150 +576,113 @@ mod tests {
         let mut config = plain(7);
         config.snake.head = [0.2, 1.0, 0.6];
         config.snake.gap = false;
-        let steps = announce(Stopped, &slots(&[Error]), &config);
+        let played = played(&announce(Stopped, &slots(&[Error]), &config));
         assert_eq!(
-            lines(&steps)[5],
-            "#000000 #4D0000 #009900 #00FF00 #003300 #000000 #000000 #000000 90ms linear 60ms"
+            played[5].0,
+            "#000000 #4D0000 #009900 #00FF00 #003300 #000000 #000000 #000000"
         );
     }
 
     #[test]
-    fn the_queue_crunches_against_the_front_end_then_springs_back() {
-        let mut config = plain(7);
-        config.snake = Snake {
-            tail: 1.0,
-            crunch: 0.5,
-            crunch_ms: 120,
-            bounce: 0.5,
-            spring_ms: 300,
-            ..Snake::default()
-        };
-        config.snake.fade_in = FadeIn::Together;
-        let steps = announce(Working, &slots(&[Error, Stopped, Working]), &config);
-        let arrival: Vec<&str> = lines(&steps).split_off(12);
-        assert_eq!(
-            arrival,
-            [
-                // Squeezed to half its length: the items pile up on the two lights at the front.
-                "#000000 #000000 #000000 #000000 #000000 #000000 #0080FF #FF8000 120ms ease-out",
-                // Sprung back a quarter past its resting length: as bright, reaching a light further.
-                "#000000 #000000 #000000 #000000 #00009F #00609F #20DF00 #FF0000 180ms ease-in-out",
-                "#000000 #000000 #000000 #000000 #000000 #0000FF #00FF00 #FF0000 120ms ease-in-out",
-                // The rest of the 500 ms rise, which this tail at full brightness does not show.
-                "#000000 #000000 #000000 #000000 #000000 #0000FF #00FF00 #FF0000 80ms ease-out",
-            ]
-        );
-        // The arrival is one program, so no write falls in the middle of the crunch.
-        let last = steps.last().unwrap();
-        assert_eq!(last.program, arrival.join("\n"));
-        assert_eq!(last.ms, 500);
-
-        // Without a bounce the queue returns straight to rest.
-        config.snake.bounce = 0.0;
-        let steps = announce(Working, &slots(&[Error, Stopped, Working]), &config);
-        let arrival: Vec<&str> = lines(&steps).split_off(12);
-        assert_eq!(arrival.len(), 3);
-        assert!(arrival[1].ends_with("#FF0000 300ms ease-in-out"));
+    fn the_queue_rises_gently_at_both_ends() {
+        let snake = rising(FadeIn::Together, 450, 0.0, 0.0);
+        let colors = plain(7).colors;
+        let frames = arrival(&[Error; 3], &colors, &snake);
+        // Ten lines of 45 ms.
+        assert_eq!(frames.len(), 10);
+        assert!(frames.iter().all(|frame| frame.move_ms == 45));
+        let reds: Vec<u8> = frames.iter().map(|frame| frame.lights[0].0).collect();
+        assert!(reds.is_sorted());
+        // Barely lit a fifth of the way in, about a fifth of its light halfway, and most of it by four fifths.
+        assert!(reds[1] < 10);
+        assert!((50..=60).contains(&reds[4]));
+        assert!(reds[7] > 190);
+        assert_eq!(reds[9], 255);
+        // Every light rises together.
+        for frame in &frames {
+            assert_eq!(frame.lights[1], frame.lights[0]);
+            assert_eq!(frame.lights[2], frame.lights[0]);
+        }
     }
 
     #[test]
-    fn the_queue_rises_while_it_crunches() {
-        let mut config = plain(7);
-        config.snake = Snake {
-            tail: 0.5,
-            fade_in_ms: 400,
-            crunch: 0.5,
-            crunch_ms: 100,
-            bounce: 0.5,
-            spring_ms: 300,
-            ..Snake::default()
-        };
-        let steps = announce(Error, &slots(&[Error]), &config);
-        // A quarter of the way up after the squeeze, 70% after springing back, full at rest.
-        assert_eq!(
-            lines(&steps).split_off(12),
-            [
-                "#000000 #000000 #000000 #000000 #000000 #000000 #000000 #9F0000 100ms ease-out",
-                "#000000 #000000 #000000 #000000 #000000 #000000 #1B0000 #D90000 180ms ease-in-out",
-                "#000000 #000000 #000000 #000000 #000000 #000000 #000000 #FF0000 120ms ease-in-out",
-            ]
-        );
-        // A rise shorter than the crunch is over before the queue is at rest.
-        config.snake.fade_in_ms = 100;
-        let steps = announce(Error, &slots(&[Error]), &config);
-        assert!(lines(&steps)[12].ends_with("#FF0000 100ms ease-out"));
-    }
-
-    #[test]
-    fn the_queue_can_rise_all_at_once_or_front_to_back() {
-        let mut config = plain(7);
-        config.snake.fade_in_ms = 400;
-        let queue = slots(&[Error, Stopped, Working]);
-        let last = |config: &Config| {
-            lines(&announce(Error, &queue, config))
-                .pop()
-                .unwrap()
-                .to_owned()
-        };
-
-        config.snake.fade_in = FadeIn::Together;
-        assert_eq!(
-            last(&config),
-            "#000000 #000000 #000000 #000000 #000000 #0000FF #00FF00 #FF0000 400ms ease"
-        );
+    fn the_queue_can_rise_front_to_back() {
+        let snake = rising(FadeIn::FrontToBack, 450, 0.0, 0.0);
+        let frames = arrival(&[Error; 3], &plain(7).colors, &snake);
         // Each light takes half the rise and starts a quarter of it after the one in front.
-        config.snake.fade_in = FadeIn::FrontToBack;
-        assert_eq!(
-            last(&config),
-            "7:#FF0000 200ms ease;6:#00FF00 200ms ease 100ms;5:#0000FF 200ms ease 200ms"
-        );
-        // With the front on light 0 the rise runs the other way.
-        config.front_led = 0;
-        assert!(last(&config).starts_with("0:#FF0000 200ms ease;1:#00FF00"));
+        // Halfway, the front light is done, the next is halfway and the last has not started.
+        let halfway = frames[4].lights;
+        assert_eq!(halfway[0].0, 255);
+        assert!((50..=60).contains(&halfway[1].0));
+        assert_eq!(halfway[2].0, 0);
+        assert_eq!(frames[9].lights[..3], [Color(255, 0, 0); 3]);
+        // A single item has nothing to follow, so it takes the whole rise.
+        let alone = arrival(&[Error], &plain(7).colors, &snake);
+        assert!((50..=60).contains(&alone[4].lights[0].0));
     }
 
     #[test]
-    fn a_front_to_back_rise_runs_through_the_crunch() {
-        let mut config = plain(7);
-        config.snake = Snake {
-            tail: 0.0,
-            fade_in_ms: 400,
-            crunch: 0.5,
-            crunch_ms: 100,
-            bounce: 0.0,
-            spring_ms: 100,
-            ..Snake::default()
-        };
-        let steps = announce(Error, &slots(&[Error, Working]), &config);
+    fn the_queue_crunches_in_and_back_along_its_rise() {
+        let queue = [Error, Stopped, Working];
+        let colors = plain(7).colors;
+        let snake = rising(FadeIn::Together, 450, 1.0, 0.5);
+        let frames = arrival(&queue, &colors, &snake);
+        // Barely moved at first: the last item is still mostly on its own light.
+        assert!(frames[0].lights[2].2 > 200);
+        // Furthest in at the middle of the rise: half its length, piled on the two front lights.
         assert_eq!(
-            lines(&steps).split_off(12),
-            [
-                // The front light is halfway up as the squeeze ends; the one behind has not started.
-                "#000000 #000000 #000000 #000000 #000000 #000000 #000000 #800000 100ms ease-out",
-                "#000000 #000000 #000000 #000000 #000000 #000000 #000000 #FF0000 100ms ease-in-out",
-                // The front light is done, so only the one behind it is left to rise.
-                "6:#0000FF 200ms ease",
-            ]
+            frames[4].lights[..3],
+            [Color(255, 128, 0), Color(0, 128, 255), Color::OFF]
+        );
+        // Back in place at the end.
+        assert_eq!(
+            frames[9].lights[..3],
+            [Color(255, 0, 0), Color(0, 255, 0), Color(0, 0, 255)]
+        );
+        // Without a crunch nothing moves.
+        let still = arrival(&queue, &colors, &rising(FadeIn::Together, 450, 1.0, 0.0));
+        assert!(still.iter().all(|frame| frame.lights == frames[9].lights));
+    }
+
+    #[test]
+    fn a_front_to_back_crunch_runs_down_the_queue_with_the_rise() {
+        let snake = rising(FadeIn::FrontToBack, 450, 0.2, 0.5);
+        let frames = arrival(&[Error, Stopped, Working], &plain(7).colors, &snake);
+        let halfway = frames[4].lights;
+        // The front item has risen. The one behind it is halfway up and
+        // pressed half a light toward the front, so the front light has some
+        // of its green. The last has neither moved nor risen.
+        assert_eq!(halfway[0].0, 255);
+        assert!(halfway[0].1 > 0);
+        assert_eq!(halfway[1].1, halfway[0].1);
+        assert_eq!(halfway[2], Color(0, 0, 51));
+        assert_eq!(
+            frames[9].lights[..3],
+            [Color(255, 0, 0), Color(0, 255, 0), Color(0, 0, 255)]
         );
     }
 
     #[test]
-    fn a_full_strip_stays_lit_when_the_queue_springs_past_its_end() {
-        let mut config = plain(7);
-        config.snake = Snake {
-            tail: 1.0,
-            crunch: 0.5,
-            bounce: 1.0,
-            ..Snake::default()
-        };
-        let full = slots(&[[Error; 4].as_slice(), &[Working; 4]].concat());
-        let steps = announce(Error, &full, &config);
-        // One and a half times its length: every light is still fully lit, the errors reach
-        // into a sixth light and most of the workers are past the end.
-        assert_eq!(
-            lines(&steps)[13],
-            "#0000FF #0000FF #BF0040 #FF0000 #FF0000 #FF0000 #FF0000 #FF0000 210ms ease-in-out"
-        );
+    fn a_short_rise_is_one_line_and_a_long_one_twelve() {
+        let colors = plain(7).colors;
+        let lines = |ms| arrival(&[Error], &colors, &rising(FadeIn::Together, ms, 0.3, 0.0));
+        assert_eq!(lines(1).len(), 1);
+        assert_eq!(lines(46).len(), 2);
+        assert_eq!(lines(5000).len(), 12);
+        for ms in [1, 46, 500, 5000] {
+            let frames = lines(ms);
+            assert_eq!(frames.iter().map(|frame| frame.move_ms).sum::<u32>(), ms);
+            assert!(frames.iter().all(|frame| frame.move_ms > 0));
+        }
+    }
+
+    #[test]
+    fn the_arrival_is_one_program_where_it_fits() {
+        let steps = announce(Error, &slots(&[Error, Working]), &plain(7));
+        // All twelve lines of the rise are in the last program, after the snake's last steps.
+        let last = steps.last().unwrap();
+        assert!(last.program.lines().count() >= 12);
+        assert!(last.ms >= 500);
     }
 
     #[test]
@@ -694,35 +696,32 @@ mod tests {
             ]
             .concat(),
         );
-        for (brightness, fade_in) in [
-            (255, FadeIn::Together),
-            (128, FadeIn::Together),
-            (255, FadeIn::FrontToBack),
-            (128, FadeIn::FrontToBack),
-        ] {
-            let mut config = Config {
-                brightness,
-                ..Config::default()
-            };
-            config.snake.fade_in = fade_in;
-            config.snake = Snake {
-                head: [1.0, 1.0, 1.0],
-                hold_ms: 5000,
-                move_ms: 5000,
-                crunch: 1.0,
-                crunch_ms: 5000,
-                bounce: 1.0,
-                spring_ms: 5000,
-                ..config.snake
-            };
-            device::check(&steady(&crowded, &config)).unwrap();
-            let steps = announce(Error, &crowded, &config);
-            // Seventeen lines of full rows cannot fit in fewer than three programs.
-            assert!(steps.len() >= 3);
-            for step in &steps {
-                device::check(&step.program).unwrap();
-                if brightness != 255 {
-                    assert!(step.program.starts_with("brightness 128\n"));
+        for brightness in [255, 128] {
+            for fade_in in [FadeIn::Together, FadeIn::FrontToBack] {
+                for crunch in [0.0, 1.0] {
+                    let mut config = Config {
+                        brightness,
+                        ..Config::default()
+                    };
+                    config.snake = Snake {
+                        head: [1.0, 1.0, 1.0],
+                        hold_ms: 5000,
+                        move_ms: 5000,
+                        fade_in_ms: 5000,
+                        fade_in,
+                        crunch,
+                        ..config.snake
+                    };
+                    device::check(&steady(&crowded, &config)).unwrap();
+                    let steps = announce(Error, &crowded, &config);
+                    // Twenty-five lines, most of them full rows, cannot fit in fewer than three programs.
+                    assert!(steps.len() >= 3);
+                    for step in &steps {
+                        device::check(&step.program).unwrap();
+                        if brightness != 255 {
+                            assert!(step.program.starts_with("brightness 128\n"));
+                        }
+                    }
                 }
             }
         }

@@ -19,9 +19,6 @@ const SNAKE: Snake = {
   fade_in_ms: 500,
   fade_in: "front_to_back",
   crunch: 0,
-  crunch_ms: 120,
-  bounce: 0.4,
-  spring_ms: 350,
 };
 const CONFIG: Config = {
   brightness: 255,
@@ -126,8 +123,8 @@ test("a change: a dim nose, a bright light and a dark one lead the dimmed queue 
   expect(play(rendering.steady, 1000)[0]).toEqual(full);
 });
 
-test("a crunch: the arriving queue piles up at the front end, springs back past its length, then rests", async () => {
-  const snake: Snake = { ...SNAKE, tail: 1, crunch: 0.5, crunch_ms: 120, bounce: 0.5, spring_ms: 300 };
+test("a crunch: the queue presses toward the front end in the middle of its rise, then is back in place", async () => {
+  const snake: Snake = { ...SNAKE, tail: 1, fade_in: "together", fade_in_ms: 450, crunch: 0.5 };
   const rendering = await render(scene(["error", "stopped", "working"], "working", { snake }));
   const lit = (lights: RGB[]) => lights.filter((light) => light.some((die) => die > 0)).length;
   const arrived = snake.fade_out_ms + 11 * (snake.hold_ms + snake.move_ms);
@@ -135,15 +132,14 @@ test("a crunch: the arriving queue piles up at the front end, springs back past 
     play("off", 100);
     return during(rendering, ms);
   };
-  // Three items at rest, squeezed onto two lights, stretched over four, then at rest again.
+  // Three items at rest, pressed onto two lights halfway through the rise, then at rest again.
   expect(lit(at(arrived))).toBe(3);
-  const squeezed = at(arrived + 120);
-  expect(lit(squeezed)).toBe(2);
+  const pressed = at(arrived + 225);
+  expect(lit(pressed)).toBe(2);
   // The front light holds the error and half of the item behind it.
-  expect(squeezed[7]![0]).toBe(rgb(rendering.lit.error)[0]);
-  expect(squeezed[7]![2]).toBeGreaterThan(0);
-  expect(lit(at(arrived + 120 + 180))).toBe(4);
-  expect(at(arrived + 120 + 300)).toEqual(at(arrived));
+  expect(pressed[7]![0]).toBe(rgb(rendering.lit.error)[0]);
+  expect(pressed[7]![2]).toBeGreaterThan(0);
+  expect(at(arrived + 450)).toEqual(at(arrived));
 });
 
 test("the queue rises front to back, or all at once", async () => {
@@ -166,12 +162,12 @@ test("the queue rises front to back, or all at once", async () => {
   // All at once: every light is equally far along.
   const together = await halfway("together");
   for (const level of together) expect(level).toBeCloseTo(together[0]!, 1);
-  expect(together[0]).toBeGreaterThan(0.2);
+  expect(together[0]).toBeGreaterThan(0.1);
   expect(together[0]).toBeLessThan(0.9);
 });
 
 test("the queue rises to full while it crunches", async () => {
-  const snake: Snake = { ...SNAKE, fade_in_ms: 400, crunch: 0.5, crunch_ms: 100, bounce: 0.5, spring_ms: 300 };
+  const snake: Snake = { ...SNAKE, fade_in_ms: 400, crunch: 0.5 };
   const rendering = await render(scene(["error"], "error", { snake }));
   const arrived = snake.fade_out_ms + 11 * (snake.hold_ms + snake.move_ms);
   const front = (ms: number) => {
@@ -179,7 +175,7 @@ test("the queue rises to full while it crunches", async () => {
     return during(rendering, ms)[7]![0];
   };
   const full = rgb(rendering.lit.error)[0];
-  // The front light climbs through the squeeze and the spring back, and is full as the queue comes to rest.
+  // The front light climbs all the way through the rise.
   const levels = [front(arrived), front(arrived + 100), front(arrived + 280), front(arrived + 400)];
   expect(levels[0]).toBe(Math.round(full * snake.tail));
   expect(levels).toEqual([...levels].sort((a, b) => a - b));
@@ -192,9 +188,9 @@ test("every change is accepted by the firmware and ends on the queue, in the har
     SNAKE,
     { ...SNAKE, fade_in: "together" },
     { ...SNAKE, crunch: 0.5 },
-    { ...SNAKE, crunch: 1, bounce: 0 },
-    { head: [0, 0, 0], gap: false, tail: 0, hold_ms: 0, move_ms: 1, fade_out_ms: 1, fade_in_ms: 1, fade_in: "front_to_back", crunch: 0.05, crunch_ms: 1, bounce: 1, spring_ms: 1 },
-    { head: [1, 1, 1], gap: true, tail: 1, hold_ms: 5000, move_ms: 5000, fade_out_ms: 5000, fade_in_ms: 5000, fade_in: "front_to_back", crunch: 1, crunch_ms: 5000, bounce: 1, spring_ms: 5000 },
+    { ...SNAKE, crunch: 1, fade_in: "together" },
+    { head: [0, 0, 0], gap: false, tail: 0, hold_ms: 0, move_ms: 1, fade_out_ms: 1, fade_in_ms: 1, fade_in: "front_to_back", crunch: 0.05 },
+    { head: [1, 1, 1], gap: true, tail: 1, hold_ms: 5000, move_ms: 5000, fade_out_ms: 5000, fade_in_ms: 5000, fade_in: "front_to_back", crunch: 1 },
   ];
   for (const states of [["error"], STATES.slice(), many(8, "working"), OVERFLOW] as State[][]) {
     for (const announce of [null, ...new Set(states)]) {
