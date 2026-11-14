@@ -31,8 +31,8 @@ use state::State;
 #[command(
     version,
     about = "Shows a queue of agent sessions on a SidePulse Pro, the eight-light card in a \
-             MacBook's SD slot: red for an error, orange for a question, green for stopped and \
-             unread, blue for working",
+             MacBook's SD slot: red for an error, orange for a question, blue for stopped and \
+             unread, green for working",
     after_help = "Run `leds install` once to start the service and register its hooks with \
                   Claude Code, Codex, Grok, Cursor and Junie."
 )]

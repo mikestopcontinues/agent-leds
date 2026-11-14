@@ -108,7 +108,12 @@ const fn palette(error: u32, question: u32, stopped: u32, working: u32) -> Palet
 /// sent and their three dies are nearly single-wavelength, so a mixed color
 /// needs far less of its second die than the same color on a screen. A palette
 /// sets hues only: the renderer scales the colors to look equally bright.
-pub const PALETTES: [NamedPalette; 11] = [
+pub const PALETTES: [NamedPalette; 12] = [
+    NamedPalette {
+        name: "default",
+        about: "red, orange, blue, green: what the service starts with",
+        colors: palette(0xFF0000, 0xFF7000, 0x0710EE, 0x29EA18),
+    },
     NamedPalette {
         name: "signal",
         about: "red, orange, green, blue: one die each, orange the only mix",
@@ -192,11 +197,11 @@ pub struct Snake {
 impl Default for Snake {
     fn default() -> Self {
         Snake {
-            head: [0.6, 1.0, 0.0],
+            head: [1.0, 1.0, 1.0],
             gap: true,
-            tail: 0.3,
-            fade_out_ms: 300,
-            step_ms: 120,
+            tail: 0.1,
+            fade_out_ms: 200,
+            step_ms: 100,
         }
     }
 }

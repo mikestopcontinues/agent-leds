@@ -384,12 +384,24 @@ mod tests {
             .collect()
     }
 
-    /// The signal palette with dies that look equally bright, so its single-die colors are shown unchanged.
+    /// The signal palette with dies that look equally bright, so its
+    /// single-die colors are shown unchanged, and a snake the tests count steps of.
     fn plain(front_led: u8) -> Config {
+        let signal = crate::config::PALETTES
+            .iter()
+            .find(|palette| palette.name == "signal")
+            .unwrap();
         Config {
             front_led,
             balance: [1.0, 1.0, 1.0],
-            colors: crate::config::PALETTES[0].colors,
+            colors: signal.colors,
+            snake: Snake {
+                head: [0.6, 1.0, 0.0],
+                gap: true,
+                tail: 0.3,
+                fade_out_ms: 300,
+                step_ms: 120,
+            },
             ..Config::default()
         }
     }

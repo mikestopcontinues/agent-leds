@@ -1,6 +1,6 @@
 # leds
 
-`leds` shows a queue of agent sessions on a SidePulse Pro, the eight-light card in a MacBook's SD slot. Each session that is doing something or needs something gets one light: red for an error, orange for a question, green for stopped and unread, blue for working. The queue is sorted in that order with its front on the light furthest from you, and the lights are off when there is nothing to show.
+`leds` shows a queue of agent sessions on a SidePulse Pro, the eight-light card in a MacBook's SD slot. Each session that is doing something or needs something gets one light: red for an error, orange for a question, blue for stopped and unread, green for working. The queue is sorted in that order with its front on the light furthest from you, and the lights are off when there is nothing to show.
 
 It works with Claude Code, Codex, Grok, Cursor and Junie, and runs on macOS only. It replaces SidePulse's own software, which must not drive the same card.
 
@@ -93,7 +93,7 @@ A turn that ends with a subagent or a workflow running in the background is not 
 Events from subagents never say what the session needs, but they do say that work is going on. A stopped session whose background subagent runs a tool goes back to working; a session with a question or an error stays as it is. Two gaps follow from what Claude Code reports:
 
 - A subagent's permission request does not turn the session orange, because nothing after it says which agent was answered.
-- Claude Code fires no hook when you interrupt a turn between tool calls, so that session stays blue until its next prompt, or for 30 minutes of silence. Time the Mac spent asleep, or the daemon spent stopped, does not count as silence.
+- Claude Code fires no hook when you interrupt a turn between tool calls, so that session stays green until its next prompt, or for 30 minutes of silence. Time the Mac spent asleep, or the daemon spent stopped, does not count as silence.
 
 ### Codex
 
@@ -109,7 +109,7 @@ Hooks are `[[hooks.<Event>]]` groups in `~/.codex/config.toml`, after the groups
 
 Subagents are treated as Claude Code's are. Codex also runs agents of its own, such as the one that consolidates its memories, as sessions it keeps no transcript of. Those are ignored, as is any session Codex keeps no transcript of. The gaps:
 
-- Codex has no event for a turn that fails, so there is no error state. A session whose request fails stays blue until its next prompt, or for 30 minutes of silence.
+- Codex has no event for a turn that fails, so there is no error state. A session whose request fails stays green until its next prompt, or for 30 minutes of silence.
 - `request_user_input_async` does not stop the agent. The session is orange until the agent's next tool call, not until you answer.
 - A plan is recognized only when Codex passes it as the turn's last message.
 
@@ -129,7 +129,7 @@ Hooks are a file of their own, `~/.grok/hooks/leds.json`.
 Grok fires `Stop` again when the session closes; only the one with reason `end_turn` counts. A subagent runs as a session of its own and says so, which is treated as Claude Code's subagents are. The gaps:
 
 - Grok reports a cancelled turn off to the side, so the report can arrive after the next prompt and remove a session that is working again. Its next tool call brings it back.
-- A turn that reports nothing, such as one you rewind, stays blue until the next prompt, or for 30 minutes of silence.
+- A turn that reports nothing, such as one you rewind, stays green until the next prompt, or for 30 minutes of silence.
 
 ### Cursor
 
@@ -145,7 +145,7 @@ Hooks are commands in `~/.cursor/hooks.json`.
 The gaps:
 
 - No question state. Cursor expects the hooks that run before a tool to say whether the tool may run, so those are not hooked, and it has no event for a permission request. `stop` does not carry the agent's last message.
-- A session waiting for approval of a tool stays blue.
+- A session waiting for approval of a tool stays green.
 - Run without its interface (`cursor-agent -p`), Cursor sends neither `beforeSubmitPrompt` nor `stop`. Such a run shows as working from its first tool and is removed when it ends.
 
 ### Junie
