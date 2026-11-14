@@ -50,6 +50,16 @@ export function scaled(hex: string, factor: number): string {
   return `#${channel(1)}${channel(3)}${channel(5)}`.toUpperCase();
 }
 
+/** A white that looks `level` times as bright as `hex`, going by the scene's die balance. */
+function whiteAs(hex: string, level: number, scene: Scene): string {
+  const brightness = scene.balance.reduce(
+    (sum, weight, die) => sum + (parseInt(hex.slice(1 + die * 2, 3 + die * 2), 16) / 255) * weight,
+    0,
+  );
+  const allDies = scene.balance.reduce((sum, weight) => sum + weight, 0);
+  return scaled("#FFFFFF", (level * brightness) / allDies);
+}
+
 // The sketches think in distance along the strip: 0 is the light nearest you
 // and 7 is the front of the queue.
 
@@ -141,22 +151,23 @@ export const DESIGNS: Design[] = [
     id: "pull",
     name: "Pull the queue in",
     about:
-      "The lights fade out. A head in the new state's color enters at the near end: a dimmer nose, a bright light, then a dark gap. It pulls the new queue in behind the gap as a dimmed tail. The head runs off the far end, and once the queue is in place it rises to full brightness.",
+      "The lights fade out. A head in the new state's color enters at the near end: a dimmer nose, a bright light, then a faint white light. It pulls the new queue in behind the white as a dimmed tail. The head runs off the far end, and once the queue is in place it rises to full brightness.",
     adapt: announcing((_state, color, scene, service) => {
       // Each step holds still, then moves. Without the hold a light is at its level only for an
-      // instant, so the bright light never looks bright nor the gap dark.
+      // instant, so the bright light never looks bright.
       const holdMs = 60;
       const moveMs = 90;
-      // The head's brightness from the nose back, ending in a dark gap, then the queue's while it is the tail.
-      const head = [0.6, 1, 0];
+      // The head from the nose back: dimmer, bright, then a faint white that sets it apart from the
+      // tail. The tail is the queue at this level.
       const tail = 0.3;
+      const head = [scaled(color, 0.6), color, whiteAs(color, tail, scene)];
       // With the nose at `nose`, queue item k trails the head at distance nose - head.length - k.
       const frame = (nose: number) =>
         row(scene, (distance) => {
           const behind = nose - distance;
           if (behind < 0) return OFF;
           return behind < head.length
-            ? scaled(color, head[behind]!)
+            ? head[behind]!
             : queueAt(LEDS - 1 - (behind - head.length), service, tail);
         });
       // The last frame has the whole head past the far end and the queue in place.
