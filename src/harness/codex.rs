@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, value};
 
-use super::{Event, Harness, text};
+use super::{Event, Harness, replace, text};
 
 const CONFIG: &str = ".codex/config.toml";
 
@@ -99,14 +99,7 @@ fn edit(path: &Path, edit: impl FnOnce(&mut DocumentMut) -> Result<()>) -> Resul
     if after == before {
         return Ok(());
     }
-    // Write beside the file and rename, so Codex never reads half a file.
-    let staged = path.with_extension("toml.leds-tmp");
-    fs::write(&staged, after)?;
-    // The config can hold secrets, so the new file is as private as the old.
-    if let Ok(metadata) = fs::metadata(path) {
-        fs::set_permissions(&staged, metadata.permissions())?;
-    }
-    fs::rename(&staged, path).with_context(|| format!("writing {}", path.display()))
+    replace(path, &after)
 }
 
 /// A table that prints only through the tables inside it, so that removing

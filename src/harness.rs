@@ -7,6 +7,7 @@
 
 mod claude;
 mod codex;
+mod grok;
 
 use std::fs;
 use std::path::Path;
@@ -27,16 +28,18 @@ pub enum Harness {
     #[default]
     Claude,
     Codex,
+    Grok,
 }
 
 impl Harness {
-    pub const ALL: [Harness; 2] = [Harness::Claude, Harness::Codex];
+    pub const ALL: [Harness; 3] = [Harness::Claude, Harness::Codex, Harness::Grok];
 
     /// What the harness is called on the command line and in the queue.
     fn name(self) -> &'static str {
         match self {
             Harness::Claude => "claude",
             Harness::Codex => "codex",
+            Harness::Grok => "grok",
         }
     }
 
@@ -45,6 +48,7 @@ impl Harness {
         match self {
             Harness::Claude => "Claude Code",
             Harness::Codex => "Codex",
+            Harness::Grok => "Grok",
         }
     }
 
@@ -54,6 +58,7 @@ impl Harness {
         match self {
             Harness::Claude => ".claude",
             Harness::Codex => ".codex",
+            Harness::Grok => ".grok",
         }
     }
 
@@ -74,6 +79,7 @@ impl Harness {
         match self {
             Harness::Claude => claude::event(payload),
             Harness::Codex => codex::event(payload),
+            Harness::Grok => grok::event(payload),
         }
     }
 
@@ -81,6 +87,7 @@ impl Harness {
         match self {
             Harness::Claude => claude::install(home, exe),
             Harness::Codex => codex::install(home, exe),
+            Harness::Grok => grok::install(home, exe),
         }
     }
 
@@ -88,6 +95,7 @@ impl Harness {
         match self {
             Harness::Claude => claude::uninstall(home),
             Harness::Codex => codex::uninstall(home),
+            Harness::Grok => grok::uninstall(home),
         }
     }
 }
@@ -221,9 +229,18 @@ fn edit_hooks(path: &Path, edit: impl FnOnce(&mut Map<String, Value>) -> Result<
     if settings == before {
         return Ok(());
     }
-    // Write beside the file and rename, so the harness never reads half a file.
-    let staged = path.with_extension("json.leds-tmp");
-    fs::write(&staged, serde_json::to_string_pretty(&settings)? + "\n")?;
+    replace(path, &(serde_json::to_string_pretty(&settings)? + "\n"))
+}
+
+/// Replaces a file's text in one step, so a harness never reads half a
+/// file. The file stays as private as it was: a config can hold secrets.
+fn replace(path: &Path, text: &str) -> Result<()> {
+    let mut staged = path.as_os_str().to_owned();
+    staged.push(".leds-tmp");
+    fs::write(&staged, text)?;
+    if let Ok(metadata) = fs::metadata(path) {
+        fs::set_permissions(&staged, metadata.permissions())?;
+    }
     fs::rename(&staged, path).with_context(|| format!("writing {}", path.display()))
 }
 
