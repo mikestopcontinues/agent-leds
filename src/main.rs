@@ -11,6 +11,9 @@ mod harness;
 mod ipc;
 mod launchd;
 mod live;
+// The sources that read harness files are the first to use it.
+#[allow(dead_code)]
+mod liveness;
 mod player;
 mod render;
 mod settings;
