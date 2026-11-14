@@ -11,9 +11,9 @@ A small daemon owns the queue and the device. Claude Code reports to it through 
 The device runs whatever program is written to its `LEDS.LED` file, in SidePulse's own animation language, limited to 512 bytes and 20 lines. The daemon writes programs only when the queue changes, so a steady display costs nothing on the Mac:
 
 - **Every state is equally bright.** A state's color sets its hue only. The renderer scales the four colors to the brightness of the dimmest hue at full strength, using the `balance` setting: how bright the red, green and blue dies look relative to each other. The default balance is an estimate and should be tuned by eye in the workshop.
-- **A change** is announced by a snake. The lights fade out. A head in the color of the state a session just entered crosses the strip toward the front of the queue: up to three lights, then a dark one if wanted. It pulls the new queue in behind it as a dimmed tail and runs off the front end. The queue then rises to full brightness in a wave from its front to its back. Each light takes half the rise, quick at first and settling, and the lights start evenly spaced so that the last ends as the rise does. The light the wave is about to reach goes dark first, so the crest always stands against a dark light. The whole change takes two to three seconds and spans two or three programs, which the daemon writes one after another, each when the one before it ends.
+- **A change** is announced by a snake. The lights fade out. A head in the color of the state a session just entered crosses the strip toward the front of the queue: up to three lights, then a dark one if wanted. It pulls the new queue in behind it as a dimmed tail and runs off the front end. The queue then rises to full brightness in a wave from its front to its back. The wave is timed for a full strip: each light takes half of `fade_in_ms`, at an even pace, and starts a fourteenth of it after the light in front, so that the last of eight ends as the rise does. A shorter queue rises the same way and is done sooner. The light the wave is about to reach goes dark first, so the crest always stands against a dark light. The whole change takes two to three seconds and spans one to three programs, which the daemon writes one after another, each when the one before it ends.
 
-  The firmware moves a light at an even pace or along its own easings, and gives a light one move per line, so the wave is written as up to fourteen short lines. To fit more lines in a program, a line names only the lights that change, or gives a row cut off after its last lit light, whichever is shorter. The rise is kept in one program where it fits, so that no write falls in the middle of it.
+  To fit more lines in a program, a line names only the lights that change, or gives a row cut off after its last lit light, whichever is shorter. The rise is kept in one program where it fits, so that no write falls in the middle of it.
 - **More than eight items** are cut to fit. Every state present keeps at least one light and the rest go to states in queue order. Nothing marks the items that are hidden.
 - **A played program or shown scene** (`leds play`, or the workshop's "Show on device") holds the lights for a few seconds, then the queue returns.
 
@@ -62,7 +62,7 @@ The snake's settings are the `[snake]` table of the config. Levels run from 0 to
 | `gap` | Whether a dark light separates the head from the tail. |
 | `tail` | Brightness of the queue while it is pulled in. |
 | `hold_ms`, `move_ms` | How long each step stays still, then takes to move one light on. |
-| `fade_out_ms`, `fade_in_ms` | How long the old queue takes to go dark, and how long the wave takes to bring the new one to full. |
+| `fade_out_ms`, `fade_in_ms` | How long the old queue takes to go dark, and how long the wave takes to bring a full strip of eight lights to full. A shorter queue is done sooner. |
 
 The workshop is the way to tune them. The daemon reads the file only when it starts, so change settings through the CLI or the workshop.
 

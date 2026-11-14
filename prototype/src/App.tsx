@@ -251,7 +251,7 @@ export function App() {
           <h2>Change animation</h2>
           <p className="note">
             The lights fade out. A head in the new state's color crosses the strip toward the front of the queue and
-            pulls the new queue in as its tail. The queue then rises to full in a wave from its front to its back: each light goes dark just before the wave reaches it, then rises quickly and settles.
+            pulls the new queue in as its tail. The queue then rises to full in a wave from its front to its back: each light goes dark just before the wave reaches it, then rises at an even pace.
           </p>
           <h3>Head</h3>
           {["Front", "Middle", "Back"].map((light, index) => (
@@ -274,7 +274,7 @@ export function App() {
           <Slider label="Fade out ms" title="how long the old queue takes to go dark" value={snake.fade_out_ms}
             min={10} max={1500} step={10} onChange={(fade_out_ms) => setSnake({ fade_out_ms })} />
           <h3>Arrival</h3>
-          <Slider label="Fade in ms" title="how long the wave takes to bring the whole queue to full; each light takes half of it" value={snake.fade_in_ms}
+          <Slider label="Fade in ms" title="how long the wave takes to bring a full strip of eight lights to full; each light takes half of it, and a shorter queue is done sooner" value={snake.fade_in_ms}
             min={10} max={1500} step={10} onChange={(fade_in_ms) => setSnake({ fade_in_ms })} />
           <p className="note">
             {change

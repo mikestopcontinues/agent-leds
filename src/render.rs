@@ -122,77 +122,64 @@ pub fn announce(state: State, slots: &[State], config: &Config) -> Vec<Step> {
     for frame in crossing(state, slots, &colors, snake) {
         groups.push(vec![line(&frame)]);
     }
-    // The rise is many short lines, so it is kept in one program where it
-    // fits: a write in the middle of it could show as a hitch.
+    // The rise is quick, so it is kept in one program where it fits: a write
+    // in the middle of it could show as a hitch.
     let rise = rise(slots, &colors, snake);
     groups.push(rise.iter().map(&mut line).collect());
     packed(&groups, config)
 }
 
-/// About the longest a line of the rise runs. The firmware moves the lights
-/// at an even pace within a line, so the rise is only as smooth as its lines
-/// are short.
-const RISE_LINE_MS: u32 = 45;
-/// About the most lines the rise is cut into, which a long rise spreads out over.
-const RISE_LINES: u32 = 14;
-
 /// The dimmed queue, in place, rising to full brightness as a wave from the
 /// front of the queue to the back.
 ///
-/// Each light takes half the rise, quick at first and settling, and the
-/// lights start evenly spaced so that the last one ends as the rise does.
+/// The wave is timed for a full strip. Over `fade_in_ms` each light takes
+/// half of it, at an even pace, and starts a fourteenth of it after the light
+/// in front, so that the last of eight lights ends as the rise does. A
+/// shorter queue rises the same way and is done sooner.
+///
 /// The light the wave is about to reach goes dark while the one in front of
 /// it starts, so the crest of the wave always stands against a dark light.
 fn rise(slots: &[State], colors: &Palette, snake: &Snake) -> Vec<Frame> {
-    let items = slots.len() as u32;
-    // As shares of the whole rise: how long one light takes, and how long
-    // after the light in front of it each starts.
-    let (each, stagger) = match items {
-        0 | 1 => (1.0, 0.0),
-        _ => (0.5, 0.5 / f64::from(items - 1)),
-    };
-    // A light is darkest at the moment it starts, so the lines are cut to
-    // end on every start: a whole number of them between one and the next.
-    let lines = if items > 1 {
-        let starts = 2 * (items - 1);
-        let between = f64::from(snake.fade_in_ms) * stagger / f64::from(RISE_LINE_MS);
-        starts * (between.round() as u32).clamp(1, (RISE_LINES / starts).max(1))
-    } else {
-        snake.fade_in_ms.div_ceil(RISE_LINE_MS).clamp(1, RISE_LINES)
+    // The rise counted in beats: a light starts one beat after the light in
+    // front of it and takes seven, and a full strip takes fourteen.
+    const TAKES: usize = LEDS - 1;
+    let level = |item: usize, beat: usize| {
+        // Only a light behind the front one has a wave coming toward it.
+        let dips = item > 0;
+        if beat < item {
+            snake.tail
+        } else if beat == item {
+            if dips { 0.0 } else { snake.tail }
+        } else {
+            let from = if dips { 0.0 } else { snake.tail };
+            from + (1.0 - from) * ((beat - item) as f64 / TAKES as f64).min(1.0)
+        }
     };
 
-    (1..=lines)
-        .filter_map(|line| {
-            let from_ms = snake.fade_in_ms * (line - 1) / lines;
-            let to_ms = snake.fade_in_ms * line / lines;
-            let elapsed = f64::from(line) / f64::from(lines);
-            let level = |item: usize| {
-                let start = item as f64 * stagger;
-                // Only a light behind the front one has a wave coming toward it.
-                let dips = item > 0;
-                if elapsed <= start {
-                    let dipped = if dips {
-                        ((elapsed - (start - stagger)) / stagger).clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    };
-                    snake.tail * (1.0 - dipped)
-                } else {
-                    let progress = ((elapsed - start) / each).min(1.0);
-                    let eased_out = 1.0 - (1.0 - progress).powi(2);
-                    let from = if dips { 0.0 } else { snake.tail };
-                    from + (1.0 - from) * eased_out
-                }
-            };
-            // A rise shorter than its lines has lines of no length, which are left out.
-            (to_ms > from_ms).then(|| Frame {
+    // Every move is at an even pace, so a line is needed only where some
+    // light starts or finishes; the firmware moves the lights in between.
+    let mut beats: Vec<usize> = (0..slots.len())
+        .flat_map(|item| [item, item + TAKES])
+        .filter(|&beat| beat > 0)
+        .collect();
+    beats.sort_unstable();
+    beats.dedup();
+    let mut from_ms = 0;
+    beats
+        .into_iter()
+        .filter_map(|beat| {
+            let to_ms = snake.fade_in_ms * beat as u32 / (2 * TAKES) as u32;
+            let move_ms = to_ms - from_ms;
+            from_ms = to_ms;
+            // A rise of a few milliseconds has lines of no length, which are left out.
+            (move_ms > 0).then(|| Frame {
                 lights: std::array::from_fn(|position| {
                     slots.get(position).map_or(Color::OFF, |&state| {
-                        colors.of(state).scaled(level(position))
+                        colors.of(state).scaled(level(position, beat))
                     })
                 }),
                 hold_ms: 0,
-                move_ms: to_ms - from_ms,
+                move_ms,
             })
         })
         .collect()
@@ -499,15 +486,16 @@ mod tests {
             played[11].0,
             "#000000 #000000 #000000 #000000 #000000 #000000 #004D00 #4D0000"
         );
-        // The rise is cut into twelve lines and ends on the queue.
-        assert_eq!(played.len(), 1 + 11 + 12);
+        // The rise ends on the queue: a line for the second light's start and one as each light finishes.
+        assert_eq!(played.len(), 1 + 11 + 3);
         assert_eq!(
-            played[23].0,
+            played[14].0,
             "#000000 #000000 #000000 #000000 #000000 #000000 #00FF00 #FF0000"
         );
-        // Its running time is the fades plus eleven steps.
+        // Its running time is the fade out, eleven steps, and eight fourteenths
+        // of the rise: two lights are done sooner than a full strip.
         let total: u64 = steps.iter().map(|step| step.ms).sum();
-        assert_eq!(total, 300 + 11 * 150 + 500);
+        assert_eq!(total, 300 + 11 * 150 + 500 * 8 / 14);
     }
 
     #[test]
@@ -542,8 +530,8 @@ mod tests {
         };
         let played = played(&announce(Error, &slots(&[Error]), &config));
         // A front light at 0 is left out and there is no gap, so the head is
-        // two lights: ten steps. Then the rise, in five lines.
-        assert_eq!(played.len(), 1 + 10 + 5);
+        // two lights: ten steps. Then the rise: one light, so one line, in half the time of a full strip.
+        assert_eq!(played.len(), 1 + 10 + 1);
         assert_eq!(played[0].1, "100ms ease");
         // No hold, so no delay is written.
         assert_eq!(played[1].1, "40ms linear");
@@ -556,8 +544,11 @@ mod tests {
         );
         assert_eq!(played[10].0, format!("{} #800000", &DARK[..55]));
         assert_eq!(
-            played[15],
-            (format!("{} #FF0000", &DARK[..55]), "40ms linear".to_owned())
+            played[11],
+            (
+                format!("{} #FF0000", &DARK[..55]),
+                "100ms linear".to_owned()
+            )
         );
     }
 
@@ -573,7 +564,7 @@ mod tests {
         );
     }
 
-    /// A snake whose rise takes this long from this tail brightness.
+    /// A snake whose rise takes a full strip this long, from this tail brightness.
     fn rising(fade_in_ms: u32, tail: f64) -> Snake {
         Snake {
             fade_in_ms,
@@ -585,57 +576,64 @@ mod tests {
     #[test]
     fn the_queue_rises_in_a_wave_with_a_dark_light_ahead_of_its_crest() {
         let queue = [Error, Stopped, Working];
-        let frames = rise(&queue, &plain(7).colors, &rising(360, 0.5));
-        // Each light takes half the rise and starts a quarter of it after the
-        // one in front: eight lines of 45 ms, two between starts.
-        assert_eq!(frames.len(), 8);
-        assert!(frames.iter().all(|frame| frame.move_ms == 45));
-        let lights = |line: usize| frames[line - 1].lights[..3].to_vec();
-        // An eighth in: the front light is rising, the next is on its way down, the last waits.
+        // A beat of 20 ms: a light starts a beat after the one in front and takes seven.
+        let frames = rise(&queue, &plain(7).colors, &rising(280, 0.5));
+        // A line as the second and third lights start, and as each of the three finishes.
+        let lights: Vec<_> = frames
+            .iter()
+            .map(|frame| frame.lights[..3].to_vec())
+            .collect();
+        let times: Vec<u32> = frames.iter().map(|frame| frame.move_ms).collect();
+        assert_eq!(times, [20, 20, 100, 20, 20]);
+        // The front light is rising from the tail's brightness, the next has
+        // gone dark to start, and the last waits.
+        assert_eq!(lights[0], [Color(146, 0, 0), Color::OFF, Color(0, 0, 128)]);
+        // The second light is now the crest, and the last has gone dark ahead of it.
+        assert_eq!(lights[1], [Color(164, 0, 0), Color(0, 36, 0), Color::OFF]);
+        // The front light finishes, then the second, then the last.
         assert_eq!(
-            lights(1),
-            [Color(183, 0, 0), Color(0, 64, 0), Color(0, 0, 128)]
+            lights[2],
+            [Color(255, 0, 0), Color(0, 219, 0), Color(0, 0, 182)]
         );
-        // A quarter in, the second light starts, from dark: the front one is the crest.
-        assert_eq!(lights(2), [Color(223, 0, 0), Color::OFF, Color(0, 0, 128)]);
-        // Halfway, the front light is done, the second is the crest and the last is dark.
-        assert_eq!(lights(4), [Color(255, 0, 0), Color(0, 191, 0), Color::OFF]);
         assert_eq!(
-            lights(8),
+            lights[3],
+            [Color(255, 0, 0), Color(0, 255, 0), Color(0, 0, 219)]
+        );
+        assert_eq!(
+            lights[4],
             [Color(255, 0, 0), Color(0, 255, 0), Color(0, 0, 255)]
         );
     }
 
     #[test]
-    fn a_light_rises_quickly_at_first_then_settles() {
-        // A single light has no wave to wait for: it takes the whole rise, from the tail's brightness.
-        let frames = rise(&[Error], &plain(7).colors, &rising(450, 0.0));
-        let reds: Vec<u8> = frames.iter().map(|frame| frame.lights[0].0).collect();
-        assert_eq!(reds.len(), 10);
-        assert!(reds.is_sorted());
-        // Three quarters of the way up at half time.
-        assert_eq!(reds[4], 191);
-        assert_eq!(reds[9], 255);
-        let from_tail = rise(&[Error], &plain(7).colors, &rising(450, 0.4));
-        assert!(from_tail[0].lights[0].0 > 102);
-    }
-
-    #[test]
-    fn the_rise_is_cut_into_a_few_lines_that_add_up_to_it() {
+    fn the_rise_is_timed_for_a_full_strip_and_shorter_queues_are_done_sooner() {
         let colors = plain(7).colors;
-        for items in 0..=LEDS {
-            for ms in [1, 46, 500, 750, 5000] {
-                let frames = rise(&vec![Working; items], &colors, &rising(ms, 0.3));
-                assert!(frames.len() <= 14, "{items} items over {ms} ms");
-                assert_eq!(frames.iter().map(|frame| frame.move_ms).sum::<u32>(), ms);
-                assert!(frames.iter().all(|frame| frame.move_ms > 0));
-                // It always ends on the queue.
-                assert_eq!(
-                    frames.last().unwrap().lights,
-                    queue(&vec![Working; items], &colors, 1.0)
-                );
-            }
+        let rise_of = |items: usize| rise(&vec![Working; items], &colors, &rising(700, 0.3));
+        let takes = |items: usize| {
+            rise_of(items)
+                .iter()
+                .map(|frame| frame.move_ms)
+                .sum::<u32>()
+        };
+        // Eight lights take the whole rise, with a line at every beat.
+        assert_eq!(takes(8), 700);
+        assert_eq!(rise_of(8).len(), 14);
+        // One light takes half of it, in one line. Each further light adds a beat.
+        assert_eq!(takes(1), 350);
+        assert_eq!(rise_of(1).len(), 1);
+        assert_eq!(takes(4), 500);
+        assert!(rise_of(0).is_empty());
+        // Whatever the length, it ends on the queue.
+        for items in 1..=LEDS {
+            assert_eq!(
+                rise_of(items).last().unwrap().lights,
+                queue(&vec![Working; items], &colors, 1.0)
+            );
         }
+        // A rise too short to divide has no lines of no length.
+        let brief = rise(&[Working; 8], &colors, &rising(5, 0.3));
+        assert!(brief.iter().all(|frame| frame.move_ms > 0));
+        assert_eq!(brief.iter().map(|frame| frame.move_ms).sum::<u32>(), 5);
     }
 
     #[test]
@@ -664,6 +662,7 @@ mod tests {
             device::check(&steady(&crowded, &config)).unwrap();
             let steps = announce(Error, &crowded, &config);
             // Twenty-seven lines, many of them full rows, cannot fit in fewer than three programs.
+            assert_eq!(lines(&steps).len(), 1 + 12 + 14);
             assert!(steps.len() >= 3);
             for step in &steps {
                 device::check(&step.program).unwrap();

@@ -64,6 +64,9 @@ function settled(rendering: Rendering): RGB[] {
   return play(rendering.steady, 330)[0]!;
 }
 
+/** How long the rise takes for this many lights: it is timed for a full strip of eight, and each light fewer saves a fourteenth. */
+const riseMs = (lights: number, snake: Snake = SNAKE) => Math.floor((snake.fade_in_ms * (lights + 6)) / 14);
+
 const many = (count: number, state: State) => Array<State>(count).fill(state);
 const OVERFLOW = [...many(9, "error"), ...many(9, "question"), ...many(9, "stopped"), ...many(9, "working")];
 
@@ -116,14 +119,14 @@ test("a change: a dim nose, a bright light and a dark one lead the dimmed queue 
   // The head has left the far end and the dimmed queue is in place, then it rises to full.
   expect(step(10)).toEqual([BLACK, BLACK, BLACK, BLACK, BLACK, dim("working"), dim("stopped"), dim("question")]);
   const full = [BLACK, BLACK, BLACK, BLACK, BLACK, rgb(lit.working), rgb(lit.stopped), rgb(lit.question)];
-  expect(at(SNAKE.fade_out_ms + 11 * stepMs + SNAKE.fade_in_ms)).toEqual(full);
+  expect(at(SNAKE.fade_out_ms + 11 * stepMs + riseMs(3))).toEqual(full);
   // Writing the steady program afterwards changes nothing.
   expect(play(rendering.steady, 1000)[0]).toEqual(full);
 });
 
 test("the queue rises in a wave from its front, each light dark just before the wave reaches it", async () => {
-  // Four lights over 480 ms: each takes 240 ms and starts 80 ms after the one in front.
-  const snake: Snake = { ...SNAKE, tail: 0.5, fade_in_ms: 480 };
+  // A full strip would take 560 ms: each light takes 280 ms and starts 40 ms after the one in front.
+  const snake: Snake = { ...SNAKE, tail: 0.5, fade_in_ms: 560 };
   const rendering = await render(scene(["error", "question", "stopped", "working"], "working", { snake }));
   const arrived = snake.fade_out_ms + 11 * (snake.hold_ms + snake.move_ms);
   const full = play(rendering.steady, 1000)[0]!;
@@ -137,20 +140,22 @@ test("the queue rises in a wave from its front, each light dark just before the 
   for (const level of tail) expect(level).toBeCloseTo(0.5, 1);
 
   // As the second light starts it is dark, the front one is the crest, and the rest wait at the tail's brightness.
-  const [crest, ahead, ...waiting] = levels(80);
-  expect(crest).toBeGreaterThan(0.7);
+  const [crest, ahead, ...waiting] = levels(40);
+  expect(crest).toBeGreaterThan(0.55);
   expect(ahead).toBe(0);
   expect(waiting).toEqual(tail.slice(2));
 
   // One start later the dark light has moved on: the wave runs toward the back.
-  const later = levels(160);
+  const later = levels(80);
   expect(later[0]).toBeGreaterThan(crest!);
-  expect(later[1]).toBeGreaterThan(0.4);
+  expect(later[1]).toBeGreaterThan(0.1);
   expect(later[2]).toBe(0);
 
-  // A light rises quickly at first: the front one is three quarters of the way from the tail's brightness at half time.
-  expect(levels(120)[0]).toBeCloseTo(0.5 + 0.5 * 0.75, 1);
-  expect(levels(480)).toEqual([1, 1, 1, 1]);
+  // A light rises at an even pace: the front one is halfway from the tail's brightness at half its time.
+  expect(levels(140)[0]).toBeCloseTo(0.75, 1);
+  // Four lights are done in ten fourteenths of the time a full strip takes.
+  expect(riseMs(4, snake)).toBe(400);
+  expect(levels(400)).toEqual([1, 1, 1, 1]);
 });
 
 test("every change is accepted by the firmware and ends on the queue, in the hardest cases", async () => {
