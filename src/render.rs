@@ -5,7 +5,7 @@
 
 use serde::Serialize;
 
-use crate::config::{Color, Config, FadeIn, Palette, Snake};
+use crate::config::{Color, Config, Palette, Snake};
 use crate::device;
 use crate::state::State;
 
@@ -102,7 +102,8 @@ type Line = (String, u32);
 /// The lights fade out. A head in the state's color enters at the end
 /// furthest from the front of the queue and pulls the new queue in behind it
 /// as a dimmed tail. The head runs off the front end, which leaves the queue
-/// in place, and the queue rises to full brightness at an even pace.
+/// in place, and the queue rises to full brightness in a wave from its front
+/// to its back.
 pub fn announce(state: State, slots: &[State], config: &Config) -> Vec<Step> {
     let colors = balanced(config);
     let snake = &config.snake;
@@ -121,46 +122,80 @@ pub fn announce(state: State, slots: &[State], config: &Config) -> Vec<Step> {
     for frame in crossing(state, slots, &colors, snake) {
         groups.push(vec![line(&frame)]);
     }
-    let rise = match rise_front_to_back(slots, &colors, config) {
-        Some(rise) => rise,
-        None => line(&Frame {
-            lights: queue(slots, &colors, 1.0),
-            hold_ms: 0,
-            move_ms: snake.fade_in_ms,
-        }),
-    };
-    groups.push(vec![rise]);
+    // The rise is many short lines, so it is kept in one program where it
+    // fits: a write in the middle of it could show as a hitch.
+    let rise = rise(slots, &colors, snake);
+    groups.push(rise.iter().map(&mut line).collect());
     packed(&groups, config)
 }
 
-/// The line that takes the dimmed queue to full brightness front to back,
-/// when that is the order asked for and there is more than one light to
-/// order.
+/// About the longest a line of the rise runs. The firmware moves the lights
+/// at an even pace within a line, so the rise is only as smooth as its lines
+/// are short.
+const RISE_LINE_MS: u32 = 45;
+/// About the most lines the rise is cut into, which a long rise spreads out over.
+const RISE_LINES: u32 = 14;
+
+/// The dimmed queue, in place, rising to full brightness as a wave from the
+/// front of the queue to the back.
 ///
-/// Each light takes half the rise, and they start evenly spaced so that the
-/// last one ends as the rise does.
-fn rise_front_to_back(slots: &[State], colors: &Palette, config: &Config) -> Option<Line> {
-    let snake = &config.snake;
-    if snake.fade_in != FadeIn::FrontToBack || slots.len() < 2 {
-        return None;
-    }
-    let each_ms = snake.fade_in_ms.div_ceil(2);
-    let full = queue(slots, colors, 1.0);
-    // Each light has its own start, so each is its own segment of the line.
-    let lights: Vec<String> = (0..slots.len())
-        .map(|item| {
-            let wait = match (snake.fade_in_ms - each_ms) * item as u32 / (slots.len() as u32 - 1) {
-                0 => String::new(),
-                ms => format!(" {ms}ms"),
+/// Each light takes half the rise, quick at first and settling, and the
+/// lights start evenly spaced so that the last one ends as the rise does.
+/// The light the wave is about to reach goes dark while the one in front of
+/// it starts, so the crest of the wave always stands against a dark light.
+fn rise(slots: &[State], colors: &Palette, snake: &Snake) -> Vec<Frame> {
+    let items = slots.len() as u32;
+    // As shares of the whole rise: how long one light takes, and how long
+    // after the light in front of it each starts.
+    let (each, stagger) = match items {
+        0 | 1 => (1.0, 0.0),
+        _ => (0.5, 0.5 / f64::from(items - 1)),
+    };
+    // A light is darkest at the moment it starts, so the lines are cut to
+    // end on every start: a whole number of them between one and the next.
+    let lines = if items > 1 {
+        let starts = 2 * (items - 1);
+        let between = f64::from(snake.fade_in_ms) * stagger / f64::from(RISE_LINE_MS);
+        starts * (between.round() as u32).clamp(1, (RISE_LINES / starts).max(1))
+    } else {
+        snake.fade_in_ms.div_ceil(RISE_LINE_MS).clamp(1, RISE_LINES)
+    };
+
+    (1..=lines)
+        .filter_map(|line| {
+            let from_ms = snake.fade_in_ms * (line - 1) / lines;
+            let to_ms = snake.fade_in_ms * line / lines;
+            let elapsed = f64::from(line) / f64::from(lines);
+            let level = |item: usize| {
+                let start = item as f64 * stagger;
+                // Only a light behind the front one has a wave coming toward it.
+                let dips = item > 0;
+                if elapsed <= start {
+                    let dipped = if dips {
+                        ((elapsed - (start - stagger)) / stagger).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    snake.tail * (1.0 - dipped)
+                } else {
+                    let progress = ((elapsed - start) / each).min(1.0);
+                    let eased_out = 1.0 - (1.0 - progress).powi(2);
+                    let from = if dips { 0.0 } else { snake.tail };
+                    from + (1.0 - from) * eased_out
+                }
             };
-            format!(
-                "{}:{} {each_ms}ms linear{wait}",
-                led(item, config),
-                full[item]
-            )
+            // A rise shorter than its lines has lines of no length, which are left out.
+            (to_ms > from_ms).then(|| Frame {
+                lights: std::array::from_fn(|position| {
+                    slots.get(position).map_or(Color::OFF, |&state| {
+                        colors.of(state).scaled(level(position))
+                    })
+                }),
+                hold_ms: 0,
+                move_ms: to_ms - from_ms,
+            })
         })
-        .collect();
-    Some((lights.join(";"), snake.fade_in_ms))
+        .collect()
 }
 
 /// The snake crossing the dark strip, one light at a time, until its head
@@ -464,14 +499,11 @@ mod tests {
             played[11].0,
             "#000000 #000000 #000000 #000000 #000000 #000000 #004D00 #4D0000"
         );
-        // One more line takes the queue to full, the front light first.
-        assert_eq!(played.len(), 1 + 11 + 1);
+        // The rise is cut into twelve lines and ends on the queue.
+        assert_eq!(played.len(), 1 + 11 + 12);
         assert_eq!(
-            played[12],
-            (
-                "#000000 #000000 #000000 #000000 #000000 #000000 #00FF00 #FF0000".to_owned(),
-                "250ms linear;250ms linear 250ms".to_owned()
-            )
+            played[23].0,
+            "#000000 #000000 #000000 #000000 #000000 #000000 #00FF00 #FF0000"
         );
         // Its running time is the fades plus eleven steps.
         let total: u64 = steps.iter().map(|step| step.ms).sum();
@@ -510,8 +542,8 @@ mod tests {
         };
         let played = played(&announce(Error, &slots(&[Error]), &config));
         // A front light at 0 is left out and there is no gap, so the head is
-        // two lights: ten steps. Then the rise.
-        assert_eq!(played.len(), 1 + 10 + 1);
+        // two lights: ten steps. Then the rise, in five lines.
+        assert_eq!(played.len(), 1 + 10 + 5);
         assert_eq!(played[0].1, "100ms ease");
         // No hold, so no delay is written.
         assert_eq!(played[1].1, "40ms linear");
@@ -524,11 +556,8 @@ mod tests {
         );
         assert_eq!(played[10].0, format!("{} #800000", &DARK[..55]));
         assert_eq!(
-            played[11],
-            (
-                format!("{} #FF0000", &DARK[..55]),
-                "200ms linear".to_owned()
-            )
+            played[15],
+            (format!("{} #FF0000", &DARK[..55]), "40ms linear".to_owned())
         );
     }
 
@@ -544,35 +573,69 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_queue_can_rise_all_at_once_or_front_to_back() {
-        let mut config = plain(7);
-        config.snake.fade_in_ms = 400;
-        config.snake.tail = 0.5;
-        let queue = slots(&[Error, Stopped, Working]);
-        let last = |config: &Config| {
-            lines(&announce(Error, &queue, config))
-                .pop()
-                .unwrap()
-                .to_owned()
-        };
+    /// A snake whose rise takes this long from this tail brightness.
+    fn rising(fade_in_ms: u32, tail: f64) -> Snake {
+        Snake {
+            fade_in_ms,
+            tail,
+            ..Snake::default()
+        }
+    }
 
-        config.snake.fade_in = FadeIn::Together;
-        assert_eq!(last(&config), "5:#0000FF 6:#00FF00 7:#FF0000 400ms linear");
-        // Each light takes half the rise and starts a quarter of it after the one in front.
-        config.snake.fade_in = FadeIn::FrontToBack;
+    #[test]
+    fn the_queue_rises_in_a_wave_with_a_dark_light_ahead_of_its_crest() {
+        let queue = [Error, Stopped, Working];
+        let frames = rise(&queue, &plain(7).colors, &rising(360, 0.5));
+        // Each light takes half the rise and starts a quarter of it after the
+        // one in front: eight lines of 45 ms, two between starts.
+        assert_eq!(frames.len(), 8);
+        assert!(frames.iter().all(|frame| frame.move_ms == 45));
+        let lights = |line: usize| frames[line - 1].lights[..3].to_vec();
+        // An eighth in: the front light is rising, the next is on its way down, the last waits.
         assert_eq!(
-            last(&config),
-            "7:#FF0000 200ms linear;6:#00FF00 200ms linear 100ms;5:#0000FF 200ms linear 200ms"
+            lights(1),
+            [Color(183, 0, 0), Color(0, 64, 0), Color(0, 0, 128)]
         );
-        // With the front on light 0 the rise runs the other way.
-        config.front_led = 0;
-        assert!(last(&config).starts_with("0:#FF0000 200ms linear;1:#00FF00"));
-        // A single light has nothing to follow, and takes the whole rise.
+        // A quarter in, the second light starts, from dark: the front one is the crest.
+        assert_eq!(lights(2), [Color(223, 0, 0), Color::OFF, Color(0, 0, 128)]);
+        // Halfway, the front light is done, the second is the crest and the last is dark.
+        assert_eq!(lights(4), [Color(255, 0, 0), Color(0, 191, 0), Color::OFF]);
         assert_eq!(
-            lines(&announce(Error, &slots(&[Error]), &config)).pop(),
-            Some("0:#FF0000 400ms linear")
+            lights(8),
+            [Color(255, 0, 0), Color(0, 255, 0), Color(0, 0, 255)]
         );
+    }
+
+    #[test]
+    fn a_light_rises_quickly_at_first_then_settles() {
+        // A single light has no wave to wait for: it takes the whole rise, from the tail's brightness.
+        let frames = rise(&[Error], &plain(7).colors, &rising(450, 0.0));
+        let reds: Vec<u8> = frames.iter().map(|frame| frame.lights[0].0).collect();
+        assert_eq!(reds.len(), 10);
+        assert!(reds.is_sorted());
+        // Three quarters of the way up at half time.
+        assert_eq!(reds[4], 191);
+        assert_eq!(reds[9], 255);
+        let from_tail = rise(&[Error], &plain(7).colors, &rising(450, 0.4));
+        assert!(from_tail[0].lights[0].0 > 102);
+    }
+
+    #[test]
+    fn the_rise_is_cut_into_a_few_lines_that_add_up_to_it() {
+        let colors = plain(7).colors;
+        for items in 0..=LEDS {
+            for ms in [1, 46, 500, 750, 5000] {
+                let frames = rise(&vec![Working; items], &colors, &rising(ms, 0.3));
+                assert!(frames.len() <= 14, "{items} items over {ms} ms");
+                assert_eq!(frames.iter().map(|frame| frame.move_ms).sum::<u32>(), ms);
+                assert!(frames.iter().all(|frame| frame.move_ms > 0));
+                // It always ends on the queue.
+                assert_eq!(
+                    frames.last().unwrap().lights,
+                    queue(&vec![Working; items], &colors, 1.0)
+                );
+            }
+        }
     }
 
     #[test]
@@ -587,28 +650,25 @@ mod tests {
             .concat(),
         );
         for brightness in [255, 128] {
-            for fade_in in [FadeIn::Together, FadeIn::FrontToBack] {
-                let mut config = Config {
-                    brightness,
-                    ..Config::default()
-                };
-                config.snake = Snake {
-                    head: [1.0, 1.0, 1.0],
-                    hold_ms: 5000,
-                    move_ms: 5000,
-                    fade_in_ms: 5000,
-                    fade_in,
-                    ..config.snake
-                };
-                device::check(&steady(&crowded, &config)).unwrap();
-                let steps = announce(Error, &crowded, &config);
-                // Fourteen lines, most of them full rows, cannot fit in one program.
-                assert!(steps.len() >= 2);
-                for step in &steps {
-                    device::check(&step.program).unwrap();
-                    if brightness != 255 {
-                        assert!(step.program.starts_with("brightness 128\n"));
-                    }
+            let mut config = Config {
+                brightness,
+                ..Config::default()
+            };
+            config.snake = Snake {
+                head: [1.0, 1.0, 1.0],
+                hold_ms: 5000,
+                move_ms: 5000,
+                fade_in_ms: 5000,
+                ..config.snake
+            };
+            device::check(&steady(&crowded, &config)).unwrap();
+            let steps = announce(Error, &crowded, &config);
+            // Twenty-seven lines, many of them full rows, cannot fit in fewer than three programs.
+            assert!(steps.len() >= 3);
+            for step in &steps {
+                device::check(&step.program).unwrap();
+                if brightness != 255 {
+                    assert!(step.program.starts_with("brightness 128\n"));
                 }
             }
         }

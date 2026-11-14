@@ -17,7 +17,6 @@ const SNAKE: Snake = {
   move_ms: 90,
   fade_out_ms: 300,
   fade_in_ms: 500,
-  fade_in: "front_to_back",
 };
 const CONFIG: Config = {
   brightness: 255,
@@ -122,33 +121,44 @@ test("a change: a dim nose, a bright light and a dark one lead the dimmed queue 
   expect(play(rendering.steady, 1000)[0]).toEqual(full);
 });
 
-test("the queue rises front to back, or all at once", async () => {
-  const states: State[] = ["error", "question", "stopped", "working"];
-  const arrived = SNAKE.fade_out_ms + 11 * (SNAKE.hold_ms + SNAKE.move_ms);
-  /** How far each of the four lights has risen halfway through the rise, front of the queue first. */
-  const halfway = async (fade_in: Snake["fade_in"]) => {
-    const rendering = await render(scene(states, "working", { snake: { ...SNAKE, tail: 0, fade_in } }));
+test("the queue rises in a wave from its front, each light dark just before the wave reaches it", async () => {
+  // Four lights over 480 ms: each takes 240 ms and starts 80 ms after the one in front.
+  const snake: Snake = { ...SNAKE, tail: 0.5, fade_in_ms: 480 };
+  const rendering = await render(scene(["error", "question", "stopped", "working"], "working", { snake }));
+  const arrived = snake.fade_out_ms + 11 * (snake.hold_ms + snake.move_ms);
+  const full = play(rendering.steady, 1000)[0]!;
+  /** How bright each of the four lights is, as a share of full, front of the queue first. */
+  const levels = (ms: number) => {
     play("off", 100);
-    const lights = during(rendering, arrived + SNAKE.fade_in_ms / 2);
-    const full = play(rendering.steady, 1000)[0]!;
-    const brightest = (light: RGB) => Math.max(...light);
-    return [7, 6, 5, 4].map((led) => brightest(lights[led]!) / brightest(full[led]!));
+    const lights = during(rendering, arrived + ms);
+    return [7, 6, 5, 4].map((led) => Math.max(...lights[led]!) / Math.max(...full[led]!));
   };
-  // Front to back: the front light is done, the last has not started, and those between are on their way.
-  const ordered = await halfway("front_to_back");
-  expect(ordered[0]).toBe(1);
-  expect(ordered[3]).toBe(0);
-  expect(ordered).toEqual([...ordered].sort((a, b) => b - a));
-  // All at once: every light is halfway, since the rise is at an even pace.
-  for (const level of await halfway("together")) expect(level).toBeCloseTo(0.5, 1);
+  const tail = levels(0);
+  for (const level of tail) expect(level).toBeCloseTo(0.5, 1);
+
+  // As the second light starts it is dark, the front one is the crest, and the rest wait at the tail's brightness.
+  const [crest, ahead, ...waiting] = levels(80);
+  expect(crest).toBeGreaterThan(0.7);
+  expect(ahead).toBe(0);
+  expect(waiting).toEqual(tail.slice(2));
+
+  // One start later the dark light has moved on: the wave runs toward the back.
+  const later = levels(160);
+  expect(later[0]).toBeGreaterThan(crest!);
+  expect(later[1]).toBeGreaterThan(0.4);
+  expect(later[2]).toBe(0);
+
+  // A light rises quickly at first: the front one is three quarters of the way from the tail's brightness at half time.
+  expect(levels(120)[0]).toBeCloseTo(0.5 + 0.5 * 0.75, 1);
+  expect(levels(480)).toEqual([1, 1, 1, 1]);
 });
 
 test("every change is accepted by the firmware and ends on the queue, in the hardest cases", async () => {
   const snakes: Snake[] = [
     SNAKE,
-    { ...SNAKE, fade_in: "together" },
-    { head: [0, 0, 0], gap: false, tail: 0, hold_ms: 0, move_ms: 1, fade_out_ms: 1, fade_in_ms: 1, fade_in: "front_to_back" },
-    { head: [1, 1, 1], gap: true, tail: 1, hold_ms: 5000, move_ms: 5000, fade_out_ms: 5000, fade_in_ms: 5000, fade_in: "front_to_back" },
+    { ...SNAKE, tail: 0.5, fade_in_ms: 750 },
+    { head: [0, 0, 0], gap: false, tail: 0, hold_ms: 0, move_ms: 1, fade_out_ms: 1, fade_in_ms: 1 },
+    { head: [1, 1, 1], gap: true, tail: 1, hold_ms: 5000, move_ms: 5000, fade_out_ms: 5000, fade_in_ms: 5000 },
   ];
   for (const states of [["error"], STATES.slice(), many(8, "working"), OVERFLOW] as State[][]) {
     for (const announce of [null, ...new Set(states)]) {

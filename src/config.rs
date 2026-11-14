@@ -167,19 +167,9 @@ pub const PALETTES: [NamedPalette; 11] = [
     },
 ];
 
-/// The order in which the arriving queue rises to full brightness.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FadeIn {
-    /// Every light at once.
-    Together,
-    /// The front of the queue first, each item starting a little after the one in front of it.
-    FrontToBack,
-}
-
 /// The animation that announces a change: a head in the new state's color
 /// crosses the dark strip and pulls the new queue in behind it as a dimmed
-/// tail, which then rises to full brightness.
+/// tail, which then rises to full brightness in a wave from its front to its back.
 ///
 /// Brightness levels are shares from 0 to 1 and timings are milliseconds.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -200,8 +190,6 @@ pub struct Snake {
     pub fade_out_ms: u32,
     /// How long the new queue takes to rise to full brightness once it is in place.
     pub fade_in_ms: u32,
-    /// The order in which the queue's lights rise.
-    pub fade_in: FadeIn,
 }
 
 impl Default for Snake {
@@ -214,7 +202,6 @@ impl Default for Snake {
             move_ms: 90,
             fade_out_ms: 300,
             fade_in_ms: 500,
-            fade_in: FadeIn::FrontToBack,
         }
     }
 }

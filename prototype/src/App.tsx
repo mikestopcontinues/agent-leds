@@ -251,7 +251,7 @@ export function App() {
           <h2>Change animation</h2>
           <p className="note">
             The lights fade out. A head in the new state's color crosses the strip toward the front of the queue and
-            pulls the new queue in as its tail. The queue then rises to full at an even pace.
+            pulls the new queue in as its tail. The queue then rises to full in a wave from its front to its back: each light goes dark just before the wave reaches it, then rises quickly and settles.
           </p>
           <h3>Head</h3>
           {["Front", "Middle", "Back"].map((light, index) => (
@@ -274,15 +274,8 @@ export function App() {
           <Slider label="Fade out ms" title="how long the old queue takes to go dark" value={snake.fade_out_ms}
             min={10} max={1500} step={10} onChange={(fade_out_ms) => setSnake({ fade_out_ms })} />
           <h3>Arrival</h3>
-          <Slider label="Fade in ms" title="how long the new queue takes to rise to full, at an even pace" value={snake.fade_in_ms}
+          <Slider label="Fade in ms" title="how long the wave takes to bring the whole queue to full; each light takes half of it" value={snake.fade_in_ms}
             min={10} max={1500} step={10} onChange={(fade_in_ms) => setSnake({ fade_in_ms })} />
-          <label className="field" title="whether the queue's lights rise all at once, or the front of the queue first with each light starting a little after the one in front">
-            Fade in
-            <select value={snake.fade_in} onChange={(event) => setSnake({ fade_in: event.target.value as Snake["fade_in"] })}>
-              <option value="front_to_back">front to back</option>
-              <option value="together">all at once</option>
-            </select>
-          </label>
           <p className="note">
             {change
               ? `The change takes ${(changeMs / 1000).toFixed(2)} s in ${rendering?.steps.length === 1 ? "one program" : `${rendering?.steps.length ?? 0} programs`}.`

@@ -15,8 +15,6 @@ export type Snake = {
   move_ms: number;
   fade_out_ms: number;
   fade_in_ms: number;
-  /** Whether the queue's lights rise all at once or the front of the queue first. */
-  fade_in: "together" | "front_to_back";
 };
 
 export type Config = {
