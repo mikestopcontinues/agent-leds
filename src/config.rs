@@ -5,7 +5,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::files;
@@ -217,30 +217,28 @@ impl Config {
         };
         let config: Config =
             toml::from_str(&text).with_context(|| format!("reading {}", path.display()))?;
-        config
-            .check()
-            .map_err(|problem| anyhow!("{}: {problem}", path.display()))?;
+        config.check().with_context(|| path.display().to_string())?;
         Ok(config)
     }
 
     /// Says what is wrong with a setting the renderer or the device cannot use.
-    pub fn check(&self) -> Result<(), String> {
+    pub fn check(&self) -> Result<()> {
         const LONGEST_MS: u32 = 5000;
         if self.front_led != 0 && self.front_led != 7 {
-            return Err("the front light is 0 or 7".into());
+            bail!("the front light is 0 or 7");
         }
         if !self
             .balance
             .iter()
             .all(|weight| weight.is_finite() && *weight > 0.0)
         {
-            return Err("each die's brightness must be above 0".into());
+            bail!("each die's brightness must be above 0");
         }
         if self.keep_read_minutes > 24 * 60 {
-            return Err("a read session keeps its light for 0-1440 minutes".into());
+            bail!("a read session keeps its light for 0-1440 minutes");
         }
         if !(1..=365).contains(&self.abandon_days) {
-            return Err("a silent session is dropped after 1-365 days".into());
+            bail!("a silent session is dropped after 1-365 days");
         }
         let snake = &self.snake;
         if !snake
@@ -249,13 +247,13 @@ impl Config {
             .chain([&snake.tail])
             .all(|level| (0.0..=1.0).contains(level))
         {
-            return Err("the snake's brightness levels are between 0 and 1".into());
+            bail!("the snake's brightness levels are between 0 and 1");
         }
         if ![snake.fade_out_ms, snake.step_ms]
             .iter()
             .all(|ms| (1..=LONGEST_MS).contains(ms))
         {
-            return Err(format!("the snake's timings are 1-{LONGEST_MS} ms"));
+            bail!("the snake's timings are 1-{LONGEST_MS} ms");
         }
         Ok(())
     }
@@ -308,7 +306,7 @@ mod tests {
         let with = |change: fn(&mut Config)| {
             let mut config = Config::default();
             change(&mut config);
-            config.check()
+            config.check().map_err(|error| error.to_string())
         };
         assert_eq!(with(|_| {}), Ok(()));
         assert!(

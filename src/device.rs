@@ -12,13 +12,13 @@ const MAX_BYTES: usize = 512;
 const MAX_LINES: usize = 20;
 
 /// The firmware rejects anything larger and blinks red instead.
-pub fn check(program: &str) -> Result<(), String> {
+pub fn check(program: &str) -> anyhow::Result<()> {
     let lines = program.lines().count();
     if program.is_empty() || program.len() > MAX_BYTES || lines > MAX_LINES {
-        return Err(format!(
+        anyhow::bail!(
             "program is {} bytes and {lines} lines; the device accepts 1-{MAX_BYTES} bytes and {MAX_LINES} lines",
             program.len()
-        ));
+        );
     }
     Ok(())
 }

@@ -7,7 +7,9 @@ mod device;
 mod eject;
 mod files;
 mod harness;
+mod ipc;
 mod launchd;
+mod player;
 mod render;
 mod settings;
 mod state;
@@ -24,8 +26,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use config::{Config, PALETTES, home};
-use daemon::Request;
 use harness::Harness;
+use ipc::{Request, Status};
 use state::State;
 
 #[derive(Parser)]
@@ -129,7 +131,7 @@ impl Scene {
             Some(config) => config,
             None => Config::load()?,
         };
-        config.check().map_err(anyhow::Error::msg)?;
+        config.check()?;
         Ok((scene, config))
     }
 }
@@ -155,10 +157,10 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Status { json } => status(json),
-        Command::Dismiss { session } => daemon::request(&Request::Dismiss { session }).map(drop),
+        Command::Dismiss { session } => ipc::request(&Request::Dismiss { session }).map(drop),
         Command::Palette {
             name: Some(name), ..
-        } => daemon::request(&Request::Palette { name }).map(drop),
+        } => ipc::request(&Request::Palette { name }).map(drop),
         Command::Palette { name: None, json } => {
             palettes(json);
             Ok(())
@@ -170,7 +172,7 @@ fn main() -> Result<()> {
             } else {
                 std::fs::read_to_string(&file)?
             };
-            daemon::request(&Request::Play {
+            ipc::request(&Request::Play {
                 program: program.trim().to_owned(),
                 seconds,
             })
@@ -178,14 +180,14 @@ fn main() -> Result<()> {
         }
         Command::Configure => {
             let config = serde_json::from_str(&stdin()?).context("reading the config")?;
-            let saved = daemon::request(&Request::Configure { config })?;
+            let saved = ipc::request(&Request::Configure { config })?;
             println!("{saved}");
             Ok(())
         }
         Command::Render => render_scene(),
         Command::Show { seconds } => {
             let (scene, config) = Scene::read()?;
-            daemon::request(&Request::Show {
+            ipc::request(&Request::Show {
                 states: scene.states,
                 announce: scene.announce,
                 from: scene.from,
@@ -201,7 +203,7 @@ fn main() -> Result<()> {
                 .and_then(|text| serde_json::from_str(&text).ok())
                 .and_then(|payload| harness::report(harness, &payload))
             {
-                let _ = daemon::send(&Request::Report(report));
+                let _ = ipc::send(&Request::Report(report));
             }
             Ok(())
         }
@@ -235,73 +237,61 @@ fn stdin() -> Result<String> {
 }
 
 fn status(json: bool) -> Result<()> {
-    let status = daemon::request(&Request::Status)?;
+    let status = ipc::request(&Request::Status)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&status)?);
         return Ok(());
     }
-    let now = status["now"].as_u64().unwrap_or_default();
-    for item in status["items"].as_array().into_iter().flatten() {
-        let age = |since: &Value| match now.saturating_sub(since.as_u64().unwrap_or(now)) / 1000 {
-            seconds @ 0..60 => format!("{seconds}s"),
-            seconds @ 60..3600 => format!("{}m", seconds / 60),
-            seconds => format!("{}h{:02}m", seconds / 3600, seconds % 3600 / 60),
+    let status: Status = serde_json::from_value(status).context("reading the queue")?;
+    print!("{}", status_text(&status));
+    Ok(())
+}
+
+/// The queue as `agent-leds status` prints it: a line per session.
+fn status_text(status: &Status) -> String {
+    let age = |since: u64| match status.now.saturating_sub(since) / 1000 {
+        seconds @ 0..60 => format!("{seconds}s"),
+        seconds @ 60..3600 => format!("{}m", seconds / 60),
+        seconds => format!("{}h{:02}m", seconds / 3600, seconds % 3600 / 60),
+    };
+    let mut text = String::new();
+    for item in &status.items {
+        let weak = if item.weak {
+            "  ended on a question"
+        } else {
+            ""
         };
-        let weak = match item["weak"].as_bool() {
-            Some(true) => "  ended on a question",
-            _ => "",
-        };
-        let read = match &item["read"] {
-            Value::Null => String::new(),
-            at => format!("  read {} ago", age(at)),
-        };
-        println!(
-            "{:<9} {:>6}  {}  {:<6}  {}{weak}{read}",
-            item["state"].as_str().unwrap_or_default(),
-            age(&item["since"]),
-            item["session"]
-                .as_str()
-                .unwrap_or_default()
-                .chars()
-                .take(8)
-                .collect::<String>(),
-            item["harness"].as_str().unwrap_or_default(),
-            item["label"].as_str().unwrap_or_default(),
+        let read = item
+            .read
+            .map_or(String::new(), |at| format!("  read {} ago", age(at)));
+        let session: String = item.session.chars().take(8).collect();
+        let state = format!("{:?}", item.state).to_lowercase();
+        let harness = format!("{:?}", item.harness).to_lowercase();
+        text += &format!(
+            "{state:<9} {:>6}  {session}  {harness:<6}  {}{weak}{read}\n",
+            age(item.since),
+            item.label,
         );
     }
-    if status["items"].as_array().is_none_or(Vec::is_empty) {
-        println!("The queue is empty.");
+    if status.items.is_empty() {
+        text += "The queue is empty.\n";
     }
-    if status["device"].is_null() {
-        println!("No SidePulse volume is mounted.");
+    if status.device.is_none() {
+        text += "No SidePulse volume is mounted.\n";
     }
-    Ok(())
+    text
 }
 
 /// Shows every setting, shows one, or changes one.
 fn configure(key: Option<&str>, values: &[String]) -> Result<()> {
-    let status = daemon::request(&Request::Status)?;
-    let config: Config =
-        serde_json::from_value(status["config"].clone()).context("reading the settings")?;
+    let config = ipc::ask::<Status>(&Request::Status)?.config;
     if let Some(key) = key
         && !values.is_empty()
     {
         let config = settings::set(&config, key, values)?;
-        return daemon::request(&Request::Configure { config }).map(drop);
+        return ipc::request(&Request::Configure { config }).map(drop);
     }
-    let shown: Vec<_> = settings::settings(&config)
-        .into_iter()
-        .filter(|(name, _)| {
-            key.is_none_or(|key| name == key || name.starts_with(&format!("{key}.")))
-        })
-        .collect();
-    if shown.is_empty() {
-        anyhow::bail!(
-            "no setting named {:?}; see `agent-leds config -h`",
-            key.unwrap_or_default()
-        );
-    }
-    for (name, value) in shown {
+    for (name, value) in settings::shown(&config, key)? {
         println!("{name} = {value}");
     }
     Ok(())
@@ -338,4 +328,71 @@ fn render_scene() -> Result<()> {
     });
     println!("{output}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{Queue, Update};
+
+    #[test]
+    fn status_lists_each_session_with_its_age() {
+        let mut queue = Queue::default();
+        let minute = 60_000;
+        queue.apply(
+            Harness::Codex,
+            "0123456789",
+            "app",
+            Update::Enter(State::Working),
+            0,
+        );
+        queue.apply(
+            Harness::Claude,
+            "abcdefghij",
+            "web",
+            Update::Asked,
+            2 * minute,
+        );
+        let status = Status {
+            items: queue.items().into_iter().cloned().collect(),
+            now: 3 * 3600 * 1000 + 5 * minute,
+            config: Config::default(),
+            device: Some("/Volumes/SidePulse".into()),
+            device_uptime_ms: Some(1),
+        };
+        let text = status_text(&status);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert!(lines[0].starts_with("question") && lines[0].contains("abcdefgh  claude  web"));
+        assert!(lines[0].ends_with("ended on a question"));
+        assert!(lines[1].starts_with("working") && lines[1].contains("3h05m"));
+    }
+
+    #[test]
+    fn status_says_when_nothing_is_there() {
+        let status = Status {
+            items: Vec::new(),
+            now: 0,
+            config: Config::default(),
+            device: None,
+            device_uptime_ms: None,
+        };
+        assert_eq!(
+            status_text(&status),
+            "The queue is empty.\nNo SidePulse volume is mounted.\n"
+        );
+    }
+
+    #[test]
+    fn every_command_has_help() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+        for command in Cli::command().get_subcommands() {
+            assert!(
+                command.is_hide_set() || command.get_about().is_some(),
+                "{} has no help",
+                command.get_name()
+            );
+        }
+    }
 }

@@ -97,6 +97,24 @@ fn typed(value: &Value) -> String {
     }
 }
 
+/// The settings `key` names: one, or every setting in a group such as
+/// `snake`, or every setting at all without a key.
+pub fn shown(config: &Config, key: Option<&str>) -> Result<Vec<(String, String)>> {
+    let shown: Vec<_> = settings(config)
+        .into_iter()
+        .filter(|(name, _)| {
+            key.is_none_or(|key| name == key || name.starts_with(&format!("{key}.")))
+        })
+        .collect();
+    if shown.is_empty() {
+        bail!(
+            "no setting named {:?}; see `agent-leds config -h`",
+            key.unwrap_or_default()
+        );
+    }
+    Ok(shown)
+}
+
 /// `config` with the setting `key` changed to `values`, which hold one
 /// value, or one per item of a list.
 pub fn set(config: &Config, key: &str, values: &[String]) -> Result<Config> {
@@ -124,7 +142,7 @@ pub fn set(config: &Config, key: &str, values: &[String]) -> Result<Config> {
     };
     let config: Config =
         serde_json::from_value(changed).with_context(|| format!("setting {key}"))?;
-    config.check().map_err(anyhow::Error::msg)?;
+    config.check()?;
     Ok(config)
 }
 
@@ -169,6 +187,18 @@ mod tests {
         assert!(shown.contains(&("balance".into(), "0.32 0.54 0.14".into())));
         assert!(shown.contains(&("colors.error".into(), "#FF0000".into())));
         assert!(shown.contains(&("snake.gap".into(), "true".into())));
+    }
+
+    #[test]
+    fn a_key_shows_one_setting_or_a_group() {
+        let config = Config::default();
+        assert_eq!(shown(&config, None).unwrap().len(), SETTINGS.len());
+        assert_eq!(shown(&config, Some("snake")).unwrap().len(), 5);
+        assert_eq!(
+            shown(&config, Some("brightness")).unwrap(),
+            [("brightness".to_owned(), "255".to_owned())]
+        );
+        assert!(shown(&config, Some("snak")).is_err());
     }
 
     #[test]
