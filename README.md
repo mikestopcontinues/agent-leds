@@ -26,11 +26,9 @@ brew install mikestopcontinues/tap/agent-leds
 agent-leds install
 ```
 
-`agent-leds install` starts the service at login and adds its hooks to each harness you use (`~/.claude`, `~/.codex`, `~/.grok`, `~/.cursor`, `~/.junie`), leaving other hooks alone. Run it again after you start using another harness, and after every upgrade:
+`agent-leds install` starts the service at login and adds its hooks to each harness you use (`~/.claude`, `~/.codex`, `~/.grok`, `~/.cursor`, `~/.junie`), leaving other hooks alone. Run it again after you start using another harness. `brew upgrade agent-leds` is the whole upgrade: the service restarts on the new version by itself.
 
-```sh
-brew upgrade agent-leds && agent-leds install
-```
+If the lights don't follow your sessions, `agent-leds doctor` checks the service, the card and each harness's hooks, and says what to fix.
 
 To remove it, run `agent-leds uninstall`, then `brew uninstall agent-leds`.
 
@@ -38,6 +36,7 @@ To remove it, run `agent-leds uninstall`, then `brew uninstall agent-leds`.
 
 ```sh
 agent-leds status                     # the queue
+agent-leds doctor                     # check the install
 agent-leds dismiss                    # clear every light that is not working
 agent-leds palette signal             # switch palette
 agent-leds config                     # every setting
@@ -63,6 +62,8 @@ Each harness reports a little differently; [docs/harnesses.md](docs/harnesses.md
 ```sh
 cargo test && cargo clippy --all-targets
 ```
+
+CI runs these, and the workshop's tests, on every push to `master` on Apple silicon and Intel Macs.
 
 - [docs/design.md](docs/design.md) explains how the service works and lists its open questions.
 - `prototype/` is a workshop page for tuning the settings against the card: `cd prototype && bun install && bun run dev`. It runs what `agent-leds` renders through the firmware's own interpreter, so it shows what the card will do. `bun test` there checks the color model and the rendered programs.

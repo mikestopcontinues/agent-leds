@@ -1,0 +1,30 @@
+# Checks every push to master and every pull request, on Apple silicon and
+# on Intel. Releases are built by release.yml, which dist generates.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      # The workshop's tests run the `agent-leds` they find on the PATH.
+      - run: cargo build && echo "$PWD/target/debug" >> "$GITHUB_PATH"
+      - uses: oven-sh/setup-bun@v2
+      - working-directory: prototype
+        run: bun install --frozen-lockfile && bun run check && bun test

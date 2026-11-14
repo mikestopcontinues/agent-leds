@@ -20,6 +20,8 @@ The daemon saves the queue to `~/.local/state/agent-leds/queue.json` on every ch
 
 The daemon reads the card's uptime every 15 seconds. The read keeps the SD reader from powering the card down, and an uptime that went backwards means the card restarted, so the queue is rewritten.
 
+The same check notices an upgrade. The LaunchAgent and the hooks run the binary by the path `agent-leds install` ran it from, which for Homebrew is the symlink `/opt/homebrew/bin/agent-leds` that each upgrade repoints. When that path leads to a different file than the daemon started from, the daemon exits and launchd starts the new version. A binary that is gone, as mid-uninstall, does not count. An upgrade that registers hooks differently still needs `agent-leds install`, which `agent-leds doctor` says.
+
 The daemon also keeps the card mounted. macOS ejects a disk that appears while the screen is locked, which the card does when the Mac wakes from hibernation, and an ejected card stays dark until it is taken out and put back. Disk Arbitration asks its clients before it ejects a disk, so the daemon refuses every eject of a disk whose volume name starts with `SidePulse`, and then tries every 5 seconds to mount it until that works, which it does once the screen is unlocked. Other cards in the reader eject as usual. Two things follow:
 
 - The card cannot be ejected from Finder or with `diskutil eject` while the daemon runs. Pull it out, or stop the daemon first.
@@ -53,11 +55,12 @@ A turn whose last line ends in a question mark shows as a question that reading 
 Each module owns one concern; the ones that touch the system are thin.
 
 - `main.rs`: the command line.
+- `doctor.rs`: `agent-leds doctor`, which checks the service, the card, the hooks and for SidePulse's own software.
 - `daemon.rs`: the service's loop. Everything it reads or changes outside itself goes through its `World` trait, which tests replace.
 - `player.rs`: what the lights play and when, given the time. No I/O.
 - `render.rs`: a queue or a change, as LEDS.LED programs. No I/O.
 - `state.rs`: the queue and how each session's light changes and clears. No I/O.
-- `harness.rs` and `harness/`: each harness's payloads, turned into a shared `Hook` vocabulary and a `Report`; installing and removing hooks.
+- `harness.rs` and `harness/`: each harness's payloads, read into typed structs and turned into a shared `Hook` vocabulary and a `Report`; installing, checking and removing hooks.
 - `ipc.rs`: the socket protocol between the command line, the hooks and the service.
 - `config.rs`, `settings.rs`: the settings, and reading and changing them by name.
 - `desktop.rs`: which sessions the user has looked at in the Claude desktop app.
@@ -76,7 +79,7 @@ Each module owns one concern; the ones that touch the system are thin.
 
 ## Open questions
 
-- Installing with Homebrew has been checked on Apple silicon. The Intel build is made the same way but has not been run.
+- Installing with Homebrew has been checked on Apple silicon. On Intel, CI builds and tests every push, but no install has been run.
 - Claude Code, Codex 0.153.2, Grok 1.0.13 and `cursor-agent` 2026.05.28 have been checked against real sessions; Grok, Cursor and Codex's subagents only from the command line (`grok -p`, `cursor-agent -p`, `codex exec`). What Cursor sends from its interface is taken from its code, and Junie's events from its documentation.
 - Refusing an eject has been checked with `diskutil eject`: the eject fails and the card is mounted again within 5 seconds. A wake from hibernation with the screen locked has not been seen, nor has a restart of Disk Arbitration.
 - Input in the Claude app with a session open is taken as having looked at it. Typing in a second window, or in the Chat tab, would count too.
