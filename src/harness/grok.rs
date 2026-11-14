@@ -1,12 +1,12 @@
 //! Grok: its hooks live in a file of their own in `~/.grok/hooks/`.
 
-use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde_json::{Map, Value, json};
 
-use super::{Event, Harness, ends_on_question, replace, text};
+use super::{Event, Harness, Hook, ends_on_question, text};
+use crate::files;
 
 /// Grok reads every JSON file in the folder, so this one holds nothing but
 /// what an install wrote.
@@ -29,37 +29,42 @@ const EVENTS: [(&str, Option<&str>); 9] = [
 
 /// Grok spells its payloads in camelCase and its event names in snake_case.
 pub fn event(payload: &Value) -> Option<Event> {
+    // A subagent runs as a session of its own, which says what kind it is
+    // and not which session started it, so its events cannot be put to the
+    // session they belong to.
+    if payload.get("subagentType").is_some() {
+        return None;
+    }
     let text = |key| text(payload, key);
-    let name = match text("hookEventName")? {
-        "user_prompt_submit" => "UserPromptSubmit",
-        "pre_tool_use" => "PreToolUse",
+    let hook = match text("hookEventName")? {
+        "user_prompt_submit" => Hook::UserPromptSubmit,
+        "pre_tool_use" => Hook::PreToolUse,
         // Grok has no event for a permission request. It sends this
         // notification while its prompt is waiting.
         "notification" if text("notificationType") == Some("permission_prompt") => {
-            "PermissionRequest"
+            Hook::PermissionRequest
         }
-        "post_tool_use" => "PostToolUse",
-        "post_tool_use_failure" => "PostToolUseFailure",
+        "post_tool_use" => Hook::PostToolUse,
+        "post_tool_use_failure" => Hook::PostToolUseFailure,
         // Stop fires again when the session closes, which says nothing about a turn.
-        "stop" if text("reason") == Some("end_turn") => "Stop",
-        "stop_failure" => "StopFailure",
+        "stop" if text("reason") == Some("end_turn") => Hook::Stop,
+        "stop_failure" => Hook::StopFailure,
         // The user was there to cancel the turn. One that Grok gave up on by
         // itself is left for them to find.
-        "stop_cancelled" if text("cancelledBy") == Some("user") => "Interrupt",
-        "stop_cancelled" => "Stop",
-        "session_end" => "SessionEnd",
+        "stop_cancelled" if text("cancelledBy") == Some("user") => Hook::Interrupt,
+        "stop_cancelled" => Hook::Stop,
+        "session_end" => Hook::SessionEnd,
         _ => return None,
     };
     Some(Event {
-        name: name.to_owned(),
+        hook,
         session: text("sessionId")?.to_owned(),
         cwd: text("cwd").unwrap_or_default().to_owned(),
-        asks: match name {
-            "PreToolUse" => text("toolName") == Some("ask_user_question"),
+        asks: match hook {
+            Hook::PreToolUse => text("toolName") == Some("ask_user_question"),
             _ => ends_on_question(text("lastAssistantMessage").unwrap_or_default()),
         },
-        // A subagent runs as a session of its own and says what kind it is.
-        subagent: payload.get("subagentType").is_some(),
+        subagent: false,
         unfinished: false,
     })
 }
@@ -75,20 +80,15 @@ pub fn install(home: &Path, exe: &Path) -> Result<()> {
         }
         hooks.insert(event.to_owned(), json!([group]));
     }
-    let file = home.join(HOOKS);
-    fs::create_dir_all(file.parent().expect("the file is in a folder"))?;
     let hooks = json!({ "hooks": hooks });
-    replace(&file, &(serde_json::to_string_pretty(&hooks)? + "\n"))
+    files::replace(
+        &home.join(HOOKS),
+        &(serde_json::to_string_pretty(&hooks)? + "\n"),
+    )
 }
 
 pub fn uninstall(home: &Path) -> Result<()> {
-    let file = home.join(HOOKS);
-    match fs::remove_file(&file) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-            Err(error).with_context(|| format!("removing {}", file.display()))
-        }
-        _ => Ok(()),
-    }
+    files::remove(&home.join(HOOKS))
 }
 
 #[cfg(test)]
@@ -199,22 +199,30 @@ mod tests {
     }
 
     #[test]
-    fn a_subagent_only_says_that_work_is_going_on() {
+    fn a_subagent_is_not_followed() {
+        // A subagent's events carry its own session and nothing that names
+        // the session that started it.
         let explore = json!({ "subagentType": "explore", "reason": "end_turn" });
-        assert_eq!(event("stop", explore.clone()), Some(Update::Background));
-        assert_eq!(event("session_end", explore), Some(Update::Background));
+        assert_eq!(event("stop", explore.clone()), None);
+        assert_eq!(event("post_tool_use", explore), None);
     }
 
     #[test]
     fn payloads_grok_sends_to_the_hooks_of_other_harnesses_are_not_theirs() {
-        let stop = json!({ "hookEventName": "stop", "sessionId": "s1", "reason": "end_turn" });
+        // As Grok 1.0.13 sent it to the hooks in ~/.claude/settings.json: in
+        // both spellings, with its own event names.
+        let stop = json!({
+            "hookEventName": "stop", "hook_event_name": "stop",
+            "sessionId": "s1", "session_id": "s1",
+            "reason": "end_turn", "lastAssistantMessage": "ok", "backgroundTasks": [],
+        });
         assert_eq!(update(Harness::Claude, stop.clone()), None);
         assert_eq!(update(Harness::Codex, stop), None);
     }
 
     #[test]
     fn installing_writes_a_file_of_its_own_and_uninstalling_removes_only_that() {
-        let home = Home::new("grok");
+        let home = Home::new();
         home.write(".grok/hooks/sidepulse.json", "{}");
         install(&home, Path::new("/bin/agent-leds")).unwrap();
         let installed = home.json(HOOKS);

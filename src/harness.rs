@@ -11,7 +11,6 @@ mod cursor;
 mod grok;
 mod junie;
 
-use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -19,16 +18,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::config::state_dir;
-use crate::daemon::Request;
+use crate::files;
 use crate::state::{State, Update};
 
 /// An agent harness whose sessions the queue shows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum Harness {
-    /// The default, because a queue saved before sessions recorded their
-    /// harness holds only Claude Code's.
-    #[default]
     Claude,
     Codex,
     Grok,
@@ -79,17 +75,23 @@ impl Harness {
         }
     }
 
-    /// The command the harness runs on each hook event.
+    /// The command the harness runs on each hook event, through a shell.
     fn command(self, exe: &Path) -> String {
-        format!("{} hook {}", exe.display(), self.name())
+        let exe = exe.to_string_lossy();
+        shlex::try_join([exe.as_ref(), "hook", self.name()]).expect("a path holds no NUL")
     }
 
-    /// Whether a hook command is one this harness's install wrote.
-    fn owns(self, command: &Value) -> bool {
-        let ours = format!("agent-leds hook {}", self.name());
-        command
-            .as_str()
-            .is_some_and(|command| command.ends_with(&ours))
+    /// Whether a hook command is one an install of this harness wrote,
+    /// wherever the binary was then.
+    fn owns(self, command: &str) -> bool {
+        match shlex::split(command).as_deref() {
+            Some([exe, hook, name]) => {
+                Path::new(exe).file_name() == Some(env!("CARGO_BIN_NAME").as_ref())
+                    && hook == "hook"
+                    && name == self.name()
+            }
+            _ => false,
+        }
     }
 
     fn event(self, payload: &Value) -> Option<Event> {
@@ -140,11 +142,35 @@ pub fn uninstall(home: &Path) -> Vec<(Harness, Result<()>)> {
         .collect()
 }
 
+/// A hook event as Claude Code names it, which is the vocabulary the
+/// harnesses share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+enum Hook {
+    UserPromptSubmit,
+    PreToolUse,
+    PermissionRequest,
+    PostToolUse,
+    PostToolUseFailure,
+    Elicitation,
+    ElicitationResult,
+    Stop,
+    StopFailure,
+    SessionEnd,
+    /// The user cut the turn short. Codex has an event of this name; the
+    /// other harnesses say so in other ways.
+    Interrupt,
+}
+
+impl Hook {
+    /// The event a name stands for, if it is one the daemon follows.
+    fn named(name: &str) -> Option<Hook> {
+        serde_json::from_value(Value::from(name)).ok()
+    }
+}
+
 /// One hook event in the vocabulary the harnesses share.
 struct Event {
-    /// The event as Claude Code names it, or `Interrupt`, which is Codex's
-    /// name for the user cutting a turn short.
-    name: String,
+    hook: Hook,
     session: String,
     /// The folder the session works in.
     cwd: String,
@@ -159,10 +185,10 @@ struct Event {
 }
 
 impl Event {
-    /// Reads a payload that spells its fields the way Claude Code does.
+    /// Reads a payload that spells its fields and events the way Claude Code does.
     fn read(payload: &Value) -> Option<Event> {
         Some(Event {
-            name: text(payload, "hook_event_name")?.to_owned(),
+            hook: Hook::named(text(payload, "hook_event_name")?)?,
             session: text(payload, "session_id")?.to_owned(),
             cwd: text(payload, "cwd").unwrap_or_default().to_owned(),
             asks: ends_on_question(text(payload, "last_assistant_message").unwrap_or_default()),
@@ -180,33 +206,43 @@ impl Event {
             // background.
             return Some(Update::Background);
         }
-        Some(match self.name.as_str() {
-            "UserPromptSubmit" | "PostToolUse" | "PostToolUseFailure" | "ElicitationResult" => {
-                Update::Enter(State::Working)
-            }
-            "PreToolUse" if self.asks => Update::Enter(State::Question),
-            "PreToolUse" => Update::Enter(State::Working),
-            "PermissionRequest" | "Elicitation" => Update::Enter(State::Question),
-            "Stop" if self.asks => Update::Asked,
+        Some(match self.hook {
+            Hook::UserPromptSubmit
+            | Hook::PostToolUse
+            | Hook::PostToolUseFailure
+            | Hook::ElicitationResult => Update::Enter(State::Working),
+            Hook::PreToolUse if self.asks => Update::Enter(State::Question),
+            Hook::PreToolUse => Update::Enter(State::Working),
+            Hook::PermissionRequest | Hook::Elicitation => Update::Enter(State::Question),
+            Hook::Stop if self.asks => Update::Asked,
             // The session goes on by itself, so there is nothing to come back to yet.
-            "Stop" if self.unfinished => Update::Enter(State::Working),
-            "Stop" => Update::Enter(State::Stopped),
-            "StopFailure" => Update::Enter(State::Error),
-            "SessionEnd" | "Interrupt" => Update::Leave,
-            _ => return None,
+            Hook::Stop if self.unfinished => Update::Enter(State::Working),
+            Hook::Stop => Update::Enter(State::Stopped),
+            Hook::StopFailure => Update::Enter(State::Error),
+            Hook::SessionEnd | Hook::Interrupt => Update::Leave,
         })
     }
 }
 
+/// What one hook event says about a session, as the hook tells the daemon.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct Report {
+    pub harness: Harness,
+    pub session: String,
+    /// What the queue calls the session: the name of its folder.
+    pub label: String,
+    pub update: Update,
+}
+
 /// Translates one hook payload from a harness into a report for the daemon.
-pub fn report(harness: Harness, payload: &Value) -> Option<Request> {
+pub fn report(harness: Harness, payload: &Value) -> Option<Report> {
     let event = harness.event(payload)?;
     let update = event.update()?;
     let label = Path::new(&event.cwd)
         .file_name()
         .map_or(event.cwd.as_str().into(), |name| name.to_string_lossy())
         .into_owned();
-    Some(Request::Report {
+    Some(Report {
         harness,
         session: event.session,
         label,
@@ -233,11 +269,7 @@ fn ends_on_question(message: &str) -> bool {
 /// `hooks` object. Everything else in the file stays as it is, and a file
 /// that `edit` leaves unchanged is not written.
 fn edit_hooks(path: &Path, edit: impl FnOnce(&mut Map<String, Value>) -> Result<()>) -> Result<()> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "{}".into(),
-        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
-    };
+    let text = files::read_optional(path)?.unwrap_or_else(|| "{}".into());
     let before: Value =
         serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
     let mut settings = before.clone();
@@ -258,81 +290,80 @@ fn edit_hooks(path: &Path, edit: impl FnOnce(&mut Map<String, Value>) -> Result<
     if settings == before {
         return Ok(());
     }
-    replace(path, &(serde_json::to_string_pretty(&settings)? + "\n"))
+    files::replace(path, &(serde_json::to_string_pretty(&settings)? + "\n"))
 }
 
-/// Replaces a file's text in one step, so a harness never reads half a
-/// file. The file stays as private as it was: a config can hold secrets.
-fn replace(path: &Path, text: &str) -> Result<()> {
-    let mut staged = path.as_os_str().to_owned();
-    staged.push(".agent-leds-tmp");
-    fs::write(&staged, text)?;
-    if let Ok(metadata) = fs::metadata(path) {
-        fs::set_permissions(&staged, metadata.permissions())?;
-    }
-    fs::rename(&staged, path).with_context(|| format!("writing {}", path.display()))
-}
-
-/// Registers `handler` for `event` in a `hooks` object of the shape Claude
-/// Code gave the harnesses: each event lists groups, and each group lists
-/// handlers. The group an earlier install added is replaced.
+/// Adds `entry` to the list `hooks` holds for `event`, in place of the entry
+/// an earlier install added there.
 fn register(
     hooks: &mut Map<String, Value>,
-    harness: Harness,
     event: &str,
-    handler: Value,
+    entry: Value,
+    ours: impl Fn(&Value) -> bool,
 ) -> Result<()> {
-    let groups = hooks.entry(event).or_insert_with(|| json!([]));
-    let Some(groups) = groups.as_array_mut() else {
+    let entries = hooks.entry(event).or_insert_with(|| json!([]));
+    let Some(entries) = entries.as_array_mut() else {
         bail!("hooks.{event} is not a list")
     };
-    groups.retain(|group| !is_ours(harness, group));
-    groups.push(json!({ "hooks": [handler] }));
+    entries.retain(|entry| !ours(entry));
+    entries.push(entry);
     Ok(())
 }
 
-/// Removes the groups an install added to a `hooks` object, and the events
-/// that are left with none.
-fn unregister(hooks: &mut Map<String, Value>, harness: Harness) {
-    for groups in hooks.values_mut() {
-        if let Some(groups) = groups.as_array_mut() {
-            groups.retain(|group| !is_ours(harness, group));
+/// Removes the entries an install added to a `hooks` object, and the events
+/// left with none.
+fn unregister(hooks: &mut Map<String, Value>, ours: impl Fn(&Value) -> bool) {
+    for entries in hooks.values_mut() {
+        if let Some(entries) = entries.as_array_mut() {
+            entries.retain(|entry| !ours(entry));
         }
     }
-    hooks.retain(|_, groups| groups.as_array().is_none_or(|groups| !groups.is_empty()));
+    hooks.retain(|_, entries| entries.as_array().is_none_or(|entries| !entries.is_empty()));
 }
 
-fn is_ours(harness: Harness, group: &Value) -> bool {
+/// Registers `handler` for each of `events`, in the shape Claude Code gave
+/// the harnesses: each event lists groups, and each group lists handlers.
+fn register_groups(
+    hooks: &mut Map<String, Value>,
+    harness: Harness,
+    events: &[&str],
+    handler: impl Fn(&str) -> Value,
+) -> Result<()> {
+    for event in events {
+        let group = json!({ "hooks": [handler(event)] });
+        register(hooks, event, group, |group| owns_group(harness, group))?;
+    }
+    Ok(())
+}
+
+/// Whether a group of handlers holds one an install of `harness` added.
+fn owns_group(harness: Harness, group: &Value) -> bool {
     group["hooks"].as_array().is_some_and(|handlers| {
-        handlers
-            .iter()
-            .any(|handler| harness.owns(&handler["command"]))
+        handlers.iter().any(|handler| {
+            handler["command"]
+                .as_str()
+                .is_some_and(|command| harness.owns(command))
+        })
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::fs;
 
     use super::*;
 
     /// An empty home directory for one test, removed when the test ends.
-    pub struct Home(PathBuf);
+    pub struct Home(tempfile::TempDir);
 
     impl Home {
-        pub fn new(test: &str) -> Home {
-            let home =
-                std::env::temp_dir().join(format!("agent-leds-{test}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&home);
-            fs::create_dir_all(&home).unwrap();
-            Home(home)
+        pub fn new() -> Home {
+            Home(tempfile::tempdir().unwrap())
         }
 
         /// Writes a file in the home directory, with the folders it sits in.
         pub fn write(&self, file: &str, text: &str) {
-            let path = self.join(file);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, text).unwrap();
+            files::replace(&self.join(file), text).unwrap();
         }
 
         pub fn json(&self, file: &str) -> Value {
@@ -344,21 +375,12 @@ mod tests {
         type Target = Path;
 
         fn deref(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for Home {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+            self.0.path()
         }
     }
 
     pub fn update(harness: Harness, payload: Value) -> Option<Update> {
-        match report(harness, &payload)? {
-            Request::Report { update, .. } => Some(update),
-            _ => None,
-        }
+        report(harness, &payload).map(|report| report.update)
     }
 
     #[test]
@@ -377,26 +399,61 @@ mod tests {
     fn labels_a_session_by_its_folder() {
         let stop =
             json!({ "session_id": "s1", "cwd": "/Users/me/Code/app", "hook_event_name": "Stop" });
-        let Some(Request::Report {
-            harness,
-            session,
-            label,
-            ..
-        }) = report(Harness::Claude, &stop)
-        else {
-            panic!()
-        };
-        assert_eq!(harness, Harness::Claude);
-        assert_eq!((session.as_str(), label.as_str()), ("s1", "app"));
+        let report = report(Harness::Claude, &stop).unwrap();
+        assert_eq!(
+            report,
+            Report {
+                harness: Harness::Claude,
+                session: "s1".into(),
+                label: "app".into(),
+                update: Update::Enter(State::Stopped),
+            }
+        );
+    }
+
+    #[test]
+    fn a_hook_command_survives_a_path_with_spaces() {
+        let command = Harness::Claude.command(Path::new("/Users/me/My Tools/agent-leds"));
+        assert_eq!(command, "'/Users/me/My Tools/agent-leds' hook claude");
+        assert!(Harness::Claude.owns(&command));
+        assert!(Harness::Claude.owns("/opt/homebrew/bin/agent-leds hook claude"));
+        assert!(!Harness::Codex.owns(&command));
+        assert!(!Harness::Claude.owns("/usr/local/bin/other hook claude"));
+        assert!(!Harness::Claude.owns("agent-leds hook claude --verbose"));
+        assert!(!Harness::Claude.owns("'unclosed"));
+    }
+
+    #[test]
+    fn only_events_the_daemon_follows_are_named() {
+        assert_eq!(Hook::named("Stop"), Some(Hook::Stop));
+        assert_eq!(Hook::named("Interrupt"), Some(Hook::Interrupt));
+        // Grok runs the hooks in ~/.claude/settings.json with its own payloads,
+        // whose events are spelled in snake_case.
+        assert_eq!(Hook::named("stop"), None);
+        assert_eq!(Hook::named("Notification"), None);
     }
 
     #[test]
     fn only_harnesses_that_have_been_used_are_registered() {
-        let home = Home::new("used");
+        let home = Home::new();
         assert!(install(&home, Path::new("/bin/agent-leds")).is_empty());
         fs::create_dir(home.join(".claude")).unwrap();
         let installed = install(&home, Path::new("/bin/agent-leds"));
         assert!(matches!(installed[..], [(Harness::Claude, Ok(()))]));
         assert!(home.join(".claude/settings.json").exists());
+    }
+
+    #[test]
+    fn a_settings_file_that_is_not_an_object_is_left_alone() {
+        let home = Home::new();
+        home.write("settings.json", "[1]");
+        let error = edit_hooks(&home.join("settings.json"), |_| Ok(())).unwrap_err();
+        assert!(error.to_string().contains("not a JSON object"));
+        home.write("settings.json", r#"{"hooks": 3}"#);
+        assert!(edit_hooks(&home.join("settings.json"), |_| Ok(())).is_err());
+        assert_eq!(
+            fs::read_to_string(home.join("settings.json")).unwrap(),
+            r#"{"hooks": 3}"#
+        );
     }
 }

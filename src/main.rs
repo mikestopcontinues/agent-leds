@@ -5,6 +5,7 @@ mod daemon;
 mod desktop;
 mod device;
 mod eject;
+mod files;
 mod harness;
 mod launchd;
 mod render;
@@ -200,7 +201,7 @@ fn main() -> Result<()> {
                 .and_then(|text| serde_json::from_str(&text).ok())
                 .and_then(|payload| harness::report(harness, &payload))
             {
-                let _ = daemon::send(&report);
+                let _ = daemon::send(&Request::Report(report));
             }
             Ok(())
         }

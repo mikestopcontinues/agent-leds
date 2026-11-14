@@ -1,13 +1,13 @@
 //! Junie: its hooks live in `~/.junie/config.json`, in the shape Claude
 //! Code's have.
 
-use std::fs;
 use std::path::Path;
 
 use anyhow::Result;
 use serde_json::{Value, json};
 
-use super::{Event, Harness, edit_hooks, register, unregister};
+use super::{Event, Harness, edit_hooks, owns_group, register_groups, unregister};
+use crate::files;
 
 const CONFIG: &str = ".junie/config.json";
 
@@ -30,10 +30,11 @@ pub fn event(payload: &Value, state: &Path) -> Option<Event> {
     let last = state.join("junie-session.json");
     if payload.get("session_id").is_some() {
         let session = json!({ "session_id": payload["session_id"], "cwd": payload["cwd"] });
-        let _ = fs::write(last, session.to_string());
+        // Written whole, since the next event's hook may be reading it already.
+        let _ = files::replace(&last, &session.to_string());
         return Event::read(payload);
     }
-    let session: Value = serde_json::from_slice(&fs::read(last).ok()?).ok()?;
+    let session: Value = serde_json::from_str(&files::read_optional(&last).ok()??).ok()?;
     let mut payload = payload.clone();
     payload
         .as_object_mut()?
@@ -42,19 +43,20 @@ pub fn event(payload: &Value, state: &Path) -> Option<Event> {
 }
 
 pub fn install(home: &Path, exe: &Path) -> Result<()> {
+    let command = Harness::Junie.command(exe);
     edit_hooks(&home.join(CONFIG), |hooks| {
-        for event in EVENTS {
-            let handler =
-                json!({ "type": "command", "command": Harness::Junie.command(exe), "timeout": 5 });
-            register(hooks, Harness::Junie, event, handler)?;
-        }
-        Ok(())
+        register_groups(
+            hooks,
+            Harness::Junie,
+            &EVENTS,
+            |_| json!({ "type": "command", "command": command, "timeout": 5 }),
+        )
     })
 }
 
 pub fn uninstall(home: &Path) -> Result<()> {
     edit_hooks(&home.join(CONFIG), |hooks| {
-        unregister(hooks, Harness::Junie);
+        unregister(hooks, |group| owns_group(Harness::Junie, group));
         Ok(())
     })
 }
@@ -65,6 +67,13 @@ mod tests {
     use super::*;
     use crate::state::{State, Update};
 
+    #[test]
+    fn every_event_registered_is_one_the_daemon_follows() {
+        for event in EVENTS {
+            assert!(super::super::Hook::named(event).is_some(), "{event}");
+        }
+    }
+
     /// The session and what the event means for it.
     fn update(payload: Value, state: &Path) -> Option<(String, Update)> {
         let event = event(&payload, state)?;
@@ -73,7 +82,7 @@ mod tests {
 
     #[test]
     fn events_that_name_no_session_belong_to_the_one_that_prompted_last() {
-        let state = Home::new("junie-session");
+        let state = Home::new();
         let of = |session: &str, update| Some((session.to_owned(), update));
         // Nothing can be said about a turn before any prompt was seen.
         let stop = json!({ "hook_event_name": "Stop", "stop_hook_active": false, "last_assistant_message": "Done." });
@@ -117,7 +126,7 @@ mod tests {
 
     #[test]
     fn a_session_is_labelled_by_the_folder_its_prompt_named() {
-        let state = Home::new("junie-label");
+        let state = Home::new();
         let prompt = json!({ "hook_event_name": "UserPromptSubmit", "session_id": "j1", "cwd": "/Users/me/Code/app" });
         event(&prompt, &state);
         let stop = event(&json!({ "hook_event_name": "Stop" }), &state).unwrap();
@@ -130,7 +139,7 @@ mod tests {
             "model": "sonnet",
             "hooks": { "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "python guard.py" }] }] }
         });
-        let home = Home::new("junie");
+        let home = Home::new();
         home.write(CONFIG, &theirs.to_string());
 
         install(&home, Path::new("/bin/agent-leds")).unwrap();

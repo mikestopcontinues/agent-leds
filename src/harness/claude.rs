@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::Result;
 use serde_json::{Value, json};
 
-use super::{Event, Harness, edit_hooks, register, text, unregister};
+use super::{Event, Harness, Hook, edit_hooks, owns_group, register_groups, text, unregister};
 
 /// The hook events the daemon needs, in the order a turn produces them.
 const EVENTS: [&str; 10] = [
@@ -24,11 +24,10 @@ const EVENTS: [&str; 10] = [
 pub fn event(payload: &Value) -> Option<Event> {
     let mut event = Event::read(payload)?;
     event.asks |= text(payload, "tool_name") == Some("AskUserQuestion");
-    event.unfinished = event.name == "Stop" && has_work_running(payload);
+    event.unfinished = event.hook == Hook::Stop && has_work_running(payload);
     // An aborted tool means the user interrupted the turn.
-    if event.name == "PostToolUseFailure" && payload.get("is_interrupt") == Some(&Value::Bool(true))
-    {
-        event.name = "Interrupt".into();
+    if event.hook == Hook::PostToolUseFailure && payload["is_interrupt"] == true {
+        event.hook = Hook::Interrupt;
     }
     Some(event)
 }
@@ -49,23 +48,22 @@ fn has_work_running(payload: &Value) -> bool {
 const SETTINGS: &str = ".claude/settings.json";
 
 pub fn install(home: &Path, exe: &Path) -> Result<()> {
+    let command = Harness::Claude.command(exe);
     edit_hooks(&home.join(SETTINGS), |hooks| {
-        for event in EVENTS {
-            let mut handler =
-                json!({ "type": "command", "command": Harness::Claude.command(exe), "timeout": 5 });
+        register_groups(hooks, Harness::Claude, &EVENTS, |event| {
+            let mut handler = json!({ "type": "command", "command": command, "timeout": 5 });
             if event == "PermissionRequest" {
                 // An async hook cannot answer the permission prompt, so observing never approves anything.
                 handler["async"] = json!(true);
             }
-            register(hooks, Harness::Claude, event, handler)?;
-        }
-        Ok(())
+            handler
+        })
     })
 }
 
 pub fn uninstall(home: &Path) -> Result<()> {
     edit_hooks(&home.join(SETTINGS), |hooks| {
-        unregister(hooks, Harness::Claude);
+        unregister(hooks, |group| owns_group(Harness::Claude, group));
         Ok(())
     })
 }
@@ -75,6 +73,13 @@ mod tests {
     use super::super::tests::{Home, update};
     use super::*;
     use crate::state::{State, Update};
+
+    #[test]
+    fn every_event_registered_is_one_the_daemon_follows() {
+        for event in EVENTS {
+            assert!(super::super::Hook::named(event).is_some(), "{event}");
+        }
+    }
 
     fn event(name: &str, extra: Value) -> Option<Update> {
         let mut event =
@@ -204,7 +209,7 @@ mod tests {
             "model": "opus",
             "hooks": { "Stop": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "python hook_entry.py --provider claude" }] }] }
         });
-        let home = Home::new("claude");
+        let home = Home::new();
         home.write(SETTINGS, &theirs.to_string());
 
         install(&home, Path::new("/bin/agent-leds")).unwrap();

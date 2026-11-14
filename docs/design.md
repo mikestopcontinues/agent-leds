@@ -58,12 +58,9 @@ The files are undocumented. If the app changes them, or a session runs in a term
 ## Open questions
 
 - Installing with Homebrew has been checked on Apple silicon. The Intel build is made the same way but has not been run.
-- Claude Code, Codex 0.153.2, Grok 1.0.13 and `cursor-agent` 2026.05.28 have been checked against real sessions, the last two only run once from the command line (`grok -p`, `cursor-agent -p`). What Cursor sends from its interface is taken from its code, and Junie's events from its documentation.
+- Claude Code, Codex 0.153.2, Grok 1.0.13 and `cursor-agent` 2026.05.28 have been checked against real sessions; Grok, Cursor and Codex's subagents only from the command line (`grok -p`, `cursor-agent -p`, `codex exec`). What Cursor sends from its interface is taken from its code, and Junie's events from its documentation.
 - Refusing an eject has been checked with `diskutil eject`: the eject fails and the card is mounted again within 5 seconds. A wake from hibernation with the screen locked has not been seen, nor has a restart of Disk Arbitration.
-- Whether Grok sends its own camelCase payloads to the hooks it reads from `~/.claude/settings.json`. If it sent Claude Code's spelling there, a Grok session would be reported twice.
-- Whether Codex's desktop app runs other sessions of its own that do keep a transcript. Those would show as lights.
 - Input in the Claude app with a session open is taken as having looked at it. Typing in a second window, or in the Chat tab, would count too.
-- An approved permission prompt stays orange until its tool finishes. No hook reports the approval, and the desktop app's session file does not record it.
 - Whether "the last line ends in a question mark" is the right weak signal. SidePulse's own software uses a narrower rule: the line must open with a question word or an offer such as "want me to", and casual closers such as "anything else?" do not count.
 - How the snake looks on the card. Each program is written when the one before it should end, so a slow write shows as a short pause in the snake.
 - The default die balance (0.32, 0.54, 0.14) starts from the dies' luminance and allows for saturated red and blue looking brighter than their luminance. It has not been checked against the device.

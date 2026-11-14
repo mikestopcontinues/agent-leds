@@ -3,10 +3,11 @@
 
 use std::path::Path;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde_json::{Value, json};
 
-use super::{Event, Harness, edit_hooks, replace, text};
+use super::{Event, Harness, Hook, edit_hooks, register, text, unregister};
+use crate::files;
 
 const HOOKS: &str = ".cursor/hooks.json";
 
@@ -23,26 +24,24 @@ const EVENTS: [&str; 5] = [
 
 pub fn event(payload: &Value) -> Option<Event> {
     let text = |key| text(payload, key);
-    let name = match text("hook_event_name")? {
-        "beforeSubmitPrompt" => "UserPromptSubmit",
-        "postToolUse" => "PostToolUse",
+    let hook = match text("hook_event_name")? {
+        "beforeSubmitPrompt" => Hook::UserPromptSubmit,
+        "postToolUse" => Hook::PostToolUse,
         // An aborted tool means the user interrupted the turn.
-        "postToolUseFailure" if payload.get("is_interrupt") == Some(&Value::Bool(true)) => {
-            "Interrupt"
-        }
-        "postToolUseFailure" => "PostToolUseFailure",
+        "postToolUseFailure" if payload["is_interrupt"] == true => Hook::Interrupt,
+        "postToolUseFailure" => Hook::PostToolUseFailure,
         // Cursor has one event for the end of a turn and says how it ended.
         "stop" => match text("status")? {
-            "completed" => "Stop",
-            "aborted" => "Interrupt",
-            "error" => "StopFailure",
+            "completed" => Hook::Stop,
+            "aborted" => Hook::Interrupt,
+            "error" => Hook::StopFailure,
             _ => return None,
         },
-        "sessionEnd" => "SessionEnd",
+        "sessionEnd" => Hook::SessionEnd,
         _ => return None,
     };
     Some(Event {
-        name: name.to_owned(),
+        hook,
         // Cursor calls the session a conversation everywhere but at its end.
         session: text("conversation_id").or(text("session_id"))?.to_owned(),
         cwd: payload["workspace_roots"][0]
@@ -57,22 +56,20 @@ pub fn event(payload: &Value) -> Option<Event> {
 }
 
 fn is_ours(entry: &Value) -> bool {
-    Harness::Cursor.owns(&entry["command"])
+    entry["command"]
+        .as_str()
+        .is_some_and(|command| Harness::Cursor.owns(command))
 }
 
 pub fn install(home: &Path, exe: &Path) -> Result<()> {
     let file = home.join(HOOKS);
     if !file.exists() {
-        replace(&file, "{ \"version\": 1 }\n")?;
+        files::replace(&file, "{ \"version\": 1 }\n")?;
     }
+    let entry = json!({ "command": Harness::Cursor.command(exe), "timeout": 5 });
     edit_hooks(&file, |hooks| {
         for event in EVENTS {
-            let entries = hooks.entry(event).or_insert_with(|| json!([]));
-            let Some(entries) = entries.as_array_mut() else {
-                bail!("hooks.{event} is not a list")
-            };
-            entries.retain(|entry| !is_ours(entry));
-            entries.push(json!({ "command": Harness::Cursor.command(exe), "timeout": 5 }));
+            register(hooks, event, entry.clone(), is_ours)?;
         }
         Ok(())
     })
@@ -80,12 +77,7 @@ pub fn install(home: &Path, exe: &Path) -> Result<()> {
 
 pub fn uninstall(home: &Path) -> Result<()> {
     edit_hooks(&home.join(HOOKS), |hooks| {
-        for entries in hooks.values_mut() {
-            if let Some(entries) = entries.as_array_mut() {
-                entries.retain(|entry| !is_ours(entry));
-            }
-        }
-        hooks.retain(|_, entries| entries.as_array().is_none_or(|entries| !entries.is_empty()));
+        unregister(hooks, is_ours);
         Ok(())
     })
 }
@@ -180,7 +172,7 @@ mod tests {
                 "preToolUse": [{ "command": "python guard.py" }]
             }
         });
-        let home = Home::new("cursor");
+        let home = Home::new();
         home.write(HOOKS, &theirs.to_string());
 
         install(&home, Path::new("/bin/agent-leds")).unwrap();
@@ -204,7 +196,7 @@ mod tests {
 
     #[test]
     fn a_first_hooks_file_says_which_version_it_is() {
-        let home = Home::new("cursor-first");
+        let home = Home::new();
         fs::create_dir(home.join(".cursor")).unwrap();
         install(&home, Path::new("/bin/agent-leds")).unwrap();
         let installed = home.json(HOOKS);

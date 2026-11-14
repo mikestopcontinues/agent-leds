@@ -1,7 +1,6 @@
 //! Codex: its hooks live in `~/.codex/config.toml`, and it runs only the
 //! hooks whose hash that file says to trust.
 
-use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -13,7 +12,8 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, value};
 
-use super::{Event, Harness, replace, text};
+use super::{Event, Harness, Hook, text};
+use crate::files;
 
 const CONFIG: &str = ".codex/config.toml";
 
@@ -44,13 +44,13 @@ pub fn event(payload: &Value) -> Option<Event> {
         tool,
         Some("request_user_input" | "request_user_input_async")
     );
-    match event.name.as_str() {
-        "PreToolUse" => event.asks = asks_user,
+    match event.hook {
+        Hook::PreToolUse => event.asks = asks_user,
         // The async tool returns at once: that acknowledges the question and
         // does not answer it.
-        "PostToolUse" if tool == Some("request_user_input_async") => return None,
+        Hook::PostToolUse if tool == Some("request_user_input_async") => return None,
         // A turn that ends on a plan waits for the user to accept it.
-        "Stop" => {
+        Hook::Stop => {
             event.asks |= proposes_plan(text(payload, "last_assistant_message").unwrap_or_default())
         }
         _ => {}
@@ -86,11 +86,7 @@ pub fn uninstall(home: &Path) -> Result<()> {
 /// Rewrites the config through `edit`, leaving every line `edit` does not
 /// touch as it is. A config that `edit` leaves unchanged is not written.
 fn edit(path: &Path, edit: impl FnOnce(&mut DocumentMut) -> Result<()>) -> Result<()> {
-    let before = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
-    };
+    let before = files::read_optional(path)?.unwrap_or_default();
     let mut config: DocumentMut = before
         .parse()
         .with_context(|| format!("parsing {}", path.display()))?;
@@ -99,7 +95,7 @@ fn edit(path: &Path, edit: impl FnOnce(&mut DocumentMut) -> Result<()>) -> Resul
     if after == before {
         return Ok(());
     }
-    replace(path, &after)
+    files::replace(path, &after)
 }
 
 /// A table that prints only through the tables inside it, so that removing
@@ -117,9 +113,7 @@ fn hooks(config: &mut DocumentMut) -> Result<&mut Table> {
 
 /// Whether a group of handlers is the one an install wrote.
 fn is_ours(group: &Table) -> bool {
-    let owns = |command: Option<&str>| {
-        command.is_some_and(|command| Harness::Codex.owns(&Value::from(command)))
-    };
+    let owns = |command: Option<&str>| command.is_some_and(|command| Harness::Codex.owns(command));
     match group.get("hooks") {
         Some(Item::Value(handlers)) => handlers.as_array().is_some_and(|handlers| {
             handlers.iter().any(|handler| {
@@ -179,33 +173,74 @@ fn trust(config: &mut DocumentMut, hashes: &[(String, String)]) -> Result<()> {
 }
 
 /// Removes the groups an install added, the events left with no group, and
-/// what was recorded about trusting them.
+/// what was recorded about trusting them. Codex keys that record by a
+/// group's place among its event's groups, so the groups after a removed one
+/// take their records with them as they move up.
 fn unregister(config: &mut DocumentMut, path: &str) {
     let Some(hooks) = config.get_mut("hooks").and_then(Item::as_table_mut) else {
         return;
     };
-    let mut keys = Vec::new();
+    let mut moves = Vec::new();
     for event in EVENTS {
         let Some(groups) = hooks.get_mut(event).and_then(Item::as_array_of_tables_mut) else {
             continue;
         };
-        for index in (0..groups.len()).rev() {
-            if groups.get(index).is_some_and(is_ours) {
-                groups.remove(index);
-                keys.push(format!("{path}:{}:{index}:0", snake_case(event)));
-            }
-        }
+        let ours: Vec<bool> = groups.iter().map(is_ours).collect();
+        groups.retain(|group| !is_ours(group));
         if groups.is_empty() {
             hooks.remove(event);
         }
+        let mut place = 0;
+        for (index, ours) in ours.into_iter().enumerate() {
+            moves.push((snake_case(event), index, (!ours).then_some(place)));
+            place += usize::from(!ours);
+        }
     }
     if let Some(state) = hooks.get_mut("state").and_then(Item::as_table_mut) {
-        for key in keys {
-            state.remove(&key);
-        }
+        move_records(state, path, &moves);
     }
     if hooks.is_empty() {
         config.remove("hooks");
+    }
+}
+
+/// Moves each group's trust records from its old place to its new one, and
+/// drops the records of groups that are gone. A record's key is
+/// `<config path>:<event>:<group>:<handler>`.
+fn move_records(state: &mut Table, path: &str, moves: &[(String, usize, Option<usize>)]) {
+    let keys: Vec<String> = state.iter().map(|(key, _)| key.to_owned()).collect();
+    let mut moved = Vec::new();
+    for key in keys {
+        let Some((event, group, handler)) = key
+            .strip_prefix(path)
+            .and_then(|rest| rest.strip_prefix(':'))
+            .and_then(|rest| {
+                let mut parts = rest.splitn(3, ':');
+                Some((
+                    parts.next()?,
+                    parts.next()?.parse::<usize>().ok()?,
+                    parts.next()?,
+                ))
+            })
+        else {
+            continue;
+        };
+        let Some((_, _, to)) = moves
+            .iter()
+            .find(|(name, from, _)| name == event && *from == group)
+        else {
+            continue;
+        };
+        let handler = handler.to_owned();
+        let event = event.to_owned();
+        if let Some(record) = state.remove(&key)
+            && let Some(to) = to
+        {
+            moved.push((format!("{path}:{event}:{to}:{handler}"), record));
+        }
+    }
+    for (key, record) in moved {
+        state.insert(&key, record);
     }
 }
 
@@ -240,7 +275,11 @@ fn hashes(home: &Path) -> Result<Vec<(String, String)>> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|hook| Harness::Codex.owns(&hook["command"]))
+        .filter(|hook| {
+            hook["command"]
+                .as_str()
+                .is_some_and(|command| Harness::Codex.owns(command))
+        })
         .filter_map(|hook| {
             Some((
                 hook["key"].as_str()?.to_owned(),
@@ -293,6 +332,8 @@ fn list_hooks(codex: &mut Child, home: &Path) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::super::tests::{Home, update};
     use super::*;
     use crate::state::{State, Update};
@@ -466,7 +507,7 @@ trusted_hash = "sha256:271070a9"
 
     #[test]
     fn installing_adds_to_a_config_and_uninstalling_restores_it() {
-        let home = Home::new("codex");
+        let home = Home::new();
         home.write(CONFIG, THEIRS);
         let config = home.join(CONFIG);
         install(&config, 1);
@@ -503,13 +544,50 @@ trusted_hash = "sha256:271070a9"
 
     #[test]
     fn a_config_with_no_hooks_is_left_as_it_was() {
-        let home = Home::new("codex-bare");
+        let home = Home::new();
         let bare = "model = \"gpt-6.1-sol\"\n";
         home.write(CONFIG, bare);
         let config = home.join(CONFIG);
         install(&config, 0);
         uninstall(&config);
         assert_eq!(fs::read_to_string(&config).unwrap(), bare);
+    }
+
+    #[test]
+    fn hooks_registered_after_ours_stay_trusted_when_ours_go() {
+        let home = Home::new();
+        home.write(CONFIG, THEIRS);
+        let config = home.join(CONFIG);
+        install(&config, 1);
+        // Another tool adds a Stop group after ours, and Codex trusts it there.
+        let later = r#"
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "later-tool"
+
+[hooks.state."/Users/me/.codex/config.toml:stop:2:0"]
+trusted_hash = "sha256:7777"
+"#;
+        let installed = fs::read_to_string(&config).unwrap();
+        fs::write(&config, installed + later).unwrap();
+        uninstall(&config);
+        let parsed: toml::Value = toml::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+        let stop = parsed["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop[1]["hooks"][0]["command"].as_str(), Some("later-tool"));
+        let state = parsed["hooks"]["state"].as_table().unwrap();
+        let hash = |key: &str| state.get(&format!("{PATH}:{key}"))?["trusted_hash"].as_str();
+        assert_eq!(hash("stop:0:0"), Some("sha256:271070a9"));
+        assert_eq!(hash("stop:1:0"), Some("sha256:7777"));
+        assert_eq!(hash("stop:2:0"), None);
+        assert_eq!(hash("interrupt:0:0"), None);
+    }
+
+    #[test]
+    fn every_event_registered_is_one_the_daemon_follows() {
+        for event in EVENTS {
+            assert!(Hook::named(event).is_some(), "{event}");
+        }
     }
 
     #[test]

@@ -46,7 +46,6 @@ pub enum Update {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Item {
     /// The harness the session runs in.
-    #[serde(default)]
     pub harness: Harness,
     pub session: String,
     pub label: String,
@@ -57,7 +56,6 @@ pub struct Item {
     seen: u64,
     /// Whether this is a question the turn merely ended on, which reading
     /// settles, rather than a prompt the agent is blocked on.
-    #[serde(default)]
     pub weak: bool,
     /// When the user first looked at the session since its turn ended, in Unix milliseconds.
     pub read: Option<u64>,
@@ -352,14 +350,6 @@ mod tests {
         // What was last seen survives too, so silence is still measured from then.
         assert!(reloaded.expire(5 + WORKING_SILENCE_MS + 1, keep(0)));
         assert_eq!(states(&reloaded), [("b", State::Stopped)]);
-    }
-
-    #[test]
-    fn a_queue_saved_before_sessions_recorded_their_harness_holds_claude_code_sessions() {
-        let saved = r#"[{"session":"a","label":"alpha","state":"working","since":5,"seen":5,"weak":false,"read":null}]"#;
-        let queue: Queue = serde_json::from_str(saved).unwrap();
-        assert_eq!(queue.items()[0].harness, Harness::Claude);
-        assert_eq!(states(&queue), [("a", State::Working)]);
     }
 
     #[test]

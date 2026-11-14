@@ -6,9 +6,10 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 
 use crate::config::{home, state_dir};
+use crate::files;
 
 const LABEL: &str = "io.github.mikestopcontinues.agent-leds";
 
@@ -56,8 +57,7 @@ pub fn install(exe: &Path) -> Result<()> {
         log = escape(&log.to_string_lossy()),
     );
     let path = plist_path();
-    fs::create_dir_all(path.parent().unwrap())?;
-    fs::write(&path, plist).with_context(|| format!("writing {}", path.display()))?;
+    files::replace(&path, &plist)?;
 
     stop();
     let started = Command::new("launchctl")
@@ -72,10 +72,7 @@ pub fn install(exe: &Path) -> Result<()> {
 
 pub fn uninstall() -> Result<()> {
     stop();
-    match fs::remove_file(plist_path()) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
-        _ => Ok(()),
-    }
+    files::remove(&plist_path())
 }
 
 /// Stops the running daemon, if launchd has one, and waits for launchd to

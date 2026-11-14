@@ -17,19 +17,15 @@ use crate::config::{Config, PALETTES, state_dir};
 use crate::desktop::Desktop;
 use crate::device;
 use crate::eject;
-use crate::harness::Harness;
+use crate::files;
+use crate::harness::Report;
 use crate::render::{self, Step};
-use crate::state::{Change, Expiry, Queue, State, Update};
+use crate::state::{Change, Expiry, Queue, State};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
-    Report {
-        harness: Harness,
-        session: String,
-        label: String,
-        update: Update,
-    },
+    Report(Report),
     Status,
     Dismiss {
         session: Option<String>,
@@ -227,12 +223,12 @@ fn now_ms() -> u64 {
 impl Daemon {
     fn handle(&mut self, request: Request) -> Reply {
         match request {
-            Request::Report {
+            Request::Report(Report {
                 harness,
                 session,
                 label,
                 update,
-            } => {
+            }) => {
                 match self
                     .queue
                     .apply(harness, &session, &label, update, now_ms())
@@ -400,9 +396,9 @@ impl Daemon {
     }
 
     fn save_queue(&self) {
-        let saved = serde_json::to_vec(&self.queue).expect("a queue is plain data");
-        if let Err(error) = std::fs::write(queue_path(), saved) {
-            eprintln!("agent-leds: could not save the queue: {error}");
+        let saved = serde_json::to_string(&self.queue).expect("a queue is plain data");
+        if let Err(error) = files::replace(&queue_path(), &saved) {
+            eprintln!("agent-leds: could not save the queue: {error:#}");
         }
     }
 

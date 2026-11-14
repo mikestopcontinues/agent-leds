@@ -2,13 +2,13 @@
 //! and how a change is announced.
 
 use std::fmt;
-use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
+use crate::files;
 use crate::state::State;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -212,18 +212,15 @@ impl Default for Config {
 impl Config {
     pub fn load() -> Result<Config> {
         let path = config_file();
-        match fs::read_to_string(&path) {
-            Ok(text) => {
-                let config: Config =
-                    toml::from_str(&text).with_context(|| format!("reading {}", path.display()))?;
-                config
-                    .check()
-                    .map_err(|problem| anyhow!("{}: {problem}", path.display()))?;
-                Ok(config)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
-            Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
-        }
+        let Some(text) = files::read_optional(&path)? else {
+            return Ok(Config::default());
+        };
+        let config: Config =
+            toml::from_str(&text).with_context(|| format!("reading {}", path.display()))?;
+        config
+            .check()
+            .map_err(|problem| anyhow!("{}: {problem}", path.display()))?;
+        Ok(config)
     }
 
     /// Says what is wrong with a setting the renderer or the device cannot use.
@@ -264,10 +261,7 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = config_file();
-        fs::create_dir_all(path.parent().unwrap())?;
-        fs::write(&path, toml::to_string(self)?)
-            .with_context(|| format!("writing {}", path.display()))
+        files::replace(&config_file(), &toml::to_string(self)?)
     }
 }
 
