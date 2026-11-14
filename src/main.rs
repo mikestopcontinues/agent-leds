@@ -1,12 +1,16 @@
 //! agent-leds: shows a queue of agent sessions on a SidePulse Pro.
 
 mod config;
+#[allow(dead_code)]
+mod coverage;
 mod daemon;
 mod desktop;
 mod device;
 mod doctor;
 mod eject;
 mod files;
+#[allow(dead_code)]
+mod fsm;
 mod harness;
 mod ipc;
 mod launchd;
