@@ -16,6 +16,7 @@ exclude = ["/prototype", "/.claude", "/.github", "/docs", "/dist-workspace.toml"
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 libc = "0.2.191"
+notify = { version = "8.2.2", default-features = false, features = ["macos_fsevent"] }
 objc2-core-foundation = "0.3.2"
 objc2-disk-arbitration = "0.3.2"
 plist = "1.10.3"

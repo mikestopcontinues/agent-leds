@@ -178,6 +178,15 @@ struct Daemon<W: World> {
 
 type Inbox = mpsc::Receiver<(Request, Sender<Result<Value>>)>;
 
+/// What wakes the daemon: a request on the socket, files the watcher says
+/// changed, or word that the watcher dropped events.
+#[allow(dead_code)]
+pub enum Input {
+    Request(Request, Sender<Result<Value>>),
+    Files(Vec<PathBuf>),
+    Rescan,
+}
+
 pub fn run() -> Result<()> {
     let inbox = listen()?;
     thread::spawn(eject::guard);

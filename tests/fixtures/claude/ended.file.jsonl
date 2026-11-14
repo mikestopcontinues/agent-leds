@@ -1,0 +1,13 @@
+{"cite": "probe-claude cc1, cc2, cc10", "evidence": "observed"}
+{"alive": 90859, "started_us": 1794693357250000}
+{"write": ".claude/sessions/90859.json", "text": {"pid": 90859, "sessionId": "e8f843a7-1f54-44e3-b14d-99f53e9cec7a", "cwd": "/Users/me/Code/app", "startedAt": 1794693357235, "procStart": "Sat Nov 14 21:55:57 2026", "version": "2.1.325", "peerProtocol": 1, "kind": "interactive", "entrypoint": "cli", "pidDomain": "darwin", "name": "app-0f", "nameSource": "derived", "nameSince": 1794693357235, "status": "idle", "updatedAt": 1794693357283, "statusUpdatedAt": 1794693357283}}
+{"expect": [["started", "file"]]}
+{"alive": 94023, "started_us": 1794693511250000}
+{"write": ".claude/sessions/94023.json", "text": {"pid": 94023, "sessionId": "53e04d73-1926-4d0b-b2ef-c21390ba403a", "cwd": "/Users/me/Code/app", "startedAt": 1794693511472, "procStart": "Sat Nov 14 21:58:31 2026", "version": "2.1.325", "peerProtocol": 1, "kind": "interactive", "entrypoint": "cli", "pidDomain": "darwin", "name": "app-0f", "nameSource": "derived", "nameSince": 1794693511472, "status": "idle", "updatedAt": 1794693511522, "statusUpdatedAt": 1794693511522}}
+{"expect": [["started", "file"]]}
+{"write": ".claude/sessions/90859.json", "text": {"pid": 90859, "sessionId": "e8f843a7-1f54-44e3-b14d-99f53e9cec7a", "cwd": "/Users/me/Code/app", "startedAt": 1794693357235, "procStart": "Sat Nov 14 21:55:57 2026", "version": "2.1.325", "peerProtocol": 1, "kind": "interactive", "entrypoint": "cli", "pidDomain": "darwin", "name": "app-0f", "nameSource": "derived", "nameSince": 1794693357235, "status": "busy", "updatedAt": 1794693433000, "statusUpdatedAt": 1794693433000}}
+{"expect": []}
+{"delete": ".claude/sessions/90859.json"}
+{"expect": [["ended", "file"]]}
+{"exit": 94023}
+{"expect": [["ended", "file"]]}

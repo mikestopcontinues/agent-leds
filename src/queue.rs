@@ -153,6 +153,12 @@ impl Queue {
         }
     }
 
+    /// Every session, with a light or not.
+    #[cfg(test)]
+    pub fn sessions(&self) -> &[Session] {
+        &self.sessions
+    }
+
     /// The sessions with a light, in queue order: by state, then longest in
     /// that state first.
     pub fn items(&self) -> Vec<&Session> {

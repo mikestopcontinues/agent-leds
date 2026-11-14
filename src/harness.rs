@@ -20,7 +20,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::config::state_dir;
+use crate::coverage::Declared;
 use crate::files;
+use crate::fsm::{Channel, Signal};
+use crate::source;
 use crate::state::{State, Update};
 
 /// An agent harness whose sessions the queue shows.
@@ -61,7 +64,7 @@ impl Harness {
     ];
 
     /// What the harness is called on the command line and in the queue.
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Harness::Claude => "claude",
             Harness::Codex => "codex",
@@ -267,6 +270,24 @@ impl Harness {
     }
 }
 
+/// What a harness's files and hooks tell the daemon, which `coverage`
+/// crosses with the table.
+#[allow(dead_code)]
+pub fn signals(harness: Harness) -> &'static [Declared] {
+    match harness {
+        Harness::Claude => source::claude::SIGNALS,
+        _ => &[],
+    }
+}
+
+/// Whether a harness tells `signal` through `channel`.
+#[allow(dead_code)]
+pub fn declares(harness: Harness, signal: Signal, channel: Channel) -> bool {
+    signals(harness)
+        .iter()
+        .any(|declared| declared.signal == signal && declared.channel == channel)
+}
+
 /// The harnesses that have a folder in `home`.
 fn used(home: &Path) -> impl Iterator<Item = Harness> {
     Harness::ALL
@@ -469,7 +490,7 @@ fn report(harness: Harness, payload: &Value) -> Option<Report> {
 }
 
 /// Whether a final message ends by asking the user something.
-fn ends_on_question(message: &str) -> bool {
+pub fn ends_on_question(message: &str) -> bool {
     let last = message
         .lines()
         .rev()
