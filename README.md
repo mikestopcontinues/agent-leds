@@ -42,7 +42,7 @@ leds dismiss          # clear everything that is not working
 leds palette          # list palettes; `leds palette bright` switches
 leds color question ff7000
 leds brightness 128
-leds front 0          # if the queue runs the wrong way along the card
+leds front 0          # light 7, the default, is the far end of the card in the MacBook's slot
 ```
 
 `leds uninstall` removes the LaunchAgent and the hooks. Settings live in `~/.config/leds/config.toml`; the socket and log are in `~/.local/state/leds/`.
@@ -64,7 +64,6 @@ cd prototype && bun install && bun run dev
 
 `bun test` checks the color model and runs every design's programs through the firmware interpreter.
 
-## Open questions
+## Open question
 
-- Which physical end of the card is light 0 has not been confirmed. The default puts the front of the queue on light 7.
-- The color model assumes the firmware's white balance lands on D65 and uses estimated die chromaticities. Comparing the page against the card will show how far off that is.
+The color model assumes the firmware's white balance lands on D65 and uses estimated die chromaticities. Comparing the page against the card will show how far off that is.
