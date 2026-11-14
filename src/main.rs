@@ -21,6 +21,7 @@ mod liveness;
 mod player;
 mod render;
 mod settings;
+mod source;
 mod state;
 
 #[cfg(not(target_os = "macos"))]
