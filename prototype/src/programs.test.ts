@@ -17,6 +17,7 @@ const SNAKE: Snake = {
   move_ms: 90,
   fade_out_ms: 300,
   fade_in_ms: 500,
+  fade_in: "front_to_back",
   crunch: 0,
   crunch_ms: 120,
   bounce: 0.4,
@@ -145,6 +146,30 @@ test("a crunch: the arriving queue piles up at the front end, springs back past 
   expect(at(arrived + 120 + 300)).toEqual(at(arrived));
 });
 
+test("the queue rises front to back, or all at once", async () => {
+  const states: State[] = ["error", "question", "stopped", "working"];
+  const arrived = SNAKE.fade_out_ms + 11 * (SNAKE.hold_ms + SNAKE.move_ms);
+  /** How far each of the four lights has risen halfway through the rise, front of the queue first. */
+  const halfway = async (fade_in: Snake["fade_in"]) => {
+    const rendering = await render(scene(states, "working", { snake: { ...SNAKE, tail: 0, fade_in } }));
+    play("off", 100);
+    const lights = during(rendering, arrived + SNAKE.fade_in_ms / 2);
+    const full = play(rendering.steady, 1000)[0]!;
+    const brightest = (light: RGB) => Math.max(...light);
+    return [7, 6, 5, 4].map((led) => brightest(lights[led]!) / brightest(full[led]!));
+  };
+  // Front to back: the front light is done, the last has not started, and those between are on their way.
+  const ordered = await halfway("front_to_back");
+  expect(ordered[0]).toBe(1);
+  expect(ordered[3]).toBe(0);
+  expect(ordered).toEqual([...ordered].sort((a, b) => b - a));
+  // All at once: every light is equally far along.
+  const together = await halfway("together");
+  for (const level of together) expect(level).toBeCloseTo(together[0]!, 1);
+  expect(together[0]).toBeGreaterThan(0.2);
+  expect(together[0]).toBeLessThan(0.9);
+});
+
 test("the queue rises to full while it crunches", async () => {
   const snake: Snake = { ...SNAKE, fade_in_ms: 400, crunch: 0.5, crunch_ms: 100, bounce: 0.5, spring_ms: 300 };
   const rendering = await render(scene(["error"], "error", { snake }));
@@ -165,10 +190,11 @@ test("the queue rises to full while it crunches", async () => {
 test("every change is accepted by the firmware and ends on the queue, in the hardest cases", async () => {
   const snakes: Snake[] = [
     SNAKE,
+    { ...SNAKE, fade_in: "together" },
     { ...SNAKE, crunch: 0.5 },
     { ...SNAKE, crunch: 1, bounce: 0 },
-    { head: [0, 0, 0], gap: false, tail: 0, hold_ms: 0, move_ms: 1, fade_out_ms: 1, fade_in_ms: 1, crunch: 0.05, crunch_ms: 1, bounce: 1, spring_ms: 1 },
-    { head: [1, 1, 1], gap: true, tail: 1, hold_ms: 5000, move_ms: 5000, fade_out_ms: 5000, fade_in_ms: 5000, crunch: 1, crunch_ms: 5000, bounce: 1, spring_ms: 5000 },
+    { head: [0, 0, 0], gap: false, tail: 0, hold_ms: 0, move_ms: 1, fade_out_ms: 1, fade_in_ms: 1, fade_in: "front_to_back", crunch: 0.05, crunch_ms: 1, bounce: 1, spring_ms: 1 },
+    { head: [1, 1, 1], gap: true, tail: 1, hold_ms: 5000, move_ms: 5000, fade_out_ms: 5000, fade_in_ms: 5000, fade_in: "front_to_back", crunch: 1, crunch_ms: 5000, bounce: 1, spring_ms: 5000 },
   ];
   for (const states of [["error"], STATES.slice(), many(8, "working"), OVERFLOW] as State[][]) {
     for (const announce of [null, ...new Set(states)]) {

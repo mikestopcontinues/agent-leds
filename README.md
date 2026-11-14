@@ -61,6 +61,7 @@ The snake's settings are the `[snake]` table of the config. Levels run from 0 to
 | `tail` | Brightness of the queue while it is pulled in. |
 | `hold_ms`, `move_ms` | How long each step stays still, then takes to move one light on. |
 | `fade_out_ms`, `fade_in_ms` | How long the old queue takes to go dark and the new one to rise to full. The rise and the crunch start together. |
+| `fade_in` | `"front_to_back"`: the front of the queue rises first, each light taking half of `fade_in_ms` and starting a little after the one in front, so that the last ends as the rise does. `"together"`: every light at once. |
 | `crunch` | How far the arriving queue squeezes toward the front end, as a share of its length. 0 is no crunch. |
 | `crunch_ms` | How long the squeeze takes. |
 | `bounce` | How far past its resting length the queue springs back, as a share of the squeeze. 0 returns straight to rest. A stretched queue is as bright as at rest and reaches further; what reaches past the last light is not shown. |

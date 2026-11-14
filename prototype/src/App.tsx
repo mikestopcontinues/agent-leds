@@ -275,6 +275,13 @@ export function App() {
             min={10} max={1500} step={10} onChange={(fade_out_ms) => setSnake({ fade_out_ms })} />
           <Slider label="Fade in ms" title="how long the new queue takes to rise to full; the rise and the crunch start together" value={snake.fade_in_ms}
             min={10} max={1500} step={10} onChange={(fade_in_ms) => setSnake({ fade_in_ms })} />
+          <label className="field" title="whether the queue's lights rise all at once, or the front of the queue first with each light starting a little after the one in front">
+            Fade in
+            <select value={snake.fade_in} onChange={(event) => setSnake({ fade_in: event.target.value as Snake["fade_in"] })}>
+              <option value="front_to_back">front to back</option>
+              <option value="together">all at once</option>
+            </select>
+          </label>
           <h3>Crunch</h3>
           <Slider label="Amount" title="how far the queue squeezes toward the front end when it arrives; 0 is no crunch"
             value={snake.crunch} min={0} max={1} step={0.05} onChange={(crunch) => setSnake({ crunch })} />
