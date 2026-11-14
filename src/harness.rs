@@ -10,6 +10,8 @@ mod codex;
 mod cursor;
 mod grok;
 mod junie;
+mod opencode;
+mod pi;
 
 use std::path::Path;
 
@@ -30,15 +32,20 @@ pub enum Harness {
     Grok,
     Cursor,
     Junie,
+    #[value(name = "opencode")]
+    OpenCode,
+    Pi,
 }
 
 impl Harness {
-    pub const ALL: [Harness; 5] = [
+    pub const ALL: [Harness; 7] = [
         Harness::Claude,
         Harness::Codex,
         Harness::Grok,
         Harness::Cursor,
         Harness::Junie,
+        Harness::OpenCode,
+        Harness::Pi,
     ];
 
     /// What the harness is called on the command line and in the queue.
@@ -49,6 +56,8 @@ impl Harness {
             Harness::Grok => "grok",
             Harness::Cursor => "cursor",
             Harness::Junie => "junie",
+            Harness::OpenCode => "opencode",
+            Harness::Pi => "pi",
         }
     }
 
@@ -60,6 +69,8 @@ impl Harness {
             Harness::Grok => "Grok",
             Harness::Cursor => "Cursor",
             Harness::Junie => "Junie",
+            Harness::OpenCode => "OpenCode",
+            Harness::Pi => "Pi",
         }
     }
 
@@ -72,6 +83,8 @@ impl Harness {
             Harness::Grok => ".grok",
             Harness::Cursor => ".cursor",
             Harness::Junie => ".junie",
+            Harness::OpenCode => ".config/opencode",
+            Harness::Pi => ".pi",
         }
     }
 
@@ -101,6 +114,8 @@ impl Harness {
             Harness::Grok => grok::event(payload),
             Harness::Cursor => cursor::event(payload),
             Harness::Junie => junie::event(payload),
+            Harness::OpenCode => opencode::event(payload),
+            Harness::Pi => pi::event(payload),
         }
     }
 
@@ -112,6 +127,8 @@ impl Harness {
             Harness::Grok => grok::EVENTS.map(|(event, _)| event).to_vec(),
             Harness::Cursor => cursor::EVENTS.to_vec(),
             Harness::Junie => junie::EVENTS.to_vec(),
+            // These load a plugin of ours, which `check` looks at instead.
+            Harness::OpenCode | Harness::Pi => Vec::new(),
         }
     }
 
@@ -123,6 +140,7 @@ impl Harness {
             Harness::Grok => grok::hooks(home),
             Harness::Cursor => cursor::hooks(home),
             Harness::Junie => junie::hooks(home),
+            Harness::OpenCode | Harness::Pi => Ok(Vec::new()),
         }
     }
 
@@ -130,6 +148,11 @@ impl Harness {
     /// each event has the hook an install from `exe` writes, and nothing
     /// else of agent-leds' or of SidePulse's own software.
     fn check(self, home: &Path, exe: &Path) -> Result<()> {
+        match self {
+            Harness::OpenCode => return opencode::PLUGIN.check(home, exe),
+            Harness::Pi => return pi::PLUGIN.check(home, exe),
+            _ => {}
+        }
         let hooks = self.hooks(home)?;
         let ours: Vec<&(String, String)> =
             hooks.iter().filter(|(_, hook)| self.owns(hook)).collect();
@@ -186,6 +209,14 @@ impl Harness {
         Ok(())
     }
 
+    /// What `agent-leds doctor` says of a harness whose hooks are right.
+    pub fn registered(self) -> &'static str {
+        match self {
+            Harness::OpenCode | Harness::Pi => "plugin installed",
+            _ => "hooks registered",
+        }
+    }
+
     /// The file in the home directory that holds the harness's hooks.
     fn file(self) -> &'static str {
         match self {
@@ -194,6 +225,8 @@ impl Harness {
             Harness::Grok => grok::HOOKS,
             Harness::Cursor => cursor::HOOKS,
             Harness::Junie => junie::CONFIG,
+            Harness::OpenCode => opencode::PLUGIN.path,
+            Harness::Pi => pi::PLUGIN.path,
         }
     }
 
@@ -204,6 +237,8 @@ impl Harness {
             Harness::Grok => grok::install(home, exe),
             Harness::Cursor => cursor::install(home, exe),
             Harness::Junie => junie::install(home, exe),
+            Harness::OpenCode => opencode::PLUGIN.install(home, exe),
+            Harness::Pi => pi::PLUGIN.install(home, exe),
         }
     }
 
@@ -214,6 +249,8 @@ impl Harness {
             Harness::Grok => grok::uninstall(home),
             Harness::Cursor => cursor::uninstall(home),
             Harness::Junie => junie::uninstall(home),
+            Harness::OpenCode => opencode::PLUGIN.uninstall(home),
+            Harness::Pi => pi::PLUGIN.uninstall(home),
         }
     }
 }
@@ -428,6 +465,43 @@ fn ends_on_question(message: &str) -> bool {
         .unwrap_or_default();
     last.trim_end_matches(|c: char| c.is_whitespace() || "*_`\"')".contains(c))
         .ends_with('?')
+}
+
+/// A plugin a harness loads by itself from a file of its own, in place of
+/// hook commands. The plugin passes the harness's events to the hook, at
+/// the binary whose path an install writes into it.
+pub struct Plugin {
+    /// Where the harness looks for it, from the home directory.
+    pub path: &'static str,
+    source: &'static str,
+}
+
+impl Plugin {
+    /// The plugin, set to run `exe`.
+    fn text(&self, exe: &Path) -> String {
+        let exe = serde_json::to_string(&exe.to_string_lossy()).expect("a string is JSON");
+        self.source.replacen("\"__AGENT_LEDS__\"", &exe, 1)
+    }
+
+    fn install(&self, home: &Path, exe: &Path) -> Result<()> {
+        files::replace(&home.join(self.path), &self.text(exe))
+    }
+
+    fn uninstall(&self, home: &Path) -> Result<()> {
+        files::remove(&home.join(self.path))
+    }
+
+    /// Whether the plugin is the one an install from `exe` writes.
+    fn check(&self, home: &Path, exe: &Path) -> Result<()> {
+        match files::read_optional(&home.join(self.path))? {
+            None => bail!("not registered; run `agent-leds install`"),
+            Some(text) if text == self.text(exe) => Ok(()),
+            Some(_) => bail!(
+                "~/{} is from another agent-leds binary or version; run `agent-leds install`",
+                self.path
+            ),
+        }
+    }
 }
 
 /// The `hooks` object of a JSON settings file, empty when the file is not there.
@@ -706,5 +780,27 @@ mod tests {
             error,
             "SidePulse's own hook is registered for stop; remove it from ~/.cursor/hooks.json"
         );
+    }
+
+    #[test]
+    fn a_plugin_runs_the_binary_that_installed_it() {
+        let home = Home::new();
+        let exe = Path::new("/Users/me/My \"Tools\"/agent-leds");
+        assert!(pi::PLUGIN.check(&home, exe).is_err());
+        pi::PLUGIN.install(&home, exe).unwrap();
+        let text = fs::read_to_string(home.join(pi::PLUGIN.path)).unwrap();
+        assert!(text.contains(r#"const AGENT_LEDS = "/Users/me/My \"Tools\"/agent-leds";"#));
+        pi::PLUGIN.check(&home, exe).unwrap();
+        let moved = pi::PLUGIN.check(&home, Path::new("/opt/agent-leds"));
+        assert!(
+            moved
+                .unwrap_err()
+                .to_string()
+                .contains("another agent-leds binary")
+        );
+        pi::PLUGIN.uninstall(&home).unwrap();
+        assert!(!home.join(pi::PLUGIN.path).exists());
+        // Both plugins hold the place the path goes.
+        assert!(opencode::PLUGIN.text(exe).contains("My \\\"Tools"));
     }
 }

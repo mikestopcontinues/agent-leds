@@ -60,7 +60,7 @@ Each module owns one concern; the ones that touch the system are thin.
 - `player.rs`: what the lights play and when, given the time. No I/O.
 - `render.rs`: a queue or a change, as LEDS.LED programs. No I/O.
 - `state.rs`: the queue and how each session's light changes and clears. No I/O.
-- `harness.rs` and `harness/`: each harness's payloads, read into typed structs and turned into a shared `Hook` vocabulary and a `Report`; installing, checking and removing hooks.
+- `harness.rs` and `harness/`: each harness's payloads, read into typed structs, and the plugins OpenCode and Pi load, and turned into a shared `Hook` vocabulary and a `Report`; installing, checking and removing hooks.
 - `ipc.rs`: the socket protocol between the command line, the hooks and the service.
 - `config.rs`, `settings.rs`: the settings, and reading and changing them by name.
 - `desktop.rs`: which sessions the user has looked at in the Claude desktop app.

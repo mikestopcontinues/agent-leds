@@ -20,7 +20,7 @@ pub fn run() -> Result<()> {
         ("card".to_owned(), card(&status)),
     ];
     for (harness, outcome) in harness::check(&home(), &exe) {
-        let outcome = outcome.map(|()| "hooks registered".to_owned());
+        let outcome = outcome.map(|()| harness.registered().to_owned());
         checks.push((harness.title().to_owned(), outcome));
     }
     checks.push(("SidePulse".to_owned(), sidepulse()));

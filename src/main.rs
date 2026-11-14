@@ -39,7 +39,7 @@ use state::State;
              MacBook's SD slot: red for an error, orange for a question, blue for stopped and \
              unread, green for working",
     after_help = "Run `agent-leds install` once to start the service and register its hooks with \
-                  Claude Code, Codex, Grok, Cursor and Junie."
+                  Claude Code, Codex, Grok, Cursor, Junie, OpenCode and Pi."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -51,9 +51,10 @@ enum Command {
     /// Start the service at login and register the hooks of every agent harness in use
     #[command(
         after_help = "A harness is in use when its folder is in your home directory: ~/.claude, \
-                      ~/.codex, ~/.grok, ~/.cursor or ~/.junie. Other hooks are left as they are. \
-                      Run it again after you start using another harness, or after you move or \
-                      upgrade the agent-leds binary; running it twice changes nothing."
+                      ~/.codex, ~/.grok, ~/.cursor, ~/.junie, ~/.config/opencode or ~/.pi. Other hooks \
+                      are left as they are. \
+                      Run it again after you start using another harness, or after you move the \
+                      agent-leds binary; running it twice changes nothing."
     )]
     Install,
     /// Stop the service and remove its hooks, and nothing else
@@ -266,7 +267,7 @@ fn status_text(status: &Status) -> String {
         let state = format!("{:?}", item.state).to_lowercase();
         let harness = format!("{:?}", item.harness).to_lowercase();
         text += &format!(
-            "{state:<9} {:>6}  {session}  {harness:<6}  {}{weak}{read}\n",
+            "{state:<9} {:>6}  {session}  {harness:<8}  {}{weak}{read}\n",
             age(item.since),
             item.label,
         );
@@ -360,7 +361,7 @@ mod tests {
         let text = status_text(&status);
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2, "{text}");
-        assert!(lines[0].starts_with("question") && lines[0].contains("abcdefgh  claude  web"));
+        assert!(lines[0].starts_with("question") && lines[0].contains("abcdefgh  claude    web"));
         assert!(lines[0].ends_with("ended on a question"));
         assert!(lines[1].starts_with("working") && lines[1].contains("3h05m"));
     }

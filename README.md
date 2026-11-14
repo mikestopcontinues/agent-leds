@@ -1,6 +1,6 @@
 # agent-leds
 
-`agent-leds` replaces the SidePulse Pro's own software with a status light for every coding agent session: Claude Code, Codex, Grok, Cursor and Junie. All sessions share one queue on the card's eight lights, most urgent at the front: red for an error, orange for a question, blue for a finished turn you have not read, green for working.
+`agent-leds` replaces the SidePulse Pro's own software with a status light for every coding agent session: Claude Code, Codex, Grok, Cursor, Junie, OpenCode and Pi. All sessions share one queue on the card's eight lights, most urgent at the front: red for an error, orange for a question, blue for a finished turn you have not read, green for working.
 
 - Every agent and every session on one strip, sorted by what needs you most.
 - Lights clear themselves: a finished Claude Code session goes dark once you have looked at it in the desktop app.
@@ -26,7 +26,7 @@ brew install mikestopcontinues/tap/agent-leds
 agent-leds install
 ```
 
-`agent-leds install` starts the service at login and adds its hooks to each harness you use (`~/.claude`, `~/.codex`, `~/.grok`, `~/.cursor`, `~/.junie`), leaving other hooks alone. Run it again after you start using another harness. `brew upgrade agent-leds` is the whole upgrade: the service restarts on the new version by itself.
+`agent-leds install` starts the service at login and adds its hooks to each harness you use (`~/.claude`, `~/.codex`, `~/.grok`, `~/.cursor`, `~/.junie`, `~/.config/opencode`, `~/.pi`), leaving other hooks alone. OpenCode and Pi get a plugin of their own instead of hooks. Run it again after you start using another harness. `brew upgrade agent-leds` is the whole upgrade: the service restarts on the new version by itself.
 
 If the lights don't follow your sessions, `agent-leds doctor` checks the service, the card and each harness's hooks, and says what to fix.
 

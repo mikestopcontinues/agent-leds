@@ -2,7 +2,7 @@
 
 What each agent harness reports to the service and where it falls short. [design.md](design.md) covers what the service does with the reports.
 
-`agent-leds install` registers `agent-leds hook <harness>` with each harness, for the events listed below. The hook reads one event, tells the daemon what it means, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked.
+`agent-leds install` registers `agent-leds hook <harness>` with each harness, for the events listed below; OpenCode and Pi load a plugin of ours that runs it. The hook reads one event, tells the daemon what it means, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked.
 
 The harnesses took their hook events from Claude Code, so most of the names agree. Each harness reads only its own spelling. Grok also runs the hooks in `~/.claude/settings.json`, with its own payloads: Grok 1.0.13 sends its own snake_case event names there, which Claude Code's mapping does not follow, so a Grok session is not reported twice.
 
@@ -97,3 +97,38 @@ The gaps:
 
 - No strong question. Junie reads a hook that succeeds on `PermissionRequest` as approval, and one that says nothing on `PreToolUse` as allowing the tool, so neither is hooked.
 - Junie names the session only in `UserPromptSubmit`. The hook keeps the last one in `~/.local/state/agent-leds/junie-session.json` and takes every other event to belong to it. With two Junie sessions at once, an event goes to the one that submitted a prompt last.
+
+## OpenCode
+
+OpenCode runs plugins rather than hook commands, so the install writes a plugin, `~/.config/opencode/plugins/agent-leds.js`, that passes OpenCode's events to `agent-leds hook opencode`. The plugin runs inside OpenCode's server, so it covers the terminal interface, the desktop app and `opencode serve` alike.
+
+| Event | Session becomes |
+| --- | --- |
+| `session.status` going busy, `permission.replied`, `question.replied`, `question.rejected` | working |
+| `permission.asked`, `question.asked` | question |
+| `session.idle` whose last assistant message ends in a question mark | question, as a weak signal |
+| `session.idle` otherwise | stopped |
+| `session.idle` after an error | error |
+| `session.idle` after `MessageAbortedError`, or `session.deleted` | removed |
+
+A subagent runs in a session of its own whose `parentID` names the session that started it. Its going busy counts as that session's work in the background, and its permission requests and questions put that session's light to question, since they hold it up. Its own runs ending and its deletion are left out.
+
+The gaps:
+
+- Quitting OpenCode ends no session, since sessions outlive it. Its light stays until its next prompt, `agent-leds dismiss`, or `abandon_days`.
+- Checked against OpenCode 1.19.5 through `opencode serve`, with a permission, a question, an abort and a subagent. The plugin uses event names that OpenCode's plugin types do not list yet, though its server sends them.
+
+## Pi
+
+Pi runs extensions rather than hook commands, so the install writes an extension, `~/.pi/agent/extensions/agent-leds.ts`, that passes Pi's events to `agent-leds hook pi`. It reports only a Pi with a UI, in its terminal interface or RPC mode, as an editor integration runs it. Print and JSON modes have no one waiting on them, and Pi's subagents run in them.
+
+| Event | Session becomes |
+| --- | --- |
+| `agent_start`, `ui_prompt_end` | working |
+| `ui_prompt_start` during a run: an extension's dialog holds it up | question |
+| `agent_settled` whose last assistant message ends in a question mark | question, as a weak signal |
+| `agent_settled` otherwise | stopped |
+| `agent_settled` after an error | error |
+| `agent_settled` after an abort, or `session_shutdown` other than a reload | removed |
+
+Pi has no permission prompts of its own; extensions that add them ask through dialogs, which show as a question. Checked against Pi 0.84.4 and 1.5.2 in RPC mode. Pi Durable, Pi's library for long-running agent apps, is a framework rather than a harness and is not covered.
