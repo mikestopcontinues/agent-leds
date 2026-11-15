@@ -213,6 +213,14 @@ pub fn all(home: &Path, junie: &Path) -> Vec<Box<dyn Source>> {
     ]
 }
 
+/// The source of `harness`, made as `all` makes it.
+pub fn of(harness: Harness, home: &Path, junie: &Path) -> Box<dyn Source> {
+    all(home, junie)
+        .into_iter()
+        .find(|source| source.harness() == harness)
+        .expect("every harness has a source")
+}
+
 /// Seeds one source as the daemon does at start, handing it the hook-bound
 /// sessions in `bound` that are its harness's.
 pub fn seed(

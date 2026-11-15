@@ -29,17 +29,13 @@ pub fn run() -> Result<()> {
         checks.push(("readings".to_owned(), readings(status)));
     }
     let home = home();
-    let mut sources = source::all(&home, &source::junie::home());
     // The sessions only a hook could bind, as the daemon last saved them. A
     // saved queue the daemon cannot read, it ignores too.
     let bound = daemon::saved_queue()
         .map(|saved| saved.bound())
         .unwrap_or_default();
     for (harness, hooks) in harness::check(&home, &exe) {
-        let source = sources
-            .iter_mut()
-            .find(|source| source.harness() == harness)
-            .expect("every harness has a source");
+        let mut source = source::of(harness, &home, &source::junie::home());
         let files = files(source.as_mut(), &System, &bound, &home);
         let hooks = hooks.map(|()| harness.registered().to_owned());
         checks.push((harness.title().to_owned(), both(files, hooks)));
@@ -335,10 +331,7 @@ mod tests {
 
     /// The source of `harness` on `home`, as the daemon makes it.
     fn source_of(harness: Harness, home: &Path) -> Box<dyn Source> {
-        source::all(home, &home.join(".junie"))
-            .into_iter()
-            .find(|source| source.harness() == harness)
-            .unwrap()
+        source::of(harness, home, &home.join(".junie"))
     }
 
     fn write(home: &Path, file: &str, text: &str) {

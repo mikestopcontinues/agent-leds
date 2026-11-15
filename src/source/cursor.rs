@@ -740,21 +740,19 @@ mod tests {
             }
         }
         println!("{transcripts} transcripts");
-        let saved = crate::config::state_dir().join("queue.json");
-        let bound: Vec<(String, Liveness)> = fs::read_to_string(saved)
-            .ok()
-            .and_then(|text| serde_json::from_str::<crate::queue::Queue>(&text).ok())
-            .map(|queue| {
-                let bound = queue.bound().into_iter();
-                bound
-                    .filter(|(key, _)| key.harness == Harness::Cursor)
-                    .map(|(key, liveness)| (key.id, liveness))
-                    .collect()
-            })
-            .unwrap_or_default();
-        println!("{} chats the saved queue binds", bound.len());
+        let bound = crate::daemon::saved_queue().map_or_else(
+            |error| {
+                println!("ignoring the saved queue: {error:#}");
+                Vec::new()
+            },
+            |saved| saved.bound(),
+        );
+        let ours = bound
+            .iter()
+            .filter(|(key, _)| key.harness == Harness::Cursor);
+        println!("{} chats the saved queue binds", ours.count());
         let mut queue = crate::queue::Queue::default();
-        for o in cursor.seed(&liveness::System, &bound).unwrap() {
+        for o in super::super::seed(&mut cursor, &liveness::System, &bound).unwrap() {
             assert!(o.quiet);
             queue.apply(&o, 0);
         }

@@ -49,7 +49,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{Hook, Observation, Source, all};
+use super::{Hook, Observation, Source};
 use crate::coverage::Evidence;
 use crate::fsm::{self, Channel, Phase, Signal};
 use crate::harness::{self, Harness};
@@ -233,10 +233,7 @@ impl Replay {
     /// The harness's source, as the daemon makes it, on this home.
     pub fn source(&self) -> Box<dyn Source> {
         let home = self.home.path();
-        all(home, &home.join(".junie"))
-            .into_iter()
-            .find(|source| source.harness() == self.harness)
-            .expect("every harness has a source")
+        super::of(self.harness, home, &home.join(".junie"))
     }
 
     /// The phase of each session the queue tracks.
@@ -581,10 +578,10 @@ fn coalesce(harness: Harness, name: &str, fixture: &Fixture) -> BTreeMap<Key, Ph
 /// A fresh source seeded from what a replay left on disk, as a daemon
 /// starting then would, given the hook-bound sessions in `bound`, with the
 /// queue its seed makes.
-fn seeded(replay: &Replay, bound: &[(String, Liveness)]) -> (Box<dyn Source>, Queue) {
+fn seeded(replay: &Replay, bound: &[(Key, Liveness)]) -> (Box<dyn Source>, Queue) {
     let mut source = replay.source();
     let mut queue = Queue::default();
-    for o in source.seed(&replay.kernel, bound).unwrap() {
+    for o in super::seed(source.as_mut(), &replay.kernel, bound).unwrap() {
         assert!(o.quiet, "{}: a seed announced", replay.name);
         queue.apply(&o, 0);
     }
@@ -602,13 +599,7 @@ pub fn seed(replay: &Replay) -> Queue {
 fn restarted(replay: &Replay) -> (Box<dyn Source>, Queue) {
     let saved: Queue =
         serde_json::from_value(serde_json::to_value(&replay.queue).unwrap()).unwrap();
-    let bound: Vec<(String, Liveness)> = saved
-        .bound()
-        .into_iter()
-        .filter(|(key, _)| key.harness == replay.harness)
-        .map(|(key, liveness)| (key.id, liveness))
-        .collect();
-    let (source, fresh) = seeded(replay, &bound);
+    let (source, fresh) = seeded(replay, &saved.bound());
     (source, Queue::restore(saved, fresh))
 }
 
