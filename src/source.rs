@@ -463,13 +463,34 @@ pub enum Read<'a> {
     Roots,
 }
 
+/// A watched root.
+struct Watched {
+    /// As the file system spells it: FSEvents reports `/private/tmp`, not
+    /// `/tmp`.
+    canonical: PathBuf,
+    /// As its source spells it.
+    root: PathBuf,
+    /// The source's index.
+    index: usize,
+    /// Whether only the root's own files are read, and nothing in its
+    /// subfolders. Routing holds to it whatever the watcher reports.
+    shallow: bool,
+}
+
+impl Watched {
+    fn holds(&self, path: &Path) -> bool {
+        if self.shallow {
+            path.parent() == Some(self.canonical.as_path())
+        } else {
+            path.starts_with(&self.canonical)
+        }
+    }
+}
+
 /// The sources and the watcher that feeds them.
 pub struct Sources {
     sources: Vec<Box<dyn Source>>,
-    /// Each watched root as the file system spells it (FSEvents reports
-    /// `/private/tmp`, not `/tmp`), with the root as its source spells it
-    /// and the source's index.
-    watched: Vec<(PathBuf, PathBuf, usize)>,
+    watched: Vec<Watched>,
     watcher: notify::RecommendedWatcher,
     kernel: System,
     /// The record kinds of each harness already logged as unknown.
@@ -554,15 +575,15 @@ impl Sources {
             Read::Paths(paths) => {
                 let mut routed: Vec<Vec<PathBuf>> = vec![Vec::new(); self.sources.len()];
                 for path in paths {
-                    let root = self
+                    let watched = self
                         .watched
                         .iter()
-                        .filter(|(canonical, _, _)| path.starts_with(canonical))
-                        .max_by_key(|(canonical, _, _)| canonical.as_os_str().len());
+                        .filter(|watched| watched.holds(path))
+                        .max_by_key(|watched| watched.canonical.as_os_str().len());
                     // The paths come sorted and once each.
-                    if let Some((canonical, root, index)) = root {
-                        routed[*index]
-                            .push(root.join(path.strip_prefix(canonical).expect("a prefix")));
+                    if let Some(watched) = watched {
+                        let relative = path.strip_prefix(&watched.canonical).expect("a prefix");
+                        routed[watched.index].push(watched.root.join(relative));
                     }
                 }
                 let mut changed = Vec::new();
@@ -632,7 +653,7 @@ impl Sources {
             let shallow = source.shallow_roots().into_iter();
             let roots = deep.chain(shallow.map(|root| (root, RecursiveMode::NonRecursive)));
             for (root, mode) in roots {
-                if self.watched.iter().any(|(_, watched, _)| *watched == root) {
+                if self.watched.iter().any(|watched| watched.root == root) {
                     continue;
                 }
                 let Ok(canonical) = root.canonicalize() else {
@@ -642,7 +663,12 @@ impl Sources {
                     eprintln!("agent-leds: watching {}: {error}", root.display());
                     continue;
                 }
-                self.watched.push((canonical, root, index));
+                self.watched.push(Watched {
+                    canonical,
+                    root,
+                    index,
+                    shallow: mode == RecursiveMode::NonRecursive,
+                });
                 gained = true;
             }
         }
@@ -825,6 +851,24 @@ mod tests {
         }
         drop(file);
         assert!(until(&mut sources, &inputs, &seen, |seen| seen.lines == 200));
+    }
+
+    /// Routing holds a shallow root to its own files whatever FSEvents
+    /// reports, the root's own event included.
+    #[test]
+    fn a_shallow_root_holds_only_its_own_files() {
+        let watched = |shallow| Watched {
+            canonical: PathBuf::from("/r"),
+            root: PathBuf::from("/r"),
+            index: 0,
+            shallow,
+        };
+        let (shallow, deep) = (watched(true), watched(false));
+        assert!(shallow.holds(Path::new("/r/goals_1.sqlite-wal")));
+        assert!(!shallow.holds(Path::new("/r")));
+        assert!(!shallow.holds(Path::new("/r/worktrees/app/x.o")));
+        assert!(!shallow.holds(Path::new("/other/x")));
+        assert!(deep.holds(Path::new("/r/worktrees/app/x.o")));
     }
 
     /// A shallow root's own files are read, and nothing in its subfolders,
