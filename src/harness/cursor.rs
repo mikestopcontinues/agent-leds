@@ -1,5 +1,5 @@
 //! Cursor: its hooks live in `~/.cursor/hooks.json`, under event names of
-//! its own. The daemon reads its files, and needs one hook.
+//! its own. The daemon reads its files, and needs two hooks.
 
 use std::path::Path;
 
@@ -13,8 +13,10 @@ pub const FILE: &str = ".cursor/hooks.json";
 
 /// The hook events the daemon needs. A prompt given as an argument or a
 /// text-only turn writes nothing until the turn ends, and no file names
-/// the process a chat runs in, so the prompt's hook says both.
-pub const HOOKS: [&str; 1] = ["beforeSubmitPrompt"];
+/// the process a chat runs in, so the prompt's hook says both. An
+/// interrupt before the turn's first checkpoint can write nothing, so the
+/// stop hook says it.
+pub const HOOKS: [&str; 2] = ["beforeSubmitPrompt", "stop"];
 
 fn is_ours(entry: &Value) -> bool {
     entry["command"]
@@ -75,11 +77,11 @@ mod tests {
             installed["hooks"]["preToolUse"],
             theirs["hooks"]["preToolUse"]
         );
-        assert_eq!(installed["hooks"]["stop"], theirs["hooks"]["stop"]);
-        assert_eq!(
-            installed["hooks"]["beforeSubmitPrompt"],
-            json!([{ "command": "/bin/agent-leds hook cursor", "timeout": 5 }])
-        );
+        let ours = json!({ "command": "/bin/agent-leds hook cursor", "timeout": 5 });
+        let mut stop = theirs["hooks"]["stop"].as_array().unwrap().clone();
+        stop.push(ours.clone());
+        assert_eq!(installed["hooks"]["stop"], json!(stop));
+        assert_eq!(installed["hooks"]["beforeSubmitPrompt"], json!([ours]));
         install(&home, Path::new("/bin/agent-leds")).unwrap();
         assert_eq!(home.json(FILE), installed);
 
@@ -98,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn installing_over_0_5_0_leaves_only_the_prompt_hook() {
+    fn installing_over_0_5_0_leaves_only_the_prompt_and_stop_hooks() {
         let ours = json!([{ "command": "/opt/homebrew/bin/agent-leds hook cursor", "timeout": 5 }]);
         let mut hooks = serde_json::Map::new();
         for event in [
@@ -122,7 +124,7 @@ mod tests {
         install(&home, Path::new("/opt/homebrew/bin/agent-leds")).unwrap();
         assert_eq!(
             home.json(FILE),
-            json!({ "version": 1, "hooks": { "beforeSubmitPrompt": ours } })
+            json!({ "version": 1, "hooks": { "beforeSubmitPrompt": ours, "stop": ours } })
         );
         Harness::Cursor
             .check(&home, Path::new("/opt/homebrew/bin/agent-leds"))

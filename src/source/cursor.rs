@@ -7,7 +7,10 @@
 //! `~/.local/share/cursor-agent/versions/<version>/.running/<pid>`, a file
 //! that names no chat. The `beforeSubmitPrompt` hook binds the chat to the
 //! CLI's process it runs under, and says that the turn started, which a
-//! text-only turn writes nothing of until it ends.
+//! text-only turn writes nothing of until it ends. The `stop` hook says
+//! that the user interrupted the turn: an interrupt before the turn's first
+//! checkpoint, after a turn that was interrupted too, leaves the transcript
+//! as it was.
 //!
 //! The files are undocumented. What they say at each moment of a session
 //! was taken from Cursor 2026.11.13.
@@ -88,6 +91,13 @@ pub const SIGNALS: &[Declared] = &[
     ),
     declared(
         Signal::Interrupted,
+        Channel::Hook,
+        Evidence::Inferred,
+        "stop with status aborted, for a chat bound to its process; Cursor runs it on every interrupt, from the bundle's code",
+        "probe-cursor run B, turn 3 (no write); bundle 2986.index.js, the abort path",
+    ),
+    declared(
+        Signal::Interrupted,
         Channel::File,
         Evidence::Observed,
         "turn_ended with status aborted, including the previous turn's end rewritten to aborted",
@@ -114,6 +124,8 @@ pub const SIGNALS: &[Declared] = &[
 struct Payload {
     hook_event_name: String,
     conversation_id: String,
+    /// How the turn a stop hook ends ended: completed, aborted or error.
+    status: Option<String>,
     #[serde(default)]
     workspace_roots: Vec<String>,
 }
@@ -455,6 +467,73 @@ impl Cursor {
             ));
         }
     }
+
+    /// A prompt: binds the chat to the process the hook runs under, and
+    /// says the turn started. A chat the hook sees first holds only
+    /// history, as a resumed one does.
+    fn prompt(&mut self, payload: Payload, ancestry: &[Proc]) -> Vec<Observation> {
+        let id = payload.conversation_id;
+        let mut out = Vec::new();
+        let known = self.sessions.contains_key(&id);
+        if known {
+            self.read(&id, &mut out);
+        }
+        match self.process(ancestry) {
+            Some((pid, start, marker)) => {
+                let session = self
+                    .sessions
+                    .entry(id.clone())
+                    .or_insert_with(|| Session::new(pid, start, marker.clone()));
+                // Resumed in another process.
+                (session.pid, session.start, session.marker) = (pid, start, marker);
+                if !known {
+                    self.read(&id, &mut Vec::new());
+                }
+                let session = &self.sessions[&id];
+                let start = Start {
+                    cwd: payload
+                        .workspace_roots
+                        .into_iter()
+                        .next()
+                        .unwrap_or_default(),
+                    liveness: session.liveness(),
+                };
+                out.push(observation(
+                    &id,
+                    Channel::Hook,
+                    Event::Started(start),
+                    session.turn(),
+                ));
+            }
+            // No process of the CLI to follow the chat by.
+            None if !known => return out,
+            None => {}
+        }
+        let session = self.sessions.get_mut(&id).expect("bound");
+        tell(
+            &id,
+            session,
+            Channel::Hook,
+            BTreeSet::from([Signal::Prompted]),
+            &mut out,
+        );
+        out
+    }
+
+    /// An interrupt of a bound chat. One before the turn's first checkpoint
+    /// rewrites the transcript to end the previous turn as aborted, which
+    /// says nothing new when it already ended so.
+    fn interrupt(&mut self, id: &str) -> Vec<Observation> {
+        let mut out = Vec::new();
+        if !self.sessions.contains_key(id) {
+            return out;
+        }
+        self.read(id, &mut out);
+        let session = self.sessions.get_mut(id).expect("bound");
+        let signals = BTreeSet::from([Signal::Interrupted]);
+        tell(id, session, Channel::Hook, signals, &mut out);
+        out
+    }
 }
 
 fn observation(id: &str, channel: Channel, event: Event, turn: Option<TurnKey>) -> Observation {
@@ -568,62 +647,20 @@ impl Source for Cursor {
         out
     }
 
-    /// A prompt: catches up on the chat's transcript, binds the chat to the
-    /// process the hook runs under, and says the turn started. A chat the
-    /// hook sees first holds only history, as a resumed one does.
+    /// A prompt or an interrupt, each after catching up on the chat's
+    /// transcript.
     fn hook(&mut self, _k: &dyn Kernel, hook: &Hook) -> Vec<Observation> {
         let Ok(payload) = Payload::deserialize(&hook.payload) else {
             return Vec::new();
         };
-        if payload.hook_event_name != "beforeSubmitPrompt" {
-            return Vec::new();
-        }
-        let id = payload.conversation_id;
-        let mut out = Vec::new();
-        let known = self.sessions.contains_key(&id);
-        if known {
-            self.read(&id, &mut out);
-        }
-        match self.process(&hook.ancestry) {
-            Some((pid, start, marker)) => {
-                let session = self
-                    .sessions
-                    .entry(id.clone())
-                    .or_insert_with(|| Session::new(pid, start, marker.clone()));
-                // Resumed in another process.
-                (session.pid, session.start, session.marker) = (pid, start, marker);
-                if !known {
-                    self.read(&id, &mut Vec::new());
-                }
-                let session = &self.sessions[&id];
-                let start = Start {
-                    cwd: payload
-                        .workspace_roots
-                        .into_iter()
-                        .next()
-                        .unwrap_or_default(),
-                    liveness: session.liveness(),
-                };
-                out.push(observation(
-                    &id,
-                    Channel::Hook,
-                    Event::Started(start),
-                    session.turn(),
-                ));
+        match payload.hook_event_name.as_str() {
+            "beforeSubmitPrompt" => self.prompt(payload, &hook.ancestry),
+            // A turn that completes or fails says so in its transcript.
+            "stop" if payload.status.as_deref() == Some("aborted") => {
+                self.interrupt(&payload.conversation_id)
             }
-            // No process of the CLI to follow the chat by.
-            None if !known => return out,
-            None => {}
+            _ => Vec::new(),
         }
-        let session = self.sessions.get_mut(&id).expect("bound");
-        tell(
-            &id,
-            session,
-            Channel::Hook,
-            BTreeSet::from([Signal::Prompted]),
-            &mut out,
-        );
-        out
     }
 
     fn current(&self, id: &str) -> Vec<(Signal, Option<TurnKey>)> {
@@ -790,6 +827,18 @@ mod tests {
     #[test]
     fn an_interrupt_rewriting_the_previous_success_is_an_interrupt() {
         let replay = replay("an_interrupt_rewriting_the_previous_success_is_an_interrupt");
+        assert_eq!(
+            phases(&replay),
+            [(
+                "b6f5f883-1823-4bc2-a601-1cc761c083a1".to_owned(),
+                Phase::Idle
+            )]
+        );
+    }
+
+    #[test]
+    fn an_interrupt_that_writes_nothing_is_told_by_the_stop_hook() {
+        let replay = replay("interrupted.hook");
         assert_eq!(
             phases(&replay),
             [(

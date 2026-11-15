@@ -44,7 +44,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 | [TurnEnded](#turnended) | file | hook | hook | file | hook* | hook | hook |
 | [TurnEndedAsking](#turnendedasking) | file | hook | hook | file | hook* | hook | hook |
 | [TurnFailed](#turnfailed) | file | — | hook* | file* | hook* | hook | hook* |
-| [Interrupted](#interrupted) | file | hook | hook | file | — | hook | hook |
+| [Interrupted](#interrupted) | file | hook | hook | file+hook* | — | hook | hook |
 | [Backgrounded](#backgrounded) | file | hook* | — | — | — | hook | — |
 | [BackgroundDone](#backgrounddone) | file | — | — | — | — | — | — |
 | [Ended](#ended) | file | hook | hook | file+hook | hook* | hook | hook |
@@ -123,6 +123,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Claude Code, file, observed: a user text starting [Request interrupted by user (probe-claude cc1–cc4)
 - Codex, hook, observed: Interrupt (0.5.0 hooks, probe-codex runA)
 - Grok, hook, observed: stop_cancelled by the user (0.5.0 hooks, probe-grok runs a–l)
+- Cursor, hook, inferred: stop with status aborted, for a chat bound to its process; Cursor runs it on every interrupt, from the bundle's code (probe-cursor run B, turn 3 (no write); bundle 2986.index.js, the abort path)
 - Cursor, file, observed: turn_ended with status aborted, including the previous turn's end rewritten to aborted (probe-cursor runs B, H)
 - OpenCode, hook, observed: session.idle after MessageAbortedError (0.5.0 plugin, probe-opencode T2–T17)
 - Pi, hook, observed: agent_settled after an abort (0.5.0 extension, probe-pi rpc1, tui1)
