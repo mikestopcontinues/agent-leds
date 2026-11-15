@@ -98,7 +98,7 @@ The gaps:
 
 Every OpenCode process, the terminal interface, `opencode serve`, `opencode run` and the desktop app alike, writes its sessions to one SQLite database, `~/.local/share/opencode/opencode.db`. The daemon keeps one read-only connection to it. When the database or its write-ahead log changes and `PRAGMA data_version` says another process committed, it reads, in one short transaction, the last event of each session it follows and of that session's subagents, from the event log OpenCode 1.18 and later write, and, for a session whose events grew, its latest message and that message's parts. It never reads the account or credential tables.
 
-The database names no process and records no permission request, so the install also writes a plugin, `~/.config/opencode/plugins/agent-leds.js`, that runs `agent-leds hook opencode` for what the database leaves out: `busy`, as a session goes busy, with the pid of the OpenCode process; `permission.asked` and `permission.replied`; and `session.error`. A session is followed from the first `busy` of a session that is not a subagent's, for as long as that process runs.
+The database names no process and records no permission request, so the install also writes a plugin, `~/.config/opencode/plugins/agent-leds.js`, that runs `agent-leds hook opencode` for what the database leaves out: `busy`, as a session goes busy, with the pid of the OpenCode process; `permission.asked` and `permission.replied`; and `session.error`, only while the session is busy and never for a `ContextOverflowError`, since OpenCode also publishes it for a file it could not read and for an overflow it compacts, and goes on. A session is followed from the first `busy` of a session that is not a subagent's, for as long as that process runs.
 
 | What is read | Session becomes |
 | --- | --- |
@@ -117,7 +117,7 @@ The rule is OpenCode's own: its loop goes on after a step that finished on `tool
 The gaps:
 
 - A pending permission is in the database only as a running tool, so only the plugin says it waits. A daemon restarted while one waits shows the session working until it moves on.
-- An error before a turn's loop starts, such as an unknown model, is in the database at most as a prompt with no reply, and the plugin's `session.error` shows it only on a session already followed: OpenCode 1.17.3 failed that way without ever going busy.
+- An error before a turn's first step, such as an unknown model, is in the database at most as a prompt with no reply. OpenCode 1.19.5 goes busy before it looks the model up, so the plugin's `session.error` shows it; 1.17.3 failed that way without ever going busy. A prompt that fails before the session goes busy, for an unknown agent or command, writes nothing and is not shown.
 - A turn waiting out a provider's retries shows as working, since nothing is written while it waits.
 - A step that overflowed the context and is compacted automatically is written as a step stopped with neither finish nor error, as an abort while retrying is, and its compaction is written just after. A read between the two shows the session idle for that moment.
 - With `experimental.continue_loop_on_deny` set, a rejected permission lets the turn go on; the session shows stopped until its next step is written.

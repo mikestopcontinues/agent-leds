@@ -117,7 +117,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Cursor, hook, inferred: stop with status error; not reproduced in the probe (0.5.0 hooks, probe-cursor runs A–I)
 - Junie, hook, inferred: StopFailure (0.5.0 hooks; Junie was not installed for the probe)
 - OpenCode, file, observed: that message carrying an error, a MessageAbortedError included (probe-opencode T7–T9)
-- OpenCode, hook, observed: session.error, for the session itself (probe-opencode T1, T7, T8)
+- OpenCode, hook, observed: session.error, for the session itself, while it is busy, other than a ContextOverflowError (probe-opencode T1, T7, T8)
 - Pi, hook, inferred: agent_settled with stop_reason error (0.5.0 extension, probe-pi rpc1, tui1)
 
 ### Interrupted

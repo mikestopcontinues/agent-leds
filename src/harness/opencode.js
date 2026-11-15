@@ -38,6 +38,11 @@ export const AgentLeds = async ({ directory }) => {
           send({ event: event.type, session: p.sessionID });
           return;
         case "session.error":
+          // Only an error that ends the run. Before the session goes busy
+          // it is a file OpenCode could not read, and the run goes on, or a
+          // prompt that wrote nothing; a context overflow is compacted, or
+          // else written on the message.
+          if (!busy.has(p.sessionID) || p.error?.name === "ContextOverflowError") return;
           send({ event: event.type, session: p.sessionID, error: p.error?.name ?? "Error" });
           return;
       }

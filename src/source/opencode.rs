@@ -108,7 +108,7 @@ pub const SIGNALS: &[Declared] = &[
     ),
     hook(
         Signal::TurnFailed,
-        "session.error, for the session itself",
+        "session.error, for the session itself, while it is busy, other than a ContextOverflowError",
         "probe-opencode T1, T7, T8",
     ),
     file(
@@ -144,7 +144,8 @@ struct Payload {
     pid: Option<i32>,
     /// The folder OpenCode was started in, at `busy`.
     directory: Option<String>,
-    /// The name of the error, at `session.error`.
+    /// The name of the error, at `session.error`, which the plugin sends
+    /// only for an error that ends the run.
     error: Option<String>,
 }
 

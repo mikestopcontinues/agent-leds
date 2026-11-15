@@ -135,6 +135,34 @@ mod tests {
         assert_eq!(events, hooks);
     }
 
+    /// The errors OpenCode 1.19.5 publishes and goes on from, among those
+    /// that end a run.
+    #[test]
+    fn the_plugin_passes_on_only_an_error_that_ends_the_run() {
+        let session = "ses_e23ee5772ffeEVRcj47R02tvbh";
+        let error = |name: &str, message: &str| json!({ "type": "session.error", "properties": { "sessionID": session, "error": { "name": name, "data": { "message": message } } } });
+        let (payloads, pid) = passed(json!([
+            // A file the prompt names cannot be read; the run goes on.
+            error("UnknownError", "ENOENT: no such file or directory"),
+            status(session, "busy"),
+            // The context overflows, and the session is compacted.
+            error("ContextOverflowError", "prompt is too long"),
+            status(session, "busy"),
+            error("UnknownError", "Model not found: opencode/no-such-model."),
+            status(session, "idle"),
+            // The prompt's request fails after the run has ended.
+            error("UnknownError", "Model not found: opencode/no-such-model."),
+        ]));
+        let payloads: Vec<Value> = payloads.into_iter().map(|(_, payload)| payload).collect();
+        assert_eq!(
+            payloads,
+            [
+                json!({ "event": "busy", "session": session, "pid": pid, "directory": "/Users/me/Code/app" }),
+                json!({ "event": "session.error", "session": session, "error": "UnknownError" }),
+            ]
+        );
+    }
+
     #[test]
     fn the_plugin_passes_on_a_subagent_s_events_under_its_own_session() {
         let child = "ses_e23ed2339ffeTL0ywE5nig2JRH";
