@@ -1,0 +1,13 @@
+{"cite":"ap-grok run 1 up to its first card, before the hook, isolated home, --permission-mode default","evidence":"observed"}
+{"alive":35489,"started_us":1794768581693018}
+{"expect":[]}
+{"write":".grok/active_sessions.json","text":"[\n  {\n    \"session_id\": \"0b5e1c2a-7d43-4f6e-9a21-3c8d5e6f7a10\",\n    \"pid\": 35489,\n    \"pid_start\": 1794768581693018,\n    \"cwd\": \"/Users/me/Code/app\",\n    \"opened_at\": \"2026-11-15T18:49:49.958Z\"\n  }\n]"}
+{"expect":[["started","file"]]}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/0b5e1c2a-7d43-4f6e-9a21-3c8d5e6f7a10/events.jsonl","line":{"ts":"2026-11-15T18:50:10.545Z","type":"turn_started","session_id":"0b5e1c2a-7d43-4f6e-9a21-3c8d5e6f7a10","turn_number":0,"model_id":"grok-4.7","yolo_mode":false,"conversation_message_count":3,"session_relationship":"primary","schema_version":"1.0"}}
+{"expect":[["prompted","file"]]}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/0b5e1c2a-7d43-4f6e-9a21-3c8d5e6f7a10/updates.jsonl","line":{"timestamp":1794768610,"method":"session/update","params":{"sessionId":"0b5e1c2a-7d43-4f6e-9a21-3c8d5e6f7a10","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"Run exactly this shell command and nothing else: rm -rf build"},"_meta":{"modelId":"grok-4.7","promptIndex":0}},"_meta":{"eventId":"0b5e1c2a-7d43-4f6e-9a21-3c8d5e6f7a10-2","agentTimestampMs":1794768610546}}}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/0b5e1c2a-7d43-4f6e-9a21-3c8d5e6f7a10/events.jsonl","line":{"ts":"2026-11-15T18:50:10.671Z","type":"loop_started","loop_index":0}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/0b5e1c2a-7d43-4f6e-9a21-3c8d5e6f7a10/updates.jsonl","line":{"timestamp":1794768614,"method":"session/update","params":{"sessionId":"0b5e1c2a-7d43-4f6e-9a21-3c8d5e6f7a10","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"I'll run `rm -rf build` now."}},"_meta":{"totalTokens":1555,"requestTrimmedTokens":0,"eventId":"0b5e1c2a-7d43-4f6e-9a21-3c8d5e6f7a10-14","agentTimestampMs":1794768614724,"promptId":"be9f3cf7-7c6b-473e-a0fc-63a295ccde69","streamStartMs":1794768611792,"turnStartMs":1794768610538,"updateType":"AgentMessageChunk","chunkId":11}}}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/0b5e1c2a-7d43-4f6e-9a21-3c8d5e6f7a10/events.jsonl","line":{"ts":"2026-11-15T18:50:14.749Z","type":"tool_started","tool_name":"run_terminal_command"}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/0b5e1c2a-7d43-4f6e-9a21-3c8d5e6f7a10/events.jsonl","line":{"ts":"2026-11-15T18:50:14.749Z","type":"permission_requested","tool_name":"run_terminal_command"}}
+{"expect":[]}

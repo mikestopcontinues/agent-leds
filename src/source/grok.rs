@@ -96,7 +96,7 @@ pub const SIGNALS: &[Declared] = &[
     file(
         Signal::Answered,
         Evidence::Observed,
-        "events.jsonl tool_completed for ask_user_question, plan_mode.json awaiting_plan_approval false again while the turn goes on, or the permission_resolved that leaves no request waiting, once the hook told one or a daemon started with one waiting",
+        "events.jsonl tool_completed for ask_user_question, plan_mode.json awaiting_plan_approval false again while the turn goes on, or, once the hook told an approval card or a daemon started inside a turn, the permission_resolved that leaves no request waiting, or a tool_completed or loop_started while none waits",
         "probe-grok question_pending, grok5; gaps p3; ap-grok runs 1, 2",
     ),
     file(
@@ -624,6 +624,8 @@ impl Grok {
         if waits != session.plan {
             session.plan = waits;
             let signal = if waits {
+                // The plan's card is the one that waits now.
+                session.approval = false;
                 Signal::PermissionAsked
             } else {
                 Signal::Answered
@@ -657,6 +659,7 @@ impl Grok {
             _ if session.open.is_none() => {}
             "tool_started" if tool == Some(QUESTION_TOOL) => {
                 session.question = true;
+                session.approval = false;
                 tell(id, session, Channel::File, [Signal::QuestionAsked], out);
             }
             "tool_completed" if tool == Some(QUESTION_TOOL) && session.question => {
@@ -667,11 +670,9 @@ impl Grok {
             "permission_requested" if tool != Some(QUESTION_TOOL) => session.requests += 1,
             "permission_resolved" if tool != Some(QUESTION_TOOL) => {
                 session.requests = session.requests.saturating_sub(1);
-                if session.requests == 0 && session.approval {
-                    session.approval = false;
-                    tell(id, session, Channel::File, [Signal::Answered], out);
-                }
+                answered(id, session, out);
             }
+            "tool_completed" | "loop_started" => answered(id, session, out),
             "turn_ended" => self.end(id, &record, out),
             _ => {}
         }
@@ -746,6 +747,15 @@ impl Grok {
             }
             _ => {}
         }
+    }
+}
+
+/// Answers the approval card that may wait once the turn goes on with no
+/// request waiting.
+fn answered(id: &str, session: &mut Session, out: &mut Vec<Observation>) {
+    if session.approval && session.requests == 0 {
+        session.approval = false;
+        tell(id, session, Channel::File, [Signal::Answered], out);
     }
 }
 
@@ -834,9 +844,10 @@ impl Source for Grok {
             let Some(session) = self.sessions.get_mut(id) else {
                 continue;
             };
-            // A request left waiting may be an approval card the hook told
-            // before the daemon started: its resolution answers it.
-            session.approval = session.requests > 0;
+            // The hook may have told an approval card before the daemon
+            // started, answered since or still waiting: the first record
+            // after that leaves no request waiting says none does.
+            session.approval = session.open.is_some() && !session.question && !session.plan;
             let turn = session.turn.clone();
             seeded.extend(session.told.seeded(started, turn, |_| Channel::File));
         }
@@ -1185,6 +1196,57 @@ mod tests {
             &replay("turn_ended.file"),
             ".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dc0d-63f4-7eb0-95d3-175af42f88aa/events.jsonl",
         );
+    }
+
+    /// A card answered while the daemon is down, its resolution and the
+    /// tool's end written before the daemon starts, lets go at the turn's
+    /// next record, as the files then show nothing waiting.
+    #[test]
+    fn a_card_answered_while_the_daemon_is_down_lets_go_at_the_next_record() {
+        let mut replay = replay("a_tool_request_waits_for_its_hook");
+        let key = Key {
+            harness: Harness::Grok,
+            id: "0b5e1c2a-7d43-4f6e-9a21-3c8d5e6f7a10".into(),
+        };
+        // The card's hook, as ap-grok run 1 captured it.
+        let hook = Hook {
+            harness: Harness::Grok,
+            payload: serde_json::json!({
+                "hook_event_name": "Notification",
+                "notification_type": "permission_prompt",
+                "message": "Tool permission requested",
+                "session_id": key.id,
+            }),
+            ancestry: Vec::new(),
+        };
+        let (mut source, mut queue) = fixture::restarted(&replay);
+        for o in source.hook(&replay.kernel, &hook) {
+            queue.apply(&o, 0);
+        }
+        assert_eq!(queue.phase(&key), Phase::Blocked);
+        replay.queue = queue;
+        let log = replay.home.path().join(format!(
+            ".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/{}/events.jsonl",
+            key.id
+        ));
+        let append = |lines: &[&str]| {
+            let mut text = fs::read_to_string(&log).unwrap();
+            for line in lines {
+                text.push_str(line);
+                text.push('\n');
+            }
+            fs::write(&log, text).unwrap();
+        };
+        append(&[
+            r#"{"ts":"2026-11-15T18:50:19.231Z","type":"permission_resolved","tool_name":"run_terminal_command","decision":"allow","wait_ms":4481}"#,
+            r#"{"ts":"2026-11-15T18:50:19.265Z","type":"tool_completed","tool_name":"run_terminal_command","duration_ms":25,"outcome":"success","tool_call_id":"call-270dd541-b07b-4cc2-b3a4-d359a66d83e8-0"}"#,
+        ]);
+        let (mut source, mut queue) = fixture::restarted(&replay);
+        append(&[r#"{"ts":"2026-11-15T18:50:19.266Z","type":"loop_started","loop_index":1}"#]);
+        for o in source.changed(&replay.kernel, Some(std::slice::from_ref(&log))) {
+            queue.apply(&o, 0);
+        }
+        assert_eq!(queue.phase(&key), Phase::Working);
     }
 
     #[test]
