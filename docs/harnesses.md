@@ -2,7 +2,7 @@
 
 What each agent harness reports to the service and where it falls short. [design.md](design.md) covers what the service does with the reports.
 
-The service reads Claude Code's own files, and registers no hooks with it. With each other harness, `agent-leds install` registers `agent-leds hook <harness>` for the events listed below; OpenCode and Pi load a plugin of ours that runs it. The hook passes the event to the daemon with the processes it runs under, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked. Whatever the hooks say, a session leaves when the process running it ends.
+The service reads Claude Code's and Pi's own files, and registers no hooks with Claude Code. With each other harness, `agent-leds install` registers `agent-leds hook <harness>` for the events listed below; OpenCode and Pi load a plugin of ours that runs it. The hook passes the event to the daemon with the processes it runs under, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked. Whatever the hooks say, a session leaves when the process running it ends.
 
 The harnesses took their hook events from Claude Code, so most of the names agree. Each harness reads only its own spelling. [coverage.md](coverage.md) lists every signal each harness gives, how each is known, and the moves each cannot make.
 
@@ -116,15 +116,26 @@ The gaps:
 
 ## Pi
 
-Pi runs extensions rather than hook commands, so the install writes an extension, `~/.pi/agent/extensions/agent-leds.ts`, that passes Pi's events to `agent-leds hook pi`. It reports only a Pi with a UI, in its terminal interface or RPC mode, as an editor integration runs it. Print and JSON modes have no one waiting on them, and Pi's subagents run in them.
+Pi writes each session to a file, `~/.pi/agent/sessions/--<cwd>--/<time>_<session>.jsonl`, appending an entry as each message ends, and the daemon reads it as it grows. No file says which process runs a session, when an extension's dialog holds a run up, or whether an error is final, since Pi retries some, so the install also writes an extension, `~/.pi/agent/extensions/agent-leds.ts`, that passes those moments to `agent-leds hook pi`. Its `session_start` and `agent_start` name Pi's own pid and the session's file, which binds the session to its process and tells the daemon where to read, a folder set by `sessionDir` or `--session-dir` included. The extension reports only a Pi with a UI, in its terminal interface or RPC mode, as an editor integration runs it. Print and JSON modes have no one waiting on them, and pi-subagents runs its children in them, so their files, a level deeper than a cwd's folder, are never read.
 
-| Event | Session becomes |
+| What Pi writes or the extension tells | Session becomes |
 | --- | --- |
-| `agent_start`, `ui_prompt_end` | working |
+| `agent_start`, or a prompt or a background subagent's report in the file | working |
 | `ui_prompt_start` during a run: an extension's dialog holds it up | question |
-| `agent_settled` whose last assistant message ends in a question mark | question, as a weak signal |
-| `agent_settled` otherwise | stopped |
+| `ui_prompt_end`, or the next entry after the dialog | working |
+| An assistant entry that ends the turn on a line ending in a question mark | question, as a weak signal |
+| An assistant entry that ends the turn otherwise | stopped |
 | `agent_settled` after an error | error |
-| `agent_settled` after an abort, or `session_shutdown` other than a reload | removed |
+| An assistant entry the user stopped, or `agent_settled` after a stop | removed |
+| `session_shutdown` other than a reload, or the Pi process gone | removed |
 
-Pi has no permission prompts of its own; extensions that add them ask through dialogs, which show as a question. Checked against Pi 0.84.4 and 1.5.2 in RPC mode. Pi Durable, Pi's library for long-running agent apps, is a framework rather than a harness and is not covered.
+An error entry in the file settles nothing, because Pi may retry it; only `agent_settled`, which comes once nothing will run by itself, says the turn failed. Pi 0.84.4 writes a stop during a tool as an error with the abort's text, so an entry the user stopped is told by its text, never by a provider's error that only mentions an abort. 0.84.4 also writes a new session's first prompt to no file until the reply ends, so `agent_start` says the turn runs. A fork or clone copies the turns before it into its new file, and those are never read as new.
+
+What it cannot see:
+
+- A daemon started while a dialog is open or after a turn failed shows the session as working, since only the extension said so.
+- A daemon started while a session writes to its own `sessionDir` cannot find the file, so the session shows nothing until its next prompt names the file again.
+- The hook does not wait for the daemon, which reads the file before each hook it handles. A reply written before the daemon handles that run's `agent_start` would leave the session working until its next event; no real provider answers that fast.
+- Pi has no permission prompts of its own; extensions that add them ask through dialogs, which show as a question. A session Pi keeps no file of, as with `--no-session`, is not shown.
+
+Checked against Pi 0.84.4 and 1.5.2 in RPC mode, with this extension installed. Pi Durable, Pi's library for long-running agent apps, is a framework rather than a harness and is not covered.
