@@ -141,7 +141,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - OpenCode, file, observed: that message's error a MessageAbortedError, or the message with neither finish nor error (probe-opencode T7, T8, T10)
 - OpenCode, hook, observed: session.error with a MessageAbortedError (probe-opencode T7, T8)
 - Pi, file, observed: an assistant message entry with stopReason aborted, or error with errorMessage exactly Operation aborted, Request was aborted or This operation was aborted (probe-pi ext084, ext152, rpc1, tui1)
-- Pi, hook, observed: agent_settled with aborted (1.5.2) or stop_reason aborted, or after an assistant entry the file says was stopped, as 0.84.4's stop during a tool is with stop_reason error (probe-pi ext084, ext152)
+- Pi, hook, observed: agent_settled with aborted: the run's abort signal, taken at agent_start, was aborted, as at a stop mid-stream and 0.84.4's stop during a tool written with stop_reason error; or 1.5.2's agent_settled says aborted, as at a stop during a retry's wait (gaps-pi sig084, sig152)
 
 ### Backgrounded
 

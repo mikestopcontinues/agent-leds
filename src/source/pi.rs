@@ -104,8 +104,8 @@ pub const SIGNALS: &[Declared] = &[
         Signal::Interrupted,
         Channel::Hook,
         Evidence::Observed,
-        "agent_settled with aborted (1.5.2) or stop_reason aborted, or after an assistant entry the file says was stopped, as 0.84.4's stop during a tool is with stop_reason error",
-        "probe-pi ext084, ext152",
+        "agent_settled with aborted: the run's abort signal, taken at agent_start, was aborted, as at a stop mid-stream and 0.84.4's stop during a tool written with stop_reason error; or 1.5.2's agent_settled says aborted, as at a stop during a retry's wait",
+        "gaps-pi sig084, sig152",
     ),
     Declared::new(
         Signal::Ended,
@@ -263,7 +263,7 @@ struct Payload {
     /// The session's file, which may not be written yet, at session_start
     /// and agent_start. None for a session Pi keeps no file of.
     file: Option<PathBuf>,
-    /// Whether the run was stopped, at agent_settled. 0.84.4 never says so.
+    /// Whether the user stopped the run, at agent_settled.
     #[serde(default)]
     aborted: bool,
     /// How the last assistant message ended, at agent_settled.
@@ -298,8 +298,6 @@ struct Session {
     /// Whether a dialog may hold the run up, which nothing is written for:
     /// the extension said one does, or the daemon started inside the run.
     dialog: bool,
-    /// Whether the last assistant entry of the turn says the user stopped it.
-    stopped: bool,
     told: Told,
 }
 
@@ -324,7 +322,6 @@ impl Session {
             ended: true,
             woke: None,
             dialog: false,
-            stopped: false,
             told: Told::default(),
         }
     }
@@ -337,7 +334,6 @@ impl Session {
             self.turn = entry.id.clone().map(TurnKey);
             self.ended = false;
             self.woke = None;
-            self.stopped = false;
             facts.push(BTreeSet::from([Signal::Prompted]));
         }
         if entry.is_report() && self.ended {
@@ -353,8 +349,7 @@ impl Session {
                 facts.push(BTreeSet::from([Signal::Prompted]));
             }
             let mut own = BTreeSet::new();
-            self.stopped = message.is_interrupt();
-            if self.stopped {
+            if message.is_interrupt() {
                 own.insert(Signal::Interrupted);
             }
             if let Some(text) = message.end() {
@@ -731,14 +726,10 @@ impl Source for Pi {
             // is final. A stop that 0.84.4 wrote as an error is a stop too:
             // the table ranks it first.
             "agent_settled" => {
-                let stop_reason = payload.stop_reason.as_deref();
-                if stop_reason == Some("error") {
+                if payload.stop_reason.as_deref() == Some("error") {
                     facts.insert(Signal::TurnFailed);
                 }
-                if payload.aborted
-                    || stop_reason == Some("aborted")
-                    || session.as_ref().is_some_and(|session| session.stopped)
-                {
+                if payload.aborted {
                     facts.insert(Signal::Interrupted);
                 }
             }
@@ -985,6 +976,12 @@ mod tests {
     #[test]
     fn a_stop_during_a_tool_that_0_84_4_writes_as_an_error_is_an_interrupt() {
         assert_eq!(phases(&replay("interrupted.hook"))[0].1, Phase::Idle);
+    }
+
+    #[test]
+    fn a_stop_while_a_retry_waits_is_an_interrupt_on_1_5_2() {
+        let replay = replay("a_stop_while_a_retry_waits_is_an_interrupt_on_1_5_2");
+        assert_eq!(phases(&replay)[0].1, Phase::Idle);
     }
 
     #[test]
