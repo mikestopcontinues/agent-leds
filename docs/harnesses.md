@@ -65,7 +65,7 @@ A thread whose `session_meta` names a subagent, by its `source` or its `thread_s
 
 ## Grok
 
-`~/.grok/active_sessions.json` lists each running Grok session with its process's pid and the microsecond that process started. Each session keeps a folder, `~/.grok/sessions/<cwd folder>/<session>/`, with two logs and a state file: `events.jsonl` says when a turn starts, waits and ends, `updates.jsonl` holds what the agent wrote, the subagents it started, and the whole list of its background commands at each change, and `plan_mode.json`, replaced whole at each change, says whether a plan waits on the user's approval. The daemon reads them all as they change. The events decide every move; the updates are read to their end when a turn ends, for its last message and the work still running. A daemon that starts reads the updates back to the last prompt, and on to the last list of background commands, so a command started turns before is still known. No hook is registered, and an install removes the `~/.grok/hooks/agent-leds.json` an older version wrote.
+`~/.grok/active_sessions.json` lists each running Grok session with its process's pid and the microsecond that process started. Each session keeps a folder, `~/.grok/sessions/<cwd folder>/<session>/`, with two logs and a state file: `events.jsonl` says when a turn starts, waits and ends, `updates.jsonl` holds what the agent wrote and the subagents it started, and `plan_mode.json`, replaced whole at each change, says whether a plan waits on the user's approval. The daemon reads them all as they change. The events decide every move; the updates are read to their end when a turn ends, for its last message and the subagents still running. A daemon that starts reads the updates back to the last prompt. No hook is registered, and an install removes the `~/.grok/hooks/agent-leds.json` an older version wrote.
 
 | What Grok writes | Session becomes |
 | --- | --- |
@@ -75,7 +75,7 @@ A thread whose `session_meta` names a subagent, by its `source` or its `thread_s
 | `awaiting_plan_approval` true in `plan_mode.json` during a turn, as `exit_plan_mode` shows its plan card | question |
 | `tool_completed` for `ask_user_question`, or `awaiting_plan_approval` false again during the turn | working |
 | `turn_ended` completed, whose last message's last line ends in a question mark | question, as a weak signal |
-| `turn_ended` while the updates hold a subagent spawned and not finished, or a command the last list shows running | working, in the background |
+| `turn_ended` while the updates hold a subagent spawned and not finished | working, in the background |
 | `turn_ended` with outcome `error`, as an API error ends the turn | error |
 | `turn_ended` otherwise, including a cancel Grok made itself such as `max_turns` | stopped |
 | `turn_ended` cancelled by Ctrl-C, the stop button, the dashboard or send-now, or by rejecting or cancelling a permission | idle (no light) |
