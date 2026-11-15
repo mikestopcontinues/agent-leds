@@ -40,8 +40,7 @@ pub struct Observation {
     pub event: Event,
     /// The harness's name for the turn it is about, when it gives one.
     pub turn: Option<TurnKey>,
-    /// Applied, never announced: startup seeding, or a source putting a
-    /// session back where a wait found it.
+    /// Startup seeding: applied, never announced.
     pub quiet: bool,
 }
 
@@ -175,6 +174,8 @@ pub struct Told {
     phase: Phase,
     /// The wait it last told, which Blocked came from.
     wait: Signal,
+    /// While blocked, the phase it was blocked from.
+    held: Phase,
 }
 
 /// A session just started: Idle.
@@ -183,6 +184,7 @@ impl Default for Told {
         Told {
             phase: Phase::Idle,
             wait: Signal::PermissionAsked,
+            held: Phase::Idle,
         }
     }
 }
@@ -192,7 +194,11 @@ impl Told {
         let Some(rule) = fsm::next(self.phase, signals) else {
             return;
         };
-        self.phase = rule.to;
+        let to = rule.to.phase(self.held);
+        if to == Phase::Blocked && self.phase != Phase::Blocked {
+            self.held = self.phase;
+        }
+        self.phase = to;
         if matches!(rule.on, Signal::PermissionAsked | Signal::QuestionAsked) {
             self.wait = rule.on;
         }
@@ -213,13 +219,22 @@ impl Told {
         Observation::new(harness, id, channel, Event::Signals(signals), turn)
     }
 
-    /// The shortest signals from Idle to the same phase.
+    /// The shortest signals from Idle to the same phase, each told on its
+    /// own: for Blocked, by way of the phase it was blocked from.
     pub fn current(&self) -> Vec<Signal> {
         match self.phase {
             Phase::Gone | Phase::Idle => Vec::new(),
             Phase::Working => vec![Signal::Prompted],
             Phase::Background => vec![Signal::Backgrounded],
-            Phase::Blocked => vec![self.wait],
+            Phase::Blocked => {
+                let held = Told {
+                    phase: self.held,
+                    ..*self
+                };
+                let mut path = held.current();
+                path.push(self.wait);
+                path
+            }
             Phase::Asked | Phase::AskedRead => vec![Signal::TurnEndedAsking],
             Phase::Stopped | Phase::StoppedRead => vec![Signal::TurnEnded],
             Phase::Failed => vec![Signal::TurnFailed],

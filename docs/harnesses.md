@@ -15,7 +15,7 @@ Each running Claude Code process, in a terminal, the desktop app or a background
 | A prompt in the transcript | working |
 | The session file waiting on a permission | question |
 | The session file waiting for input needed | question |
-| The session file done waiting on a request made after the turn ended | back to how the turn ended, unannounced |
+| The session file done waiting on a request made after the turn ended, such as a worker or sandbox request | back to the light the wait covered, unannounced |
 | The end of a turn whose last line ends in a question mark, or, in the desktop app, whose last `wrap_up` call put a question in the next-step box | question, as a weak signal |
 | The end of a turn while the session file stays busy | working, in the background |
 | The end of a turn otherwise, or a background turn going idle | stopped |
