@@ -98,7 +98,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Grok, hook, observed: stop with reason end_turn, or stop_cancelled (0.5.0 hooks, probe-grok runs a–l)
 - Cursor, hook, observed: stop, whatever its status (0.5.0 hooks, probe-cursor runs A–I)
 - Junie, hook, inferred: Stop (0.5.0 hooks; Junie was not installed for the probe)
-- OpenCode, file, observed: the turn's latest assistant message completed, unless it is a step that ended on tool-calls with no tool errored and no error (probe-opencode T2–T10, T15, T16)
+- OpenCode, file, observed: the turn's latest assistant message completed, unless it is a step that finished on tool-calls or unknown with no error and no tool the user refused or dismissed (probe-opencode T2–T10, T15, T16)
 - Pi, hook, observed: agent_settled (0.5.0 extension, probe-pi rpc1, tui1)
 
 ### TurnEndedAsking

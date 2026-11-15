@@ -93,7 +93,7 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::TurnEnded,
-        "the turn's latest assistant message completed, unless it is a step that ended on tool-calls with no tool errored and no error",
+        "the turn's latest assistant message completed, unless it is a step that finished on tool-calls or unknown with no error and no tool the user refused or dismissed",
         "probe-opencode T2–T10, T15, T16",
     ),
     file(
@@ -266,8 +266,13 @@ const STAMP: &str = "with recursive tree(id) as \
      select tree.id, (select max(seq) from event where aggregate_id = tree.id) from tree order by tree.id";
 const LATEST: &str = "select id, time_created, data from message where session_id = ?1 \
      order by time_created desc, id desc limit 1";
-const ERRORED: &str = "select exists(select 1 from part where message_id = ?1 \
-     and json_extract(data, '$.type') = 'tool' and json_extract(data, '$.state.status') = 'error')";
+/// A tool part failed for a permission the user refused or a question they
+/// dismissed, the only tool errors that stop OpenCode's loop. The texts are
+/// the messages of its PermissionRejectedError and QuestionRejectedError.
+const REFUSED: &str = "select exists(select 1 from part where message_id = ?1 \
+     and json_extract(data, '$.type') = 'tool' and json_extract(data, '$.state.status') = 'error' \
+     and json_extract(data, '$.state.error') in \
+     ('The user rejected permission to use this specific tool call.', 'The user dismissed this question'))";
 const TEXTS: &str = "select data from part where message_id = ?1 \
      and json_extract(data, '$.type') = 'text' order by id";
 const QUESTION: &str = "with recursive tree(id) as \
@@ -282,7 +287,7 @@ impl Database {
         let connection = Connection::open_with_flags(path, flags)
             .with_context(|| format!("opening {}", path.display()))?;
         connection.busy_timeout(Duration::from_millis(250))?;
-        for statement in [ROW, STAMP, LATEST, ERRORED, TEXTS, QUESTION] {
+        for statement in [ROW, STAMP, LATEST, REFUSED, TEXTS, QUESTION] {
             connection.prepare_cached(statement).with_context(|| {
                 format!(
                     "{} is not a database this version reads (OpenCode 1.18 or later)",
@@ -347,14 +352,17 @@ fn level(db: &Connection, id: &str) -> Result<Level> {
         .parent
         .ok_or_else(|| anyhow!("message {message} answers no user message"))?;
     let completed = data.time.completed.is_some_and(|time| !time.is_null());
-    // A step that ended on its tool calls is followed by the next step in the
-    // same commit, unless a tool the user refused or dismissed ended the turn.
-    let tools = data.finish.as_deref() == Some("tool-calls");
+    // OpenCode's loop goes on after a step that finished on its tool calls or
+    // for no known reason, and writes the next step's message only after it
+    // has read the session's messages again, so this step may be the latest
+    // for a while. Only an error, or a tool the user refused or dismissed,
+    // stops the loop there.
+    let goes_on = matches!(data.finish.as_deref(), Some("tool-calls" | "unknown"));
     let ended = completed
-        && (!tools
+        && (!goes_on
             || data.error.is_some()
             || db
-                .prepare_cached(ERRORED)?
+                .prepare_cached(REFUSED)?
                 .query_row([&message], |row| row.get(0))?);
     if !ended {
         // Only the latest step and the subagents it started can be held up.
@@ -373,7 +381,9 @@ fn level(db: &Connection, id: &str) -> Result<Level> {
             end.insert(Signal::Interrupted);
         }
     }
-    // Stopped while a request was retried: no finish, and no error.
+    // Stopped while a request was retried: no finish, and no error. A step
+    // that overflowed the context and is compacted automatically looks the
+    // same until the compaction's message is written just after.
     if data.finish.is_none() && data.error.is_none() {
         end.insert(Signal::Interrupted);
     }
@@ -864,6 +874,30 @@ mod tests {
             )),
             Phase::Stopped
         );
+    }
+
+    #[test]
+    fn a_step_whose_tool_failed_goes_on_to_the_next() {
+        let replay = replay("a_step_whose_tool_failed_goes_on_to_the_next");
+        let ends = replay
+            .yielded
+            .iter()
+            .filter(|(o, _)| o.event.signals().contains(&Signal::TurnEnded))
+            .count();
+        assert_eq!(ends, 1);
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn a_step_that_finished_unknown_goes_on_to_the_next() {
+        let replay = replay("a_step_that_finished_unknown_goes_on_to_the_next");
+        let ends = replay
+            .yielded
+            .iter()
+            .filter(|(o, _)| o.event.signals().contains(&Signal::TurnEnded))
+            .count();
+        assert_eq!(ends, 1);
+        assert_eq!(phase(&replay), Phase::Stopped);
     }
 
     #[test]

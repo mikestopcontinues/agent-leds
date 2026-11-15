@@ -106,19 +106,21 @@ The database names no process and records no permission request, so the install 
 | A `question` tool part running in the turn, in the session or a subagent's | question |
 | The plugin's `permission.asked`, for the session or a subagent's | question |
 | The question part done, or the plugin's `permission.replied` | working |
-| The latest assistant message completed, other than a step that ended on `tool-calls` with no tool errored | stopped |
+| The latest assistant message completed, other than a step that finished on `tool-calls` or `unknown` with no error and no tool the user refused or dismissed | stopped |
 | The same, its last text part ending in a question mark | question, as a weak signal |
 | An error on that message, or the plugin's `session.error` | error |
 | A `MessageAbortedError`, or the message completed with neither finish nor error | removed |
 | The session's row deleted or archived, or the OpenCode process gone | removed |
 
-A turn the user rejected a permission in, or dismissed a question in, ends on `tool-calls` with the tool errored and nothing after it, which counts as stopped. A subagent runs in a session of its own whose `parent_id` names the session that started it; its questions and permissions hold that session up, and its own runs say nothing more of it. Each turn's end is told once, so the title OpenCode writes after the first turn does not announce it again. The database is undocumented; the fixtures in `tests/fixtures/opencode/`, taken from real sessions, pin what the daemon expects of it.
+The rule is OpenCode's own: its loop goes on after a step that finished on `tool-calls` or `unknown`, however its tools fared, and writes the next step's message only after it has read the session's messages again, so such a step can be the latest message for a while. A turn the user rejected a permission in, or dismissed a question in, ends on `tool-calls` with that tool errored and nothing after it, which counts as stopped; a permission rejected with feedback lets the turn go on. A subagent runs in a session of its own whose `parent_id` names the session that started it; its questions and permissions hold that session up, and its own runs say nothing more of it. Each turn's end is told once, so the title OpenCode writes after the first turn does not announce it again. The database is undocumented; the fixtures in `tests/fixtures/opencode/`, taken from real sessions, pin what the daemon expects of it.
 
 The gaps:
 
 - A pending permission is in the database only as a running tool, so only the plugin says it waits. A daemon restarted while one waits shows the session working until it moves on.
 - An error before a turn's loop starts, such as an unknown model, is in the database at most as a prompt with no reply, and the plugin's `session.error` shows it only on a session already followed: OpenCode 1.17.3 failed that way without ever going busy.
 - A turn waiting out a provider's retries shows as working, since nothing is written while it waits.
+- A step that overflowed the context and is compacted automatically is written as a step stopped with neither finish nor error, as an abort while retrying is, and its compaction is written just after. A read between the two shows the session idle for that moment.
+- With `experimental.continue_loop_on_deny` set, a rejected permission lets the turn go on; the session shows stopped until its next step is written.
 - A session whose OpenCode process started before the plugin was installed is not shown until that process is restarted.
 - A database from OpenCode before 1.18, which has no event log, is not read; the daemon says so in its log.
 - Checked against OpenCode 1.19.5 through `opencode serve` and the terminal interface, with permissions, questions, aborts, a subagent, errors, an archive, a deletion and a kill, and 1.18.25 through `opencode run`. The desktop app, background subagents and compaction were not tried.
