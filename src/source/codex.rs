@@ -67,6 +67,11 @@ pub const SIGNALS: &[Declared] = &[
         "task_started whose turn_trigger is automation_heartbeat_scheduled or app_tool_send_message, or capacity_retry_automatic after such a turn the user wrote nothing in",
         "desktop rollouts 0.162, 2026-10-12 to 2026-10-19: 211 heartbeat, 394 message and 5 retry turns",
     ),
+    file(
+        Signal::Retried,
+        "task_started whose turn_trigger is capacity_retry_automatic after a turn that told Woke, which the user wrote nothing in",
+        "desktop rollout 0.162, 2026-10-13T12:29: a message from another thread that failed at capacity, and the app's retry 11 s later",
+    ),
     Declared::new(
         Signal::Prompted,
         Channel::File,
@@ -240,6 +245,9 @@ struct Attribution {
 /// composer, queued while a turn ran, or from the phone.
 const TYPED: &[&str] = &["composer", "queue", "remote_android"];
 
+/// The trigger of the desktop app's retry of a turn that failed at capacity.
+const RETRY: &str = "capacity_retry_automatic";
+
 /// What started a turn, as far as how it ends goes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Origin {
@@ -263,7 +271,7 @@ impl Origin {
         match trigger {
             Some("automation_heartbeat_scheduled") => Origin::Heartbeat,
             Some("app_tool_send_message") => Origin::Message,
-            Some("capacity_retry_automatic") => last,
+            Some(RETRY) => last,
             _ => Origin::User,
         }
     }
@@ -1226,11 +1234,12 @@ fn says(
         }
         thread.origin = Origin::of(record.trigger(), thread.origin);
         thread.own = false;
-        let started = match thread.origin {
-            Origin::User => Signal::Prompted,
-            Origin::Heartbeat | Origin::Message => Signal::Woke,
+        let started: &[Signal] = match thread.origin {
+            Origin::User => &[Signal::Prompted],
+            _ if record.trigger() == Some(RETRY) => &[Signal::Woke, Signal::Retried],
+            Origin::Heartbeat | Origin::Message => &[Signal::Woke],
         };
-        tell(id, thread, Channel::File, [started], out);
+        tell(id, thread, Channel::File, started.iter().copied(), out);
     } else if record.is("event_msg", "task_complete") {
         // No approval outlasts its turn, which would otherwise hold the
         // wait against an end told with work running on.
@@ -2000,10 +2009,24 @@ mod tests {
         assert_eq!(phase(&replay), Phase::Failed);
     }
 
+    /// The error is announced; the retry, which ends with nothing for the
+    /// user, goes back past it to the dark session the failed turn found.
     #[test]
     fn a_retry_after_a_capacity_error_is_the_turn_it_retries() {
-        let replay = replay("a_retry_after_a_capacity_error_is_the_turn_it_retries");
-        assert_eq!(phase(&replay), Phase::Failed);
+        let replay = replay("retried.file");
+        assert_eq!(phase(&replay), Phase::Idle);
+        let mut queue = crate::queue::Queue::default();
+        let changes: Vec<crate::queue::Change> = replay
+            .yielded
+            .iter()
+            .map(|(o, step)| queue.apply(o, *step as u64))
+            .collect();
+        use crate::queue::Change::*;
+        use crate::state::State;
+        assert_eq!(
+            changes,
+            [Saved, Settle, Announce(State::Error), Settle, Settle]
+        );
     }
 
     #[test]

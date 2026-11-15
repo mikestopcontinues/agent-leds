@@ -120,6 +120,10 @@ pub enum Signal {
     /// A turn started that nobody typed, and that ends quietly unless it
     /// wants the user, such as a heartbeat.
     Woke,
+    /// The harness started again, by itself, a turn nobody typed that
+    /// failed: the same turn, which goes on from the light the failed one
+    /// found.
+    Retried,
     /// A tool waits for the user's approval.
     PermissionAsked,
     /// The agent waits for an answer to its question, or a dialog is open.
@@ -159,10 +163,11 @@ pub enum Signal {
 
 impl Signal {
     /// Every signal, in declaration order.
-    pub const ALL: [Signal; 19] = [
+    pub const ALL: [Signal; 20] = [
         Started,
         Prompted,
         Woke,
+        Retried,
         PermissionAsked,
         QuestionAsked,
         Answered,
@@ -188,22 +193,23 @@ impl Signal {
             Started => 0,
             Prompted => 1,
             Woke => 2,
-            PermissionAsked => 3,
-            QuestionAsked => 4,
-            Answered => 5,
-            Released => 6,
-            TurnEnded => 7,
-            TurnEndedAsking => 8,
-            TurnEndedQuietly => 9,
-            TurnFailed => 10,
-            Interrupted => 11,
-            Backgrounded => 12,
-            BackgroundDone => 13,
-            Ended => 14,
-            Looked => 15,
-            ReadExpired => 16,
-            Abandoned => 17,
-            Dismissed => 18,
+            Retried => 3,
+            PermissionAsked => 4,
+            QuestionAsked => 5,
+            Answered => 6,
+            Released => 7,
+            TurnEnded => 8,
+            TurnEndedAsking => 9,
+            TurnEndedQuietly => 10,
+            TurnFailed => 11,
+            Interrupted => 12,
+            Backgrounded => 13,
+            BackgroundDone => 14,
+            Ended => 15,
+            Looked => 16,
+            ReadExpired => 17,
+            Abandoned => 18,
+            Dismissed => 19,
         }
     }
 
@@ -224,6 +230,9 @@ impl Signal {
             }
             Woke => {
                 "a turn nobody typed shows as one the user typed, and ends with a light whatever it says"
+            }
+            Retried => {
+                "a retry of a turn nobody typed that failed keeps the error when it ends with nothing for the user"
             }
             PermissionAsked => "an approval wait shows as the light it interrupts",
             QuestionAsked => "a question the agent waits on shows as the light it interrupts",
@@ -442,6 +451,13 @@ pub const TABLE: &[Rule] = &[
         on: Prompted,
         to: Go(Working),
     },
+    // A retry of a turn nobody typed that failed is that turn, and holds
+    // the light the failed one found.
+    Rule {
+        from: &[Failed],
+        on: Retried,
+        to: Go(Unattended),
+    },
     // A turn nobody typed holds the light it found, unread or read, to go
     // back to. One that starts over a wait, or over work going on, which
     // its end tells again if it still goes on, holds nothing, and is work.
@@ -515,7 +531,7 @@ pub const FAMILIES: &[&[Signal]] = &[
     // file says it waits when a permission is asked at once, and a hook
     // that runs a tool that asks says that the turn runs too. A turn nobody
     // typed can start so as well.
-    &[Prompted, Woke, PermissionAsked, QuestionAsked],
+    &[Prompted, Woke, Retried, PermissionAsked, QuestionAsked],
 ];
 
 /// The move the signals, told together, make from `from`: the first row of
@@ -595,14 +611,18 @@ impl Holds {
 /// hold the phase they were entered from; a wait entered from a turn nobody
 /// typed holds work, since the user it waits on has a hand in the turn from
 /// then on, so no held phase ever holds one of its own. A look while a turn
-/// nobody typed runs reads the light it holds. Any other phase holds nothing.
+/// nobody typed runs reads the light it holds. The error such a turn ends
+/// on holds the light the turn found, which its retry goes on from. Any
+/// other phase holds nothing.
 pub fn held(from: Phase, held: Option<Phase>, on: Signal, to: Phase) -> Option<Holds> {
     let read = |held: Phase| step(held, Looked).map_or(held, |to| to.phase(held));
     match to {
         Unattended if from == Unattended && on == Looked => held.map(read).map(Holds::Kept),
-        Blocked | Unattended if to == from => held.map(Holds::Kept),
+        _ if to == from => held.map(Holds::Kept),
         Blocked if from == Unattended => Some(Holds::Left(Working)),
+        Unattended if on == Retried => Some(held.map_or(Holds::Left(from), Holds::Kept)),
         Blocked | Unattended => Some(Holds::Left(from)),
+        Failed if from == Unattended => held.map(Holds::Kept),
         _ => None,
     }
 }
@@ -709,6 +729,7 @@ mod tests {
                 TurnEndedQuietly,
                 TurnEnded,
                 Prompted,
+                Retried,
                 Woke,
                 Started,
                 Dismissed,
@@ -935,6 +956,47 @@ mod tests {
         // Whatever else the end says that wants the user still wins.
         let failed = told(&[TurnEnded, TurnEndedQuietly, TurnFailed]);
         assert_eq!(next(Idle, &failed).unwrap().to, Go(Failed));
+    }
+
+    #[test]
+    fn a_retry_of_a_turn_nobody_typed_that_failed_goes_on_from_the_light_it_found() {
+        let quiet = told(&[TurnEnded, TurnEndedQuietly]);
+        for found in [Idle, Stopped, StoppedRead, Failed] {
+            let entered = held(found, None, Woke, Unattended);
+            assert_eq!(entered, Some(Holds::Left(found)), "{found:?}");
+            let failed = held(Unattended, Some(found), TurnFailed, Failed);
+            assert_eq!(failed, Some(Holds::Kept(found)), "{found:?}");
+            assert_eq!(
+                held(Failed, Some(found), TurnFailed, Failed),
+                failed,
+                "{found:?}"
+            );
+            let retry = told(&[Woke, Retried]);
+            let rule = next(Failed, &retry).unwrap();
+            assert_eq!((rule.on, rule.to), (Retried, Go(Unattended)));
+            assert_eq!(
+                held(Failed, Some(found), Retried, Unattended),
+                Some(Holds::Kept(found)),
+                "{found:?}"
+            );
+            assert!(!overlaps(Failed, &retry));
+            assert_eq!(next(Unattended, &quiet).unwrap().to.phase(found), found);
+        }
+        // A heartbeat after the error, rather than its retry, holds the error.
+        assert_eq!(
+            held(Failed, Some(Stopped), Woke, Unattended),
+            Some(Holds::Left(Failed))
+        );
+        // The error of a turn the user typed holds nothing, and a retry over
+        // it holds the error.
+        assert_eq!(held(Working, None, TurnFailed, Failed), None);
+        assert_eq!(
+            held(Failed, None, Retried, Unattended),
+            Some(Holds::Left(Failed))
+        );
+        // A retry seen over anything but the error is a turn nobody typed.
+        let retry = told(&[Woke, Retried]);
+        assert_eq!(next(Idle, &retry).unwrap().on, Woke);
     }
 
     #[test]

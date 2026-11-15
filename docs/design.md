@@ -45,7 +45,7 @@ The lights have to mean something, so every one of them has a way out:
 | Stopped | At the next prompt, or `keep_read_minutes` after you have looked at the session. |
 | Question, weak: the turn ended on a question | The same as stopped. You may read it and leave it unanswered. |
 | Question, strong: a permission request, `AskUserQuestion` or an elicitation | When it is answered. The agent is blocked on it. One that work running after its turn made goes back, once answered, to the light it covered, as you left it: read, dismissed or not. |
-| Error | At the next prompt. |
+| Error | At the next prompt; or, for a turn nobody typed that its harness starts again by itself, as the Codex desktop app does after a capacity error, when that retry ends with nothing for the user, by going back, unannounced, to the light the failed turn found. |
 | Any | When the session ends, or the process its harness names does, which the daemon checks every few seconds; at `agent-leds dismiss`; or after `abandon_days` without a word from the session. |
 
 A light that a released wait or a quiet end goes back to keeps its place in the queue, and a read one the time it was read, so `keep_read_minutes` runs from the look however often turns nobody typed cover it.

@@ -257,8 +257,9 @@ pub struct Told {
     phase: Phase,
     /// The wait it last told, which Blocked came from.
     wait: Signal,
-    /// While blocked or unattended, the phase it entered that from.
-    held: Phase,
+    /// While blocked or unattended, the phase it entered that from, and
+    /// what an error a turn nobody typed ended on holds.
+    held: Option<Phase>,
 }
 
 /// A session just started: Idle.
@@ -267,7 +268,7 @@ impl Default for Told {
         Told {
             phase: Phase::Idle,
             wait: Signal::PermissionAsked,
-            held: Phase::Idle,
+            held: None,
         }
     }
 }
@@ -277,9 +278,8 @@ impl Told {
         let Some(rule) = fsm::next(self.phase, signals) else {
             return;
         };
-        let to = rule.to.phase(self.held);
-        self.held =
-            fsm::held(self.phase, Some(self.held), rule.on, to).map_or(Phase::Idle, Holds::phase);
+        let to = rule.to.phase(self.held.unwrap_or(Phase::Idle));
+        self.held = fsm::held(self.phase, self.held, rule.on, to).map(Holds::phase);
         self.phase = to;
         if matches!(rule.on, Signal::PermissionAsked | Signal::QuestionAsked) {
             self.wait = rule.on;
@@ -326,26 +326,28 @@ impl Told {
     }
 
     /// The shortest signals from Idle to the same phase, each told on its
-    /// own: for Blocked and Unattended, by way of the phase it entered them
-    /// from, which never holds one of its own.
+    /// own: for a phase that holds one, by way of the phase it holds, which
+    /// never holds one of its own.
     pub fn current(&self) -> Vec<Signal> {
-        let by = |last: Signal| {
+        let by = |last: &[Signal]| {
             let held = Told {
-                phase: self.held,
+                phase: self.held.unwrap_or(Phase::Idle),
+                held: None,
                 ..*self
             };
             let mut path = held.current();
-            path.push(last);
+            path.extend_from_slice(last);
             path
         };
         match self.phase {
             Phase::Gone | Phase::Idle => Vec::new(),
             Phase::Working => vec![Signal::Prompted],
-            Phase::Unattended => by(Signal::Woke),
+            Phase::Unattended => by(&[Signal::Woke]),
             Phase::Background => vec![Signal::Backgrounded],
-            Phase::Blocked => by(self.wait),
+            Phase::Blocked => by(&[self.wait]),
             Phase::Asked | Phase::AskedRead => vec![Signal::TurnEndedAsking],
             Phase::Stopped | Phase::StoppedRead => vec![Signal::TurnEnded],
+            Phase::Failed if self.held.is_some() => by(&[Signal::Woke, Signal::TurnFailed]),
             Phase::Failed => vec![Signal::TurnFailed],
         }
     }
