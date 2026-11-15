@@ -96,7 +96,7 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::TurnEndedAsking,
-        "task_complete whose last_agent_message's last line ends in a question mark, or that holds a <proposed_plan> block, which no rollout has shown yet; or while an item of a request_user_input_async call has no answer since the last prompt the user typed, or the thread's goal in goals_1.sqlite went blocked, usage_limited or budget_limited at or after the turn's started_at",
+        "task_complete whose last_agent_message's last line ends in a question mark, or that holds a <proposed_plan> block, which no rollout has shown yet; or while an item of a request_user_input_async call has no answer since the last prompt the user typed, asked in the turn itself when nobody typed it, or the thread's goal in goals_1.sqlite went blocked, usage_limited or budget_limited at or after the turn's started_at",
         "probe-codex runA PROMPT6; desktop rollouts 0.162 and goals_1.sqlite, 2026-10-14 and 2026-10-15",
     ),
     file(
@@ -809,6 +809,9 @@ struct Thread {
     /// The async question items, by call and index, that have no answer
     /// since the last turn the user typed a prompt for.
     asks: BTreeSet<(String, usize)>,
+    /// Of those, the ones the last turn asked, with the attempt a retry
+    /// goes on from: all a turn nobody typed asks at its end.
+    asked: BTreeSet<(String, usize)>,
     /// How the last turn ended, while no other has started.
     rest: Option<Rest>,
     /// What started the turn, and the last one once it ended.
@@ -1027,6 +1030,7 @@ impl Codex {
                 children: HashSet::new(),
                 followups: HashSet::new(),
                 asks: BTreeSet::new(),
+                asked: BTreeSet::new(),
                 rest: None,
                 origin: Origin::User,
                 own: false,
@@ -1232,6 +1236,9 @@ fn says(
         if record.starts_typed_turn() {
             thread.asks.clear();
         }
+        if record.trigger() != Some(RETRY) {
+            thread.asked.clear();
+        }
         thread.origin = Origin::of(record.trigger(), thread.origin);
         thread.own = false;
         let started: &[Signal] = match thread.origin {
@@ -1250,7 +1257,13 @@ fn says(
         close(thread, payload);
         let mut told = BTreeSet::from([Signal::TurnEnded]);
         let message = payload.last_agent_message.as_deref().unwrap_or_default();
-        if ends_on_question(message) || proposes_plan(message) || !thread.asks.is_empty() {
+        // A turn nobody typed asks again only what it asked itself, so a
+        // question left open from before ends it quietly, unread or read.
+        let asks = match thread.origin {
+            Origin::User => &thread.asks,
+            Origin::Heartbeat | Origin::Message => &thread.asked,
+        };
+        if ends_on_question(message) || proposes_plan(message) || !asks.is_empty() {
             told.insert(Signal::TurnEndedAsking);
         }
         let failed = payload.error.is_some();
@@ -1298,13 +1311,13 @@ fn says(
             _ => {}
         }
     } else if let Some(call) = record.calls(ASYNC_QUESTION) {
-        let items = items(payload.arguments.as_deref());
-        thread
-            .asks
-            .extend((0..items).map(|index| (call.to_owned(), index)));
+        let items = (0..items(payload.arguments.as_deref())).map(|index| (call.to_owned(), index));
+        thread.asks.extend(items.clone());
+        thread.asked.extend(items);
     } else if !record.answers.is_empty() {
         for answer in &record.answers {
             thread.asks.remove(answer);
+            thread.asked.remove(answer);
         }
     } else if let Some(call) = record.question() {
         thread.question = Some(call.to_owned());
