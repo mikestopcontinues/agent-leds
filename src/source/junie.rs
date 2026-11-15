@@ -53,7 +53,7 @@ const fn file(signal: Signal, record: &'static str, cite: &'static str) -> Decla
 pub const SIGNALS: &[Declared] = &[
     file(
         Signal::Started,
-        "a sidecar in processes/ that is the newest for its pid, whose process started no later than its startedAt; or a CurrentDirectoryUpdatedEvent naming a new folder",
+        "a sidecar in processes/ that is the newest for its pid, whose process started no later than the millisecond of its startedAt; or a CurrentDirectoryUpdatedEvent naming a new folder",
         "probe-junie session_start; Irrlicht pid.go",
     ),
     file(

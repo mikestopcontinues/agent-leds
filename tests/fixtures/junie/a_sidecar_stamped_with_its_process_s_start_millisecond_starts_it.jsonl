@@ -1,0 +1,4 @@
+{"cite": "gap evaluation: startedAt may be the start floored to the millisecond; probe-junie session_start; Irrlicht pid.go", "evidence": "inferred"}
+{"alive": 47990, "started_us": 1787663400500750}
+{"write": ".junie/processes/47990-session-260825-151015-19jp-c95cdd197f46.json", "text": {"pid": 47990, "sessionId": "session-260825-151015-19jp", "projectPath": "/Users/me/Code/app", "startedAt": 1787663400500}}
+{"expect": [["started", "file"]]}

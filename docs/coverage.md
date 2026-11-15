@@ -55,7 +55,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Codex, file, observed: a thread's lock held, with a rollout whose session_meta is not a subagent's: neither its source nor its thread_source names one (probe-codex runA, runB, runD; desktop rollouts 0.162)
 - Grok, file, observed: a new row in active_sessions.json whose process started at its pid_start, to the microsecond; a headless run and a subagent get none (probe-grok session_start, runs a, j)
 - Cursor, hook, observed: beforeSubmitPrompt, run under a process Cursor marked running in .running with the second it started, the outermost of the marked processes in a row, so the CLI and not its node worker (probe-cursor runs A–I (markers, lsof); the bundle's install-in-use-marker; 0.5.0 hooks)
-- Junie, file, inferred: a sidecar in processes/ that is the newest for its pid, whose process started no later than its startedAt; or a CurrentDirectoryUpdatedEvent naming a new folder (probe-junie session_start; Irrlicht pid.go)
+- Junie, file, inferred: a sidecar in processes/ that is the newest for its pid, whose process started no later than the millisecond of its startedAt; or a CurrentDirectoryUpdatedEvent naming a new folder (probe-junie session_start; Irrlicht pid.go)
 - OpenCode, hook, observed: the plugin's busy, as a session that is not a subagent's goes busy, from the OpenCode process whose pid it names (probe-opencode T3–T16 (session.status busy, in serve and the TUI))
 - Pi, hook, observed: session_start or agent_start from a Pi with a UI, naming its own pid, which is the hook's parent, and its session file (probe-pi ext084, ext152, extfork, extdir, extresume)
 
