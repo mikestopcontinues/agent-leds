@@ -2,7 +2,7 @@
 //! so that one pasted output says what is going on.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
@@ -10,12 +10,12 @@ use anyhow::{Context, Result, bail};
 use crate::config::home;
 use crate::daemon;
 use crate::device;
-use crate::fsm::Signal;
-use crate::harness;
+use crate::fsm::{Channel, Signal};
+use crate::harness::{self, Harness};
 use crate::ipc::{self, Request, Status};
 use crate::launchd;
-use crate::liveness::{Kernel, Liveness, System};
-use crate::queue::{Key, Problem, Queue};
+use crate::liveness::{Kernel, System};
+use crate::queue::{Problem, Queue};
 use crate::source::{self, Observation, Source};
 
 pub fn run() -> Result<()> {
@@ -29,14 +29,14 @@ pub fn run() -> Result<()> {
         checks.push(("readings".to_owned(), readings(status)));
     }
     let home = home();
-    // The sessions only a hook could bind, as the daemon last saved them. A
-    // saved queue the daemon cannot read, it ignores too.
-    let bound = daemon::saved_queue()
-        .map(|saved| saved.bound())
-        .unwrap_or_default();
+    // The queue as the daemon last saved it, which it restores what the
+    // files show against. One it cannot read, it ignores too.
+    let saved = daemon::saved_queue();
+    checks.push(("queue".to_owned(), queue(&saved, &home)));
+    let saved = saved.unwrap_or_default();
     for (harness, hooks) in harness::check(&home, &exe) {
         let mut source = source::of(harness, &home, &source::junie::home());
-        let files = files(source.as_mut(), &System, &bound, &home);
+        let files = files(source.as_mut(), &System, &saved, &home);
         let hooks = hooks.map(|()| harness.registered().to_owned());
         checks.push((harness.title().to_owned(), both(files, hooks)));
     }
@@ -133,39 +133,86 @@ fn readings(status: &Status) -> Result<String> {
     Ok("everything the harnesses told was declared and unambiguous".into())
 }
 
+/// Whether the daemon can read the queue it saved, which keeps what the
+/// files cannot say across a restart: read marks, dismissals, and the
+/// sessions only a hook or plugin told of.
+fn queue(saved: &Result<Queue>, home: &Path) -> Result<String> {
+    let path = tilde(&daemon::queue_path(), home);
+    let saved = match saved {
+        Ok(saved) => saved,
+        Err(error) => {
+            let bound: Vec<&str> = Harness::ALL
+                .into_iter()
+                .filter(|&harness| hook_bound(harness))
+                .map(Harness::title)
+                .collect();
+            let (last, rest) = bound.split_last().expect("some harness is hook-bound");
+            bail!(
+                "{path} cannot be read, so the daemon ignores it when it starts, and the \
+                 sessions of {} and {last} show only once their hooks or plugin report them \
+                 again: {error:#}",
+                rest.join(", ")
+            );
+        }
+    };
+    Ok(match saved.sessions().len() {
+        0 => format!("no sessions saved in {path}"),
+        1 => format!("1 session saved in {path}"),
+        n => format!("{n} sessions saved in {path}"),
+    })
+}
+
+/// Whether only a hook or plugin can start a session of `harness`, whose
+/// files name no process.
+fn hook_bound(harness: Harness) -> bool {
+    !harness::declares(harness, Signal::Started, Channel::File)
+}
+
 /// What a harness's files show, read by its source as the daemon reads them
-/// at start: how many sessions run and where they stand, and where from.
-/// The source keeps its offsets in this process, and nothing is written.
-fn files(
-    source: &mut dyn Source,
-    k: &dyn Kernel,
-    bound: &[(Key, Liveness)],
-    home: &Path,
-) -> Result<String> {
-    let seeded = source::seed(source, k, bound);
-    let roots: Vec<PathBuf> = source
-        .roots()
-        .into_iter()
-        .filter(|root| root.exists())
-        .collect();
-    for root in &roots {
-        std::fs::read_dir(root).with_context(|| format!("{} cannot be read", tilde(root, home)))?;
+/// at start, and restored against the saved queue as the daemon restores
+/// them: how many sessions run and where they stand, and where from. The
+/// source keeps its offsets in this process, and nothing is written.
+fn files(source: &mut dyn Source, k: &dyn Kernel, saved: &Queue, home: &Path) -> Result<String> {
+    let seeded = source::seed(source, k, &saved.bound());
+    let mut roots = Vec::new();
+    for root in source.roots() {
+        // A folder whose parent cannot be searched cannot be told from one
+        // that is not there, except by the error.
+        let exists = root
+            .try_exists()
+            .with_context(|| format!("{} cannot be read", tilde(&root, home)))?;
+        if exists {
+            std::fs::read_dir(&root)
+                .with_context(|| format!("{} cannot be read", tilde(&root, home)))?;
+            roots.push(root);
+        }
     }
     let seeded = seeded.context("reading its files failed")?;
     if roots.is_empty() {
         return Ok("no session files yet".into());
     }
     let roots: Vec<String> = roots.iter().map(|root| tilde(root, home)).collect();
-    Ok(format!("{} from {}", sessions(&seeded)?, roots.join(", ")))
+    let harness = source.harness();
+    let sessions = if hook_bound(harness) {
+        let by = match harness {
+            Harness::OpenCode | Harness::Pi => "its plugin",
+            _ => "its hooks",
+        };
+        sessions(&seeded, saved, &format!("{by} reported still running"))?
+    } else {
+        sessions(&seeded, saved, "running")?
+    };
+    Ok(format!("{sessions}, read from {}", roots.join(", ")))
 }
 
-/// The sessions a seed started, by the light each shows, or what the seed
-/// told that its harness does not declare or that overlaps.
-fn sessions(seeded: &[Observation]) -> Result<String> {
-    let mut queue = Queue::default();
+/// The sessions a seed started, restored against the saved queue, by the
+/// light each shows, or what the seed told that its harness does not
+/// declare or that overlaps. `running` says how they are known to run.
+fn sessions(seeded: &[Observation], saved: &Queue, running: &str) -> Result<String> {
+    let mut fresh = Queue::default();
     let mut problems = BTreeSet::new();
     for o in seeded {
-        match queue.admit(o, 0).1 {
+        match fresh.admit(o, 0).1 {
             None => {}
             Some(Problem::Undeclared(undeclared)) => {
                 problems.insert(format!(
@@ -189,6 +236,7 @@ fn sessions(seeded: &[Observation]) -> Result<String> {
             problems.join("; ")
         );
     }
+    let queue = Queue::restore(saved.clone(), fresh);
     // Idle sorts last, after every light.
     let mut lights = BTreeMap::new();
     for session in queue.sessions() {
@@ -208,9 +256,9 @@ fn sessions(seeded: &[Observation]) -> Result<String> {
         })
         .collect();
     Ok(match count {
-        0 => "no sessions running".to_owned(),
-        1 => format!("1 session running ({})", lights.join(", ")),
-        _ => format!("{count} sessions running ({})", lights.join(", ")),
+        0 => format!("no sessions {running}"),
+        1 => format!("1 session {running} ({})", lights.join(", ")),
+        _ => format!("{count} sessions {running} ({})", lights.join(", ")),
     })
 }
 
@@ -284,9 +332,9 @@ mod tests {
 
     use super::*;
     use crate::config::Config;
-    use crate::fsm::Channel;
-    use crate::harness::Harness;
     use crate::ipc::Overlap;
+    use crate::liveness::Liveness;
+    use crate::queue::TurnKey;
     use crate::source::Event;
 
     fn status(undeclared: u64, overlaps: Vec<Overlap>) -> Status {
@@ -349,18 +397,40 @@ mod tests {
         let home = home.path();
         let files = |kernel: &dyn Kernel| {
             let mut claude = source_of(Harness::Claude, home);
-            files(claude.as_mut(), kernel, &[], home)
+            files(claude.as_mut(), kernel, &Queue::default(), home)
         };
         assert_eq!(files(&Running(1)).unwrap(), "no session files yet");
         write(home, ".claude/sessions/90859.json", CLAUDE_SESSION);
         assert_eq!(
             files(&Running(1)).unwrap(),
-            "no sessions running from ~/.claude/sessions"
+            "no sessions running, read from ~/.claude/sessions"
         );
         assert_eq!(
             files(&Running(90859)).unwrap(),
-            "1 session running (idle) from ~/.claude/sessions"
+            "1 session running (idle), read from ~/.claude/sessions"
         );
+    }
+
+    #[test]
+    fn files_that_start_no_session_count_what_the_hooks_reported() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        std::fs::create_dir_all(home.join(".pi/agent/sessions")).unwrap();
+        std::fs::create_dir_all(home.join(".cursor/projects")).unwrap();
+        let files = |harness| {
+            let mut source = source_of(harness, home);
+            files(source.as_mut(), &Running(1), &Queue::default(), home).unwrap()
+        };
+        assert_eq!(
+            files(Harness::Pi),
+            "no sessions its plugin reported still running, read from ~/.pi/agent/sessions"
+        );
+        assert_eq!(
+            files(Harness::Cursor),
+            "no sessions its hooks reported still running, read from ~/.cursor/projects"
+        );
+        assert!(hook_bound(Harness::OpenCode));
+        assert!(!hook_bound(Harness::Junie));
     }
 
     #[test]
@@ -371,7 +441,7 @@ mod tests {
         let home = home.path();
         write(home, ".grok/active_sessions.json", "not json");
         let mut grok = source_of(Harness::Grok, home);
-        let problem = files(grok.as_mut(), &Running(1), &[], home).unwrap_err();
+        let problem = files(grok.as_mut(), &Running(1), &Queue::default(), home).unwrap_err();
         let problem = format!("{problem:#}");
         assert!(
             problem.starts_with("reading its files failed: parsing"),
@@ -379,40 +449,70 @@ mod tests {
         );
 
         write(home, ".claude/sessions/90859.json", CLAUDE_SESSION);
-        let sessions = home.join(".claude/sessions");
-        let mode = |mode| {
-            std::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(mode)).unwrap()
+        let unreadable = |folder: &str| {
+            let folder = home.join(folder);
+            let mode = |mode| {
+                std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(mode)).unwrap()
+            };
+            mode(0o000);
+            let mut claude = source_of(Harness::Claude, home);
+            let problem = files(claude.as_mut(), &Running(90859), &Queue::default(), home);
+            mode(0o755);
+            format!("{:#}", problem.unwrap_err())
         };
-        mode(0o000);
-        let mut claude = source_of(Harness::Claude, home);
-        let problem = files(claude.as_mut(), &Running(90859), &[], home);
-        mode(0o755);
-        let problem = format!("{:#}", problem.unwrap_err());
-        assert!(
-            problem.starts_with("~/.claude/sessions cannot be read: "),
-            "{problem}"
+        // The folder itself, and the one it is in, which hides whether it is there.
+        for folder in [".claude/sessions", ".claude"] {
+            let problem = unreadable(folder);
+            assert!(
+                problem.starts_with("~/.claude/sessions cannot be read: "),
+                "{folder}: {problem}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_saved_queue_that_cannot_be_read_needs_attention() {
+        let home = crate::config::home();
+        let path = tilde(&daemon::queue_path(), &home);
+        assert_eq!(
+            queue(&Ok(Queue::default()), &home).unwrap(),
+            format!("no sessions saved in {path}")
         );
+        let problem = queue(&Err(anyhow::anyhow!("missing field `key`")), &home)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            problem,
+            format!(
+                "{path} cannot be read, so the daemon ignores it when it starts, and the \
+                 sessions of Cursor, OpenCode and Pi show only once their hooks or plugin \
+                 report them again: missing field `key`"
+            )
+        );
+    }
+
+    fn start(id: &str) -> Observation {
+        Observation::new(
+            Harness::Claude,
+            id,
+            Channel::File,
+            Event::Started(source::Start {
+                cwd: "/Users/me/Code/app".into(),
+                liveness: Liveness::Lock {
+                    path: "/nowhere".into(),
+                },
+            }),
+            None,
+        )
+    }
+
+    fn told(id: &str, signal: Signal, channel: Channel) -> Observation {
+        let turn = Some(TurnKey("t1".into()));
+        Observation::new(Harness::Claude, id, channel, Event::one(signal), turn)
     }
 
     #[test]
     fn sessions_count_by_light_and_refuse_what_is_undeclared() {
-        let start = |id: &str| {
-            Observation::new(
-                Harness::Claude,
-                id,
-                Channel::File,
-                Event::Started(source::Start {
-                    cwd: "/Users/me/Code/app".into(),
-                    liveness: Liveness::Lock {
-                        path: "/nowhere".into(),
-                    },
-                }),
-                None,
-            )
-        };
-        let told = |id: &str, signal, channel| {
-            Observation::new(Harness::Claude, id, channel, Event::one(signal), None)
-        };
         let seeded = [
             start("a"),
             start("b"),
@@ -420,16 +520,38 @@ mod tests {
             told("b", Signal::Prompted, Channel::File),
             told("c", Signal::Prompted, Channel::File),
         ];
+        let none = Queue::default();
         assert_eq!(
-            sessions(&seeded).unwrap(),
+            sessions(&seeded, &none, "running").unwrap(),
             "3 sessions running (2 working, 1 idle)"
         );
         // Claude Code declares no hooks.
         let hooked = [start("a"), told("a", Signal::Prompted, Channel::Hook)];
         assert_eq!(
-            sessions(&hooked).unwrap_err().to_string(),
+            sessions(&hooked, &none, "running").unwrap_err().to_string(),
             "its files told Prompted through Hook, which it does not declare; the harness's \
              format may have changed"
+        );
+    }
+
+    #[test]
+    fn sessions_show_the_light_the_daemon_restores() {
+        let seeded = [start("a"), told("a", Signal::TurnEnded, Channel::File)];
+        assert_eq!(
+            sessions(&seeded, &Queue::default(), "running").unwrap(),
+            "1 session running (stopped)"
+        );
+        // Dismissed before the daemon last stopped, on the same turn.
+        let mut saved = Queue::default();
+        for o in &seeded {
+            saved.apply(o, 1);
+        }
+        for o in saved.dismissed(None) {
+            saved.apply(&o, 2);
+        }
+        assert_eq!(
+            sessions(&seeded, &saved, "running").unwrap(),
+            "1 session running (idle)"
         );
     }
 

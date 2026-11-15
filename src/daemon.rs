@@ -30,7 +30,7 @@ use crate::render::{self, Step};
 use crate::source::{self, Observation, Read, Sources};
 use crate::state::State;
 
-fn queue_path() -> PathBuf {
+pub fn queue_path() -> PathBuf {
     state_dir().join("queue.json")
 }
 

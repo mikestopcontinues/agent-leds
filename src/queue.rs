@@ -56,7 +56,7 @@ pub struct Session {
 
 /// The sessions, as saved in queue.json. Tracked sessions without a light
 /// are kept too, so the sweep can tell when their process ends.
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Queue {
     sessions: Vec<Session>,
