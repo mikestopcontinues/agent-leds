@@ -57,8 +57,8 @@ pub const SIGNALS: &[Declared] = &[
         Signal::Prompted,
         Channel::File,
         Evidence::Observed,
-        "a message entry with role user, or a custom_message entry of customType subagent-notify, keyed by its entry id",
-        "probe-pi ext152, rpc1, rpc8, rpcsa",
+        "a message entry with role user, keyed by its entry id; or an assistant entry after the run ended, as when a background subagent's report wakes the agent, keyed by the custom_message entry of customType subagent-notify before it",
+        "probe-pi ext152, rpc1, rpc8, rpcsa, extsa",
     ),
     declared(
         Signal::Prompted,
@@ -187,14 +187,17 @@ impl Entry {
         serde_json::from_slice(line).ok()
     }
 
-    /// What starts a turn: a prompt, or a background subagent's report,
-    /// which wakes the agent with no prompt.
+    /// What starts a turn: a prompt.
     fn is_prompt(&self) -> bool {
-        match self.kind.as_str() {
-            "message" => self.message.as_ref().is_some_and(|m| m.role == "user"),
-            "custom_message" => self.custom_type.as_deref() == Some("subagent-notify"),
-            _ => false,
-        }
+        self.kind == "message" && self.message.as_ref().is_some_and(|m| m.role == "user")
+    }
+
+    /// A background subagent's report. It wakes the agent only when sent to,
+    /// which the entry does not say: one sent without waking it, as when a
+    /// resumed session takes in reports finished while Pi was closed, is
+    /// written just the same.
+    fn is_report(&self) -> bool {
+        self.kind == "custom_message" && self.custom_type.as_deref() == Some("subagent-notify")
     }
 
     /// Whether the entry is part of the conversation: a message, or a
@@ -296,6 +299,11 @@ struct Session {
     /// Whether the last read of the file stopped at its budget.
     behind: bool,
     turn: Option<TurnKey>,
+    /// Whether the file says the last run ended, by a turn end or a stop.
+    ended: bool,
+    /// A background subagent's report written since the last run ended,
+    /// which is the turn of a run that comes after it.
+    woke: Option<TurnKey>,
     /// Whether the extension said a dialog holds the run up.
     dialog: bool,
     /// Whether the last assistant entry of the turn says the user stopped it.
@@ -321,10 +329,54 @@ impl Session {
             cwd,
             behind: false,
             turn: None,
+            ended: true,
+            woke: None,
             dialog: false,
             stopped: false,
             told: Told::default(),
         }
+    }
+
+    /// What one message entry says, as the signals of each fact in order:
+    /// a run that no prompt began, then the entry's own.
+    fn facts(&mut self, entry: &Entry) -> Vec<BTreeSet<Signal>> {
+        let mut facts = Vec::new();
+        if entry.is_prompt() {
+            self.turn = entry.id.clone().map(TurnKey);
+            self.ended = false;
+            self.woke = None;
+            self.stopped = false;
+            facts.push(BTreeSet::from([Signal::Prompted]));
+        }
+        if entry.is_report() && self.ended {
+            self.woke = entry.id.clone().map(TurnKey);
+        }
+        if let Some(message) = entry.assistant() {
+            // A reply after the run ended: a report woke the agent, and Pi
+            // ran it with no prompt.
+            if self.ended {
+                if let Some(turn) = self.woke.take() {
+                    self.turn = Some(turn);
+                }
+                facts.push(BTreeSet::from([Signal::Prompted]));
+            }
+            let mut own = BTreeSet::new();
+            self.stopped = message.is_interrupt();
+            if self.stopped {
+                own.insert(Signal::Interrupted);
+            }
+            if let Some(text) = message.end() {
+                own.insert(Signal::TurnEnded);
+                if ends_on_question(&text) {
+                    own.insert(Signal::TurnEndedAsking);
+                }
+            }
+            self.ended = !own.is_empty();
+            if self.ended {
+                facts.push(own);
+            }
+        }
+        facts
     }
 
     /// Whether this session's process did not write the entry: an earlier
@@ -429,25 +481,7 @@ impl Pi {
             session.dialog = false;
             tell(id, session, Channel::File, [Signal::Answered], out);
         }
-        let mut facts = BTreeSet::new();
-        if entry.is_prompt() {
-            session.turn = entry.id.clone().map(TurnKey);
-            session.stopped = false;
-            facts.insert(Signal::Prompted);
-        }
-        if let Some(message) = entry.assistant() {
-            session.stopped = message.is_interrupt();
-            if session.stopped {
-                facts.insert(Signal::Interrupted);
-            }
-            if let Some(text) = message.end() {
-                facts.insert(Signal::TurnEnded);
-                if ends_on_question(&text) {
-                    facts.insert(Signal::TurnEndedAsking);
-                }
-            }
-        }
-        if !facts.is_empty() {
+        for facts in session.facts(entry) {
             tell(id, session, Channel::File, facts, out);
         }
     }
@@ -518,18 +552,10 @@ impl Pi {
             entries.any(|entry| anchors(&entry))
         })?;
         let entries: Vec<Entry> = lines.iter().filter_map(|line| Entry::read(line)).collect();
-        let session = self.sessions.get_mut(id).expect("seeded");
-        session.tail = Some(tail);
+        self.sessions.get_mut(id).expect("seeded").tail = Some(tail);
         let mut history = Vec::new();
-        // A turn's work without its start: the turn began further back.
-        let work = |entry: &Entry| entry.is_message() && !entry.is_prompt();
-        if !entries
-            .iter()
-            .any(|entry| entry.is_prompt() || session.history(entry))
-            && entries.iter().any(work)
-        {
-            tell(id, session, Channel::File, [Signal::Prompted], &mut history);
-        }
+        // A tail that holds no prompt starts in a run, which its first reply
+        // tells as a run no prompt began.
         for entry in &entries {
             self.entry(id, entry, &mut history);
         }
@@ -896,6 +922,12 @@ mod tests {
             .filter(|signals| signals.contains(&Signal::Prompted))
             .count();
         assert_eq!(prompts, 3);
+    }
+
+    #[test]
+    fn a_subagent_report_that_wakes_no_run_starts_no_turn() {
+        let replay = replay("a_subagent_report_that_wakes_no_run_starts_no_turn");
+        assert_eq!(phases(&replay)[0].1, Phase::Stopped);
     }
 
     #[test]

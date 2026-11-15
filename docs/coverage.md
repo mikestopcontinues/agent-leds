@@ -67,7 +67,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Cursor, hook, observed: beforeSubmitPrompt, postToolUse or postToolUseFailure (0.5.0 hooks, probe-cursor runs A–I)
 - Junie, hook, inferred: UserPromptSubmit or PostToolUse (0.5.0 hooks; Junie was not installed for the probe)
 - OpenCode, hook, observed: session.status going busy, permission.replied, question.replied or question.rejected (0.5.0 plugin, probe-opencode T2–T17)
-- Pi, file, observed: a message entry with role user, or a custom_message entry of customType subagent-notify, keyed by its entry id (probe-pi ext152, rpc1, rpc8, rpcsa)
+- Pi, file, observed: a message entry with role user, keyed by its entry id; or an assistant entry after the run ended, as when a background subagent's report wakes the agent, keyed by the custom_message entry of customType subagent-notify before it (probe-pi ext152, rpc1, rpc8, rpcsa, extsa)
 - Pi, hook, observed: agent_start, at every prompt and retry; 0.84.4 writes a new session's first prompt to no file until the reply ends (probe-pi ext084, tq1)
 
 ### PermissionAsked
