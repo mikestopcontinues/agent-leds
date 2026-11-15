@@ -1,10 +1,10 @@
-{"cite": "0.5.0 hooks, probe-cursor runs A–I", "evidence": "observed"}
-{"alive": 71001, "started_us": 1794693357000000}
-{"write": ".local/share/cursor-agent/versions/2026.11.13-eacade1/.running/71001", "text": "node|Sat Nov 14 21:55:57 2026"}
-{"expect": []}
-{"hook": {"conversation_id": "5b1f3c1e-7d0a-4a55-9a34-0c7f5f1f2b10", "session_id": "5b1f3c1e-7d0a-4a55-9a34-0c7f5f1f2b10", "generation_id": "0f6c1c2b-3a44-4e21-8d2b-5d2f4c0e9a11", "model": "default", "hook_event_name": "beforeSubmitPrompt", "cursor_version": "2026.11.13-eacade1", "workspace_roots": ["/Users/me/Code/app"], "user_email": null, "transcript_path": null, "prompt": "fix it"}, "ancestry": [{"pid": 71050, "started_us": 1794693362000000, "name": "sh"}, {"pid": 71001, "started_us": 1794693357000000, "name": "node"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
-{"expect": [["started", "hook"], ["prompted", "hook"]]}
-{"hook": {"conversation_id": "5b1f3c1e-7d0a-4a55-9a34-0c7f5f1f2b10", "session_id": "5b1f3c1e-7d0a-4a55-9a34-0c7f5f1f2b10", "generation_id": "0f6c1c2b-3a44-4e21-8d2b-5d2f4c0e9a11", "model": "default", "hook_event_name": "postToolUse", "cursor_version": "2026.11.13-eacade1", "workspace_roots": ["/Users/me/Code/app"], "user_email": null, "transcript_path": null, "tool_name": "Shell"}, "ancestry": [{"pid": 71050, "started_us": 1794693362000000, "name": "sh"}, {"pid": 71001, "started_us": 1794693357000000, "name": "node"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
-{"expect": [["started", "hook"], ["prompted", "hook"]]}
-{"hook": {"conversation_id": "5b1f3c1e-7d0a-4a55-9a34-0c7f5f1f2b10", "session_id": "5b1f3c1e-7d0a-4a55-9a34-0c7f5f1f2b10", "generation_id": "0f6c1c2b-3a44-4e21-8d2b-5d2f4c0e9a11", "model": "default", "hook_event_name": "postToolUseFailure", "cursor_version": "2026.11.13-eacade1", "workspace_roots": ["/Users/me/Code/app"], "user_email": null, "transcript_path": null, "tool_name": "Shell", "is_interrupt": false}, "ancestry": [{"pid": 71050, "started_us": 1794693362000000, "name": "sh"}, {"pid": 71001, "started_us": 1794693357000000, "name": "node"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
-{"expect": [["started", "hook"], ["prompted", "hook"]]}
+{"cite":"probe-cursor run F","evidence":"observed"}
+{"alive":8058,"started_us":1794693986417000}
+{"write":".local/share/cursor-agent/versions/2026.11.13-eacade1/.running/8058","text":"cursor-agent|Sat Nov 14 22:06:26 2026"}
+{"alive":8102,"started_us":1794693988052000}
+{"write":".local/share/cursor-agent/versions/2026.11.13-eacade1/.running/8102","text":"node|Sat Nov 14 22:06:28 2026"}
+{"expect":[]}
+{"hook":{"conversation_id":"2a4021f4-2392-4248-b8ef-b7fc20f0ad80","generation_id":"0f6c1c2b-3a44-4e21-8d2b-5d2f4c0e9a11","model":"default","prompt":"the user's prompt","attachments":[],"session_id":"2a4021f4-2392-4248-b8ef-b7fc20f0ad80","hook_event_name":"beforeSubmitPrompt","cursor_version":"2026.11.13-eacade1","workspace_roots":["/Users/me/Code/app"],"user_email":null,"transcript_path":null},"ancestry":[{"pid":8458,"started_us":1794694016417000,"name":"sh"},{"pid":8058,"started_us":1794693986417000,"name":"node"},{"pid":755,"started_us":1794680000000000,"name":"zsh"}]}
+{"expect":[["started","hook"],["prompted","hook"]]}
+{"write":".cursor/projects/Users-me-Code-app/agent-transcripts/2a4021f4-2392-4248-b8ef-b7fc20f0ad80/2a4021f4-2392-4248-b8ef-b7fc20f0ad80.jsonl","text":"{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"<timestamp>Saturday, Nov 14, 2026, 4:06 PM (UTC-6)</timestamp>\\n<user_query>\\nWrite a story. No tools.\\n</user_query>\"}]}}\n{\"role\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"The lighthouse stood on the headland.\"}]}}\n{\"type\":\"turn_ended\",\"status\":\"success\"}\n"}
+{"expect":[["turn_ended","file"]]}

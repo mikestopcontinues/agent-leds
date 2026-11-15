@@ -1061,7 +1061,7 @@ mod tests {
     #[test]
     fn an_observation_with_one_undeclared_signal_is_dropped_whole() {
         let mut daemon = daemon();
-        // Cursor declares turn ends through its hook, and no waits.
+        // Cursor declares prompts through its hook, and no waits.
         let cursor = |event| Observation {
             key: Key {
                 harness: Harness::Cursor,
@@ -1075,7 +1075,7 @@ mod tests {
         let mut start = started("c1");
         start.key.harness = Harness::Cursor;
         start.channel = Channel::Hook;
-        let told = BTreeSet::from([Signal::TurnEnded, Signal::PermissionAsked]);
+        let told = BTreeSet::from([Signal::Prompted, Signal::PermissionAsked]);
         daemon
             .world
             .reads

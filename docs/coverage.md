@@ -37,24 +37,24 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 | Signal | Claude Code | Codex | Grok | Cursor | Junie | OpenCode | Pi |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | [Started](#started) | file | file | file | hook | hook* | hook | hook |
-| [Prompted](#prompted) | file | file | file | hook | hook* | hook | hook |
+| [Prompted](#prompted) | file | file | file | file+hook | hook* | hook | hook |
 | [PermissionAsked](#permissionasked) | file | hook | file | — | — | hook | — |
 | [QuestionAsked](#questionasked) | file | file | file | — | — | hook | hook |
 | [Answered](#answered) | file | file | file | — | — | — | — |
-| [TurnEnded](#turnended) | file | file | file | hook | hook* | hook | hook |
-| [TurnEndedAsking](#turnendedasking) | file | file | file | — | hook* | hook | hook |
-| [TurnFailed](#turnfailed) | file | file | hook* | hook* | hook* | hook | hook* |
-| [Interrupted](#interrupted) | file | file | file | hook | — | hook | hook |
+| [TurnEnded](#turnended) | file | file | file | file | hook* | hook | hook |
+| [TurnEndedAsking](#turnendedasking) | file | file | file | file | hook* | hook | hook |
+| [TurnFailed](#turnfailed) | file | file | hook* | file* | hook* | hook | hook* |
+| [Interrupted](#interrupted) | file | file | file | file+hook* | — | hook | hook |
 | [Backgrounded](#backgrounded) | file | file | file | — | — | hook | — |
 | [BackgroundDone](#backgrounddone) | file | file | file* | — | — | — | — |
-| [Ended](#ended) | file | file | file | hook | hook* | hook | hook |
+| [Ended](#ended) | file | file | file | file+hook | hook* | hook | hook |
 
 ### Started
 
 - Claude Code, file, observed: a session file naming a new pid or session, whose process started at its procStart; not a spare or a bg session (probe-claude cc0–cc11)
 - Codex, file, observed: a thread's lock held, with a rollout whose session_meta is not a subagent's: neither its source nor its thread_source names one (probe-codex runA, runB, runD; desktop rollouts 0.162)
 - Grok, file, observed: a new row in active_sessions.json whose process started at its pid_start, to the microsecond; a headless run and a subagent get none (probe-grok session_start, runs a, j)
-- Cursor, hook, observed: any hook, run under the process that Cursor's .running marker names (0.5.0 hooks, probe-cursor runs A–I)
+- Cursor, hook, observed: beforeSubmitPrompt, run under a process Cursor marked running in .running with the second it started, the outermost of the marked processes in a row, so the CLI and not its node worker (probe-cursor runs A–I (markers, lsof); the bundle's install-in-use-marker; 0.5.0 hooks)
 - Junie, hook, inferred: any hook of the session the last prompt named, run under the process named junie (0.5.0 hooks; Junie was not installed for the probe)
 - OpenCode, hook, observed: any event the plugin passes on, from the OpenCode process that runs the hook (0.5.0 plugin, probe-opencode T2–T17)
 - Pi, hook, observed: any event the extension passes on, from the Pi process that runs the hook (0.5.0 extension, probe-pi rpc1, tui1)
@@ -64,7 +64,8 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Claude Code, file, observed: a transcript user record, not a tool result, with a promptSource (typed, sdk or a task notification) or an origin (a skill's slash command), keyed by its promptId; or the model writing again after its turn closed, as after a Stop hook that blocks or a compaction (probe-claude cc1, cc3; desktop transcripts 2.1.317, 2.1.321)
 - Codex, file, observed: event_msg task_started, keyed by its turn_id (probe-codex runA, runB, runC)
 - Grok, file, observed: events.jsonl turn_started, keyed by its turn_number, including the turn a session starts by itself when a background subagent finishes (probe-grok prompt_submitted, runs a, e)
-- Cursor, hook, observed: beforeSubmitPrompt, postToolUse or postToolUseFailure (0.5.0 hooks, probe-cursor runs A–I)
+- Cursor, hook, observed: beforeSubmitPrompt, for a chat bound to its process; the only word of a text-only turn until it ends (probe-cursor run F; 0.5.0 hooks)
+- Cursor, file, observed: a finished transcript whose last record is a user or assistant record, after the turn's end or with more user records than before, as after a background job (probe-cursor runs A, B, D, G, H)
 - Junie, hook, inferred: UserPromptSubmit or PostToolUse (0.5.0 hooks; Junie was not installed for the probe)
 - OpenCode, hook, observed: session.status going busy, permission.replied, question.replied or question.rejected (0.5.0 plugin, probe-opencode T2–T17)
 - Pi, hook, observed: agent_start or ui_prompt_end (0.5.0 extension, probe-pi rpc1, tui1)
@@ -95,7 +96,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Claude Code, file, observed: an end_turn record with text, or a tool result marked claude/endTurn; or waiting to idle after the turn closed while waiting (probe-claude cc1, cc4; desktop transcripts 2.1.299–2.1.321)
 - Codex, file, observed: event_msg task_complete (probe-codex runA, runB)
 - Grok, file, observed: events.jsonl turn_ended, completed or cancelled (probe-grok turn_completed, runs a, e, h)
-- Cursor, hook, observed: stop, whatever its status (0.5.0 hooks, probe-cursor runs A–I)
+- Cursor, file, observed: a finished transcript whose last record is turn_ended, once for each count of user records and status (probe-cursor runs A–H)
 - Junie, hook, inferred: Stop (0.5.0 hooks; Junie was not installed for the probe)
 - OpenCode, hook, observed: session.idle, however the run ended (0.5.0 plugin, probe-opencode T2–T17)
 - Pi, hook, observed: agent_settled (0.5.0 extension, probe-pi rpc1, tui1)
@@ -105,6 +106,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Claude Code, file, observed: an end_turn record whose text's last line ends in a question mark (probe-claude cc1, cc2)
 - Codex, file, observed: task_complete whose last_agent_message's last line ends in a question mark, or that holds a <proposed_plan> block, which no rollout has shown yet (probe-codex runA PROMPT6)
 - Grok, file, observed: a completed turn_ended whose final text, the last agent_message_chunk in updates.jsonl after the latest user_message_chunk, has a last line ending in a question mark (probe-grok run a)
+- Cursor, file, observed: turn_ended after an assistant text whose last line ends in a question mark; a reasoning model's reasoning follows its reply in that text, so its last line is tested instead (probe-cursor runs A, B)
 - Junie, hook, inferred: Stop whose last message asks (0.5.0 hooks; Junie was not installed for the probe)
 - OpenCode, hook, observed: session.idle whose last assistant message asks (0.5.0 plugin, probe-opencode T2–T17)
 - Pi, hook, observed: agent_settled whose last assistant message asks (0.5.0 extension, probe-pi rpc1, tui1)
@@ -114,7 +116,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Claude Code, file, observed: an assistant record with isApiErrorMessage (probe-claude cc4, cc5)
 - Codex, file, observed: task_complete with an error (probe-codex runC; 119 such records in earlier rollouts)
 - Grok, hook, inferred: stop_failure whose promptId is the newest turn's in updates.jsonl, or one never seen while that turn has named none; Grok can report a turn after the next has started, and that report tells nothing; no terminal API error was produced in the probe, whose refused connections retried without end (probe-grok turn_error, runs c, k; Grok's hook docs)
-- Cursor, hook, inferred: stop with status error; not reproduced in the probe (0.5.0 hooks, probe-cursor runs A–I)
+- Cursor, file, inferred: turn_ended with status error, from the bundle's code; not reproduced (probe-cursor turn_error (bundle 2986/7777.index.js))
 - Junie, hook, inferred: StopFailure (0.5.0 hooks; Junie was not installed for the probe)
 - OpenCode, hook, observed: session.idle after an error (0.5.0 plugin, probe-opencode T2–T17)
 - Pi, hook, inferred: agent_settled with stop_reason error (0.5.0 extension, probe-pi rpc1, tui1)
@@ -124,7 +126,8 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Claude Code, file, observed: a user text starting [Request interrupted by user (probe-claude cc1–cc4)
 - Codex, file, observed: event_msg turn_aborted for any reason but replaced, which a new turn follows; a cancelled approval writes it too (probe-codex runA CTRLC-INTERRUPT, DENY-ESC; codex2)
 - Grok, file, observed: a cancelled turn_ended triggered by ctrl_c, the stop button or the dashboard, or cancelled as permission_rejected or permission_cancelled (probe-grok interrupted, runs a, h)
-- Cursor, hook, observed: stop with status aborted, or postToolUseFailure cut short by an interrupt (0.5.0 hooks, probe-cursor runs A–I)
+- Cursor, hook, inferred: stop with status aborted, for a chat bound to its process; Cursor runs it on every interrupt, from the bundle's code (probe-cursor run B, turn 3 (no write); bundle 2986.index.js, the abort path)
+- Cursor, file, observed: turn_ended with status aborted, including the previous turn's end rewritten to aborted (probe-cursor runs B, H)
 - OpenCode, hook, observed: session.idle after MessageAbortedError (0.5.0 plugin, probe-opencode T2–T17)
 - Pi, hook, observed: agent_settled after an abort (0.5.0 extension, probe-pi rpc1, tui1)
 
@@ -146,7 +149,8 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Claude Code, file, observed: the session file deleted or naming another session (/clear), or its process gone (probe-claude cc1, cc2, cc10)
 - Codex, file, observed: the thread's lock deleted, or taken again by another process; or left unlocked, as a killed process leaves it (probe-codex runA, runB (kill -9), runC)
 - Grok, file, observed: the session's row gone from active_sessions.json, as /quit leaves it even mid-turn, or its process gone (probe-grok quit/crash, runs a, b, c)
-- Cursor, hook, observed: sessionEnd, or the marked Cursor process gone (0.5.0 hooks, probe-cursor runs A–I)
+- Cursor, file, observed: the .running marker of the process the chat is bound to deleted, as a quit does (probe-cursor runs A, C, D, G, I)
+- Cursor, hook, observed: the process the hook bound the chat to gone, as after kill -9, which leaves its marker (probe-cursor runs B, H)
 - Junie, hook, inferred: SessionEnd, or the junie process gone (0.5.0 hooks; Junie was not installed for the probe)
 - OpenCode, hook, observed: session.deleted, or the OpenCode process gone (0.5.0 plugin, probe-opencode T2–T17)
 - Pi, hook, observed: session_shutdown, or the Pi process gone (0.5.0 extension, probe-pi rpc1, tui1)
@@ -155,23 +159,19 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 **PermissionAsked**: an approval wait shows as the light it interrupts.
 
-- Cursor: Idle, Working, Stopped, StoppedRead, Failed → Blocked
+- Cursor: Idle, Working, Asked, AskedRead, Stopped, StoppedRead, Failed → Blocked
 - Junie: Idle, Working, Asked, AskedRead, Stopped, StoppedRead, Failed → Blocked
 - Pi: Idle, Working, Asked, AskedRead, Stopped, StoppedRead, Failed → Blocked
 
 **QuestionAsked**: a question the agent waits on shows as the light it interrupts.
 
-- Cursor: Idle, Working, Stopped, StoppedRead, Failed → Blocked
+- Cursor: Idle, Working, Asked, AskedRead, Stopped, StoppedRead, Failed → Blocked
 - Junie: Idle, Working, Asked, AskedRead, Stopped, StoppedRead, Failed → Blocked
 
 **Answered**: an answered approval or question shows as a question until the turn ends.
 
 - OpenCode: Blocked → Working
 - Pi: Blocked → Working
-
-**TurnEndedAsking**: a turn that ends on a question shows as stopped, not as a question.
-
-- Cursor: Idle, Working, Stopped, StoppedRead, Failed → Asked
 
 **Interrupted**: an interrupted turn keeps its light until the next turn or the process ends.
 
@@ -191,7 +191,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 Searched from `Gone` over the signals a harness declares and the daemon's own.
 
-- Cursor: Background, Blocked, Asked, AskedRead
+- Cursor: Background, Blocked
 - Junie: Background, Blocked
 - Pi: Background
 

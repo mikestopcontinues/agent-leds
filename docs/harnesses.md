@@ -2,7 +2,7 @@
 
 What each agent harness reports to the service and where it falls short. [design.md](design.md) covers what the service does with the reports.
 
-The service reads Claude Code's own files, and registers no hooks with it. It reads Codex's and Grok's files too, and keeps one hook with each for what they do not record. With each other harness, `agent-leds install` registers `agent-leds hook <harness>` for the events listed below; OpenCode and Pi load a plugin of ours that runs it. The hook passes the event to the daemon with the processes it runs under, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked. Whatever the hooks say, a session leaves when the process running it ends.
+The service reads Claude Code's own files, and registers no hooks with it. It reads Codex's, Grok's and Cursor's files too, and keeps a hook or two with each for what they do not record. With each other harness, `agent-leds install` registers `agent-leds hook <harness>` for the events listed below; OpenCode and Pi load a plugin of ours that runs it. The hook passes the event to the daemon with the processes it runs under, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked. Whatever the hooks say, a session leaves when the process running it ends.
 
 The harnesses took their hook events from Claude Code, so most of the names agree. Each harness reads only its own spelling. [coverage.md](coverage.md) lists every signal each harness gives, how each is known, and the moves each cannot make.
 
@@ -81,20 +81,29 @@ Every tool, read-only ones too, writes a permission request, and Grok writes eac
 
 ## Cursor
 
-Hooks are commands in `~/.cursor/hooks.json`.
+The daemon reads two things Cursor's CLI writes. Each chat's transcript, `~/.cursor/projects/<slug>/agent-transcripts/<chat>/<chat>.jsonl`, is written at the checkpoints of a turn. Each running process marks itself in `~/.local/share/cursor-agent/versions/<version>/.running/<pid>` with the name it was run by and the second it started, such as `cursor-agent|Sat Nov 14 21:54:52 2026`, or `agent|…` when run as `agent`. The CLI unlinks its marker when it quits. Its node worker, a child of the CLI, writes a `node|…` marker that outlives it. A marker names no chat, so a hook stays: `beforeSubmitPrompt`, registered in `~/.cursor/hooks.json`, binds the chat to the CLI's process. Of the hook's ancestors whose marker matches the second they started, that is the nearest whose parent has no such marker, so the worker is passed over whatever the processes are called. The hook also says that the turn started. A second hook, `stop`, is read only for its status `aborted`, because some interrupts write nothing.
 
-| Hook event | Session becomes |
+| What Cursor writes | Session becomes |
 | --- | --- |
-| `beforeSubmitPrompt`, `postToolUse`, `postToolUseFailure` | working |
-| `stop` with status `completed` | stopped |
-| `stop` with status `error` | error |
-| `sessionEnd`, `stop` with status `aborted`, or a tool aborted by an interrupt | removed |
+| `beforeSubmitPrompt`, under a marked process | working |
+| A transcript ending in a user or assistant record, after the turn's end or with more user records | working |
+| A transcript ending in `turn_ended` with status `success` | stopped, or question as a weak signal when the last assistant text ends in a question mark |
+| `turn_ended` with status `error` | error |
+| `turn_ended` with status `aborted` | removed |
+| `stop` with status `aborted`, for a bound chat | removed |
+| The bound process's marker unlinked, or the process gone | removed |
+
+The transcript is not appended to only. The first checkpoint of every turn truncates the file in place and writes it again whole, without the earlier turns' `turn_ended` records. So the daemon reads the whole file each time it changes and takes a read only if it is unchanged across the read, ends in a newline, and is not the start of the read taken before. A read caught in the middle of a rewrite is the start of that earlier read, so it is skipped. Only the last record and the count of user records matter, so rewritten history changes nothing. An interrupt before the turn's first checkpoint rewrites the previous turn's `success` as `aborted`; that reads as an interrupt. When the previous turn had already ended `aborted`, the rewrite leaves the file as it was, so only the `stop` hook tells of the interrupt. A `stop` that completes or fails is ignored, since the transcript says the same. Subagent transcripts, in the chat's `subagents/` folder, are never read. The files are undocumented; the fixtures in `tests/fixtures/cursor/`, recorded from Cursor 2026.11.13, pin what the daemon expects of them.
 
 The gaps:
 
-- No question state. Cursor expects the hooks that run before a tool to say whether the tool may run, so those are not hooked, and it has no event for a permission request. `stop` does not carry the agent's last message.
-- A session waiting for approval of a tool stays green.
-- Run without its interface (`cursor-agent -p`), Cursor sends neither `beforeSubmitPrompt` nor `stop`. Such a run shows as working from its first tool and is removed when it ends.
+- No question state. Nothing is written while a tool waits for approval, and the hooks that run before a tool fire for approved tools too, so a session waiting for approval stays green. The `AskQuestion` dialog was never offered to the model, so what it writes is unknown.
+- An error ending a turn is read from Cursor's code, not from a real session, as is the `stop` hook's status `aborted`.
+- Cursor writes a reply's reasoning after its text, in the same block. With a reasoning model, the question test reads the reasoning's last line instead of the reply's, so a question can show as stopped and a statement as a question. The probe used the Auto model, which wrote no reasoning.
+- A chat no hook bound names no process, so it does not show. That includes every chat already running when the daemon first starts with this version: it shows from its next prompt.
+- A daemon that restarts during a text-only turn shows the previous turn's end, because such a turn writes nothing until it ends.
+- After `/new`, the old chat stays bound to the process until it exits.
+- A process killed with `kill -9` leaves its marker. The daemon sees that the process is gone at its next liveness check, within seconds.
 
 ## Junie
 

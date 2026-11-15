@@ -125,8 +125,8 @@ impl Harness {
 
     fn event(self, payload: &Value) -> Option<Event> {
         match self {
-            Harness::Claude | Harness::Codex | Harness::Grok => None,
-            Harness::Cursor => cursor::event(payload),
+            // Read by sources of their own.
+            Harness::Claude | Harness::Codex | Harness::Grok | Harness::Cursor => None,
             Harness::Junie => junie::event(payload),
             Harness::OpenCode => opencode::event(payload),
             Harness::Pi => pi::event(payload),
@@ -291,7 +291,7 @@ pub fn signals(harness: Harness) -> &'static [Declared] {
         Harness::Claude => source::claude::SIGNALS,
         Harness::Codex => source::codex::SIGNALS,
         Harness::Grok => source::grok::SIGNALS,
-        Harness::Cursor => cursor::SIGNALS,
+        Harness::Cursor => source::cursor::SIGNALS,
         Harness::Junie => junie::SIGNALS,
         Harness::OpenCode => opencode::SIGNALS,
         Harness::Pi => pi::SIGNALS,

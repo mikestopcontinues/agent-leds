@@ -1,8 +1,0 @@
-{"cite": "0.5.0 hooks, probe-cursor runs A–I", "evidence": "inferred"}
-{"alive": 71001, "started_us": 1794693357000000}
-{"write": ".local/share/cursor-agent/versions/2026.11.13-eacade1/.running/71001", "text": "node|Sat Nov 14 21:55:57 2026"}
-{"expect": []}
-{"hook": {"conversation_id": "5b1f3c1e-7d0a-4a55-9a34-0c7f5f1f2b10", "session_id": "5b1f3c1e-7d0a-4a55-9a34-0c7f5f1f2b10", "generation_id": "0f6c1c2b-3a44-4e21-8d2b-5d2f4c0e9a11", "model": "default", "hook_event_name": "beforeSubmitPrompt", "cursor_version": "2026.11.13-eacade1", "workspace_roots": ["/Users/me/Code/app"], "user_email": null, "transcript_path": null, "prompt": "fix it"}, "ancestry": [{"pid": 71050, "started_us": 1794693362000000, "name": "sh"}, {"pid": 71001, "started_us": 1794693357000000, "name": "node"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
-{"expect": [["started", "hook"], ["prompted", "hook"]]}
-{"hook": {"conversation_id": "5b1f3c1e-7d0a-4a55-9a34-0c7f5f1f2b10", "session_id": "5b1f3c1e-7d0a-4a55-9a34-0c7f5f1f2b10", "generation_id": "0f6c1c2b-3a44-4e21-8d2b-5d2f4c0e9a11", "model": "default", "hook_event_name": "stop", "cursor_version": "2026.11.13-eacade1", "workspace_roots": ["/Users/me/Code/app"], "user_email": null, "transcript_path": null, "status": "error", "loop_count": 0}, "ancestry": [{"pid": 71050, "started_us": 1794693362000000, "name": "sh"}, {"pid": 71001, "started_us": 1794693357000000, "name": "node"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
-{"expect": [["started", "hook"], [["turn_ended", "turn_failed"], "hook"]]}

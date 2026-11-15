@@ -8,6 +8,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod cursor;
 #[cfg(test)]
 pub mod fixture;
 pub mod grok;
@@ -157,10 +158,14 @@ pub fn all(home: &Path, state: &Path) -> Vec<Box<dyn Source>> {
         Box::new(claude::Claude::new(home)),
         Box::new(codex::Codex::new(home)),
         Box::new(grok::Grok::new(home)),
+        Box::new(cursor::Cursor::new(home)),
     ];
     for harness in Harness::ALL {
-        if !matches!(harness, Harness::Claude | Harness::Codex | Harness::Grok) {
-            sources.push(Box::new(interim::Interim::new(harness, home, state)));
+        if !matches!(
+            harness,
+            Harness::Claude | Harness::Codex | Harness::Grok | Harness::Cursor
+        ) {
+            sources.push(Box::new(interim::Interim::new(harness, state)));
         }
     }
     sources

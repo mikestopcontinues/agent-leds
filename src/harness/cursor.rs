@@ -1,121 +1,22 @@
 //! Cursor: its hooks live in `~/.cursor/hooks.json`, under event names of
-//! its own.
+//! its own. The daemon reads its files, and needs two hooks.
 
 use std::path::Path;
 
 use anyhow::Result;
-use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Event, Harness, Hook, commands, edit_hooks, hooked, read_hooks, register, unregister};
-use crate::coverage::{Declared, Evidence};
+use super::{Harness, commands, edit_hooks, read_hooks, register, unregister};
 use crate::files;
-use crate::fsm::Signal;
 
 pub const FILE: &str = ".cursor/hooks.json";
 
-/// The hook events the daemon needs, in the order a turn produces them.
-/// Cursor expects the hooks that run before a tool to say whether it may
-/// run, and this hook must not answer that, so none of those is here.
-pub const HOOKS: [&str; 5] = [
-    "beforeSubmitPrompt",
-    "postToolUse",
-    "postToolUseFailure",
-    "stop",
-    "sessionEnd",
-];
-
-/// What Cursor's hooks tell, until its own files are read.
-pub const SIGNALS: &[Declared] = &[
-    hooked(
-        Signal::Started,
-        Evidence::Observed,
-        "any hook, run under the process that Cursor's .running marker names",
-        "0.5.0 hooks, probe-cursor runs A–I",
-    ),
-    hooked(
-        Signal::Prompted,
-        Evidence::Observed,
-        "beforeSubmitPrompt, postToolUse or postToolUseFailure",
-        "0.5.0 hooks, probe-cursor runs A–I",
-    ),
-    hooked(
-        Signal::TurnEnded,
-        Evidence::Observed,
-        "stop, whatever its status",
-        "0.5.0 hooks, probe-cursor runs A–I",
-    ),
-    hooked(
-        Signal::TurnFailed,
-        Evidence::Inferred,
-        "stop with status error; not reproduced in the probe",
-        "0.5.0 hooks, probe-cursor runs A–I",
-    ),
-    hooked(
-        Signal::Interrupted,
-        Evidence::Observed,
-        "stop with status aborted, or postToolUseFailure cut short by an interrupt",
-        "0.5.0 hooks, probe-cursor runs A–I",
-    ),
-    hooked(
-        Signal::Ended,
-        Evidence::Observed,
-        "sessionEnd, or the marked Cursor process gone",
-        "0.5.0 hooks, probe-cursor runs A–I",
-    ),
-];
-
-/// A hook payload as Cursor spells it.
-#[derive(Deserialize)]
-struct Payload {
-    hook_event_name: String,
-    /// How a turn ended.
-    status: Option<String>,
-    /// Whether a failed tool was cut short by the user.
-    #[serde(default)]
-    is_interrupt: bool,
-    /// Cursor calls the session a conversation everywhere but at its end.
-    conversation_id: Option<String>,
-    session_id: Option<String>,
-    #[serde(default)]
-    workspace_roots: Vec<String>,
-}
-
-pub fn event(payload: &Value) -> Option<Event> {
-    let payload = Payload::deserialize(payload).ok()?;
-    let hook = match payload.hook_event_name.as_str() {
-        "beforeSubmitPrompt" => Hook::UserPromptSubmit,
-        "postToolUse" => Hook::PostToolUse,
-        // An aborted tool means the user interrupted the turn.
-        "postToolUseFailure" if payload.is_interrupt => Hook::Interrupt,
-        "postToolUseFailure" => Hook::PostToolUseFailure,
-        // Cursor has one event for the end of a turn and says how it ended.
-        "stop"
-            if matches!(
-                payload.status.as_deref(),
-                Some("completed" | "aborted" | "error")
-            ) =>
-        {
-            Hook::Stop
-        }
-        "sessionEnd" => Hook::SessionEnd,
-        _ => return None,
-    };
-    Some(Event {
-        hook,
-        session: payload.conversation_id.or(payload.session_id)?,
-        cwd: payload
-            .workspace_roots
-            .into_iter()
-            .next()
-            .unwrap_or_default(),
-        // Cursor does not pass the agent's last message to a hook.
-        asks: false,
-        interrupted: hook == Hook::Stop && payload.status.as_deref() == Some("aborted"),
-        failed: hook == Hook::Stop && payload.status.as_deref() == Some("error"),
-        subagent: false,
-    })
-}
+/// The hook events the daemon needs. A prompt given as an argument or a
+/// text-only turn writes nothing until the turn ends, and no file names
+/// the process a chat runs in, so the prompt's hook says both. An
+/// interrupt before the turn's first checkpoint can write nothing, so the
+/// stop hook says it.
+pub const HOOKS: [&str; 2] = ["beforeSubmitPrompt", "stop"];
 
 fn is_ours(entry: &Value) -> bool {
     entry["command"]
@@ -154,75 +55,8 @@ pub fn uninstall(home: &Path) -> Result<()> {
 mod tests {
     use std::fs;
 
-    use super::super::tests::{Home, signals};
+    use super::super::tests::Home;
     use super::*;
-    use crate::fsm::Signal;
-
-    /// A payload with the fields Cursor sends on every event of a turn.
-    fn event(name: &str, extra: Value) -> Option<Vec<Signal>> {
-        let mut event = json!({
-            "conversation_id": "5b1f3c1e-7d0a-4a55-9a34-0c7f5f1f2b10",
-            "session_id": "5b1f3c1e-7d0a-4a55-9a34-0c7f5f1f2b10",
-            "generation_id": "0f6c1c2b-3a44-4e21-8d2b-5d2f4c0e9a11",
-            "model": "default",
-            "hook_event_name": name,
-            "cursor_version": "2026.05.28-a70ca7c",
-            "workspace_roots": ["/Users/me/Code/app"],
-            "user_email": null,
-            "transcript_path": null,
-        });
-        event
-            .as_object_mut()
-            .unwrap()
-            .extend(extra.as_object().unwrap().clone());
-        signals(Harness::Cursor, event)
-    }
-
-    #[test]
-    fn maps_a_turn() {
-        let working = Some(vec![Signal::Prompted]);
-        assert_eq!(
-            event("beforeSubmitPrompt", json!({ "prompt": "fix it" })),
-            working
-        );
-        assert_eq!(
-            event("postToolUse", json!({ "tool_name": "Shell" })),
-            working
-        );
-        assert_eq!(
-            event(
-                "postToolUseFailure",
-                json!({ "tool_name": "Shell", "failure_type": "error", "is_interrupt": false })
-            ),
-            working
-        );
-        assert_eq!(
-            event(
-                "postToolUseFailure",
-                json!({ "tool_name": "Shell", "failure_type": "error", "is_interrupt": true })
-            ),
-            Some(vec![Signal::Interrupted])
-        );
-        assert_eq!(
-            event("sessionEnd", json!({ "reason": "user_close" })),
-            Some(vec![Signal::Ended])
-        );
-        assert_eq!(event("preToolUse", json!({ "tool_name": "Shell" })), None);
-    }
-
-    #[test]
-    fn a_stop_says_how_the_turn_ended() {
-        let stop = |status: &str| event("stop", json!({ "status": status, "loop_count": 0 }));
-        assert_eq!(stop("completed"), Some(vec![Signal::TurnEnded]));
-        assert_eq!(
-            stop("aborted"),
-            Some(vec![Signal::TurnEnded, Signal::Interrupted])
-        );
-        assert_eq!(
-            stop("error"),
-            Some(vec![Signal::TurnEnded, Signal::TurnFailed])
-        );
-    }
 
     #[test]
     fn installing_twice_changes_nothing_and_uninstalling_leaves_the_rest() {
@@ -243,11 +77,11 @@ mod tests {
             installed["hooks"]["preToolUse"],
             theirs["hooks"]["preToolUse"]
         );
-        assert_eq!(installed["hooks"]["stop"][0], theirs["hooks"]["stop"][0]);
-        assert_eq!(
-            installed["hooks"]["stop"][1],
-            json!({ "command": "/bin/agent-leds hook cursor", "timeout": 5 })
-        );
+        let ours = json!({ "command": "/bin/agent-leds hook cursor", "timeout": 5 });
+        let mut stop = theirs["hooks"]["stop"].as_array().unwrap().clone();
+        stop.push(ours.clone());
+        assert_eq!(installed["hooks"]["stop"], json!(stop));
+        assert_eq!(installed["hooks"]["beforeSubmitPrompt"], json!([ours]));
         install(&home, Path::new("/bin/agent-leds")).unwrap();
         assert_eq!(home.json(FILE), installed);
 
@@ -263,5 +97,37 @@ mod tests {
         let installed = home.json(FILE);
         assert_eq!(installed["version"], 1);
         assert_eq!(installed["hooks"].as_object().unwrap().len(), HOOKS.len());
+    }
+
+    #[test]
+    fn installing_over_0_5_0_leaves_only_the_prompt_and_stop_hooks() {
+        let ours = json!([{ "command": "/opt/homebrew/bin/agent-leds hook cursor", "timeout": 5 }]);
+        let mut hooks = serde_json::Map::new();
+        for event in [
+            "beforeSubmitPrompt",
+            "postToolUse",
+            "postToolUseFailure",
+            "stop",
+            "sessionEnd",
+        ] {
+            hooks.insert(event.into(), ours.clone());
+        }
+        let home = Home::new();
+        home.write(FILE, &json!({ "version": 1, "hooks": hooks }).to_string());
+        assert!(
+            Harness::Cursor
+                .check(&home, Path::new("/opt/homebrew/bin/agent-leds"))
+                .unwrap_err()
+                .to_string()
+                .contains("a hook this version does not use")
+        );
+        install(&home, Path::new("/opt/homebrew/bin/agent-leds")).unwrap();
+        assert_eq!(
+            home.json(FILE),
+            json!({ "version": 1, "hooks": { "beforeSubmitPrompt": ours, "stop": ours } })
+        );
+        Harness::Cursor
+            .check(&home, Path::new("/opt/homebrew/bin/agent-leds"))
+            .unwrap();
     }
 }
