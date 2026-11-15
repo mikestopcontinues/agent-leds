@@ -113,9 +113,6 @@ const PERMISSION_REQUEST: &str = "PermissionRequest";
 struct Meta {
     #[serde(rename = "type")]
     kind: String,
-    /// When the record was written: a new thread's at its first prompt, after
-    /// its process took the lock.
-    timestamp: Option<String>,
     payload: MetaPayload,
 }
 
@@ -379,7 +376,15 @@ impl Codex {
 
     /// Looks at a thread's lock again: a process that took it, quit, or
     /// handed it to another. A rollout the caller knows of is `found`.
-    fn look(&mut self, k: &dyn Kernel, id: &str, found: Option<&Path>, out: &mut Vec<Observation>) {
+    /// True when it starts following the thread, whose rollout is then to
+    /// be read back.
+    fn look(
+        &mut self,
+        k: &dyn Kernel,
+        id: &str,
+        found: Option<&Path>,
+        out: &mut Vec<Observation>,
+    ) -> bool {
         let lock = self.lock(id);
         let taken = fs::metadata(&lock).and_then(|metadata| metadata.modified());
         if let Some(thread) = self.threads.get(id) {
@@ -388,7 +393,7 @@ impl Codex {
                 Err(_) => {}
                 // Still the process that took it. A killed process leaves
                 // its lock unlocked, which the sweep finds.
-                Ok(taken) if *taken == thread.taken => return,
+                Ok(taken) if *taken == thread.taken => return false,
                 // Taken by another process, as a resume after a crash does:
                 // the one before is gone.
                 Ok(_) => {}
@@ -403,33 +408,34 @@ impl Codex {
         }
         let Ok(taken) = taken else {
             self.others.remove(id);
-            return;
+            return false;
         };
         if self.others.contains(id) {
-            return;
+            return false;
         }
         let liveness = Liveness::Lock { path: lock };
         // Left behind by a process that was killed.
         if !liveness::alive(k, &liveness) {
-            return;
+            return false;
         }
         // A thread opened in the TUI has no rollout until its first prompt.
         let Some(rollout) = found.map(Path::to_owned).or_else(|| self.find(id)) else {
-            return;
+            return false;
         };
         // A first line caught half written is read again at the next event.
         let Ok(Some(meta)) = meta(&rollout) else {
-            return;
+            return false;
         };
         if !meta.users() {
             self.others.insert(id.to_owned());
-            return;
+            return false;
         }
         let start = taken
             .duration_since(UNIX_EPOCH)
             .map_or(0, |since| since.as_secs() as i64);
-        let Ok(tail) = open(&rollout, &meta, start) else {
-            return;
+        // At the end until the rollout is read back.
+        let Ok(tail) = Tail::at_end(&rollout) else {
+            return false;
         };
         out.push(observation(
             id,
@@ -458,6 +464,21 @@ impl Codex {
                 told: Told::default(),
             },
         );
+        true
+    }
+
+    /// Follows a thread: its lock, then what its rollout says.
+    fn follow(
+        &mut self,
+        k: &dyn Kernel,
+        id: &str,
+        found: Option<&Path>,
+        out: &mut Vec<Observation>,
+    ) {
+        if self.look(k, id, found, out) {
+            self.read_back(id, out);
+        }
+        self.read(id, out);
     }
 
     /// Reads what was appended to a thread's rollout.
@@ -489,33 +510,43 @@ impl Codex {
         }
     }
 
-    /// Where the tail of a thread's rollout leaves it: back to where its
-    /// last turn began, or as far as `tail_back` reads. What was written
-    /// before the lock was taken is history of a process before this one,
-    /// as after a resume or a crash, and says nothing.
-    fn seed_rollout(&mut self, id: &str) -> io::Result<()> {
+    /// Reads the rollout of a thread `look` started following back from its
+    /// end, to where its last turn began or as far as `tail_back` reads, and
+    /// tells what that says: at most 16 MiB of a resumed thread's rollout,
+    /// which can be gigabytes long. What was written before
+    /// the lock was taken is history of a process before this one, as after
+    /// a resume or a crash, and says nothing.
+    fn read_back(&mut self, id: &str, out: &mut Vec<Observation>) {
         let thread = self.threads.get_mut(id).expect("started");
         let start = thread.start;
-        let read = |line: &Vec<u8>| Record::read(line).filter(|record| !record.before(start));
         // Back to the last turn's start, or to what an earlier process wrote.
-        let (lines, tail) = tail::tail_back(&thread.rollout, |lines| {
+        let read = tail::tail_back(&thread.rollout, |lines| {
             let mut records = lines.iter().filter_map(|line| Record::read(line));
             records.any(|record| record.starts_turn() || record.before(start))
-        })?;
-        thread.tail = tail;
+        });
+        let lines = match read {
+            Ok((lines, tail)) => {
+                thread.tail = tail;
+                lines
+            }
+            Err(error) => {
+                // The thread is still followed, from what it writes next.
+                eprintln!("agent-leds: reading {}: {error}", thread.rollout.display());
+                return;
+            }
+        };
+        let read = |line: &Vec<u8>| Record::read(line).filter(|record| !record.before(start));
         let records: Vec<Record> = lines.iter().filter_map(read).collect();
-        let mut history = Vec::new();
         // A turn's work with neither its start nor its end: the turn began
-        // further back than a seed reads.
+        // further back than `tail_back` reads.
         let bounded = |record: &Record| record.starts_turn() || record.ends_turn();
         if !records.iter().any(bounded) && records.iter().any(Record::is_work) {
             thread.open = true;
-            tell(id, thread, Channel::File, [Signal::Prompted], &mut history);
+            tell(id, thread, Channel::File, [Signal::Prompted], out);
         }
         for record in &records {
-            says(id, thread, record, &mut history);
+            says(id, thread, record, out);
         }
-        Ok(())
     }
 }
 
@@ -538,18 +569,6 @@ fn meta(path: &Path) -> io::Result<Option<Meta>> {
     Ok(serde_json::from_slice(&line).ok())
 }
 
-/// A thread's rollout, opened at its start if its first record was written
-/// after the lock was taken at `start`, as a new thread's is at its first
-/// prompt; at its end if not, as for a resumed thread, whose rollout so far
-/// is history.
-fn open(path: &Path, meta: &Meta, start: i64) -> io::Result<Tail> {
-    if written(meta.timestamp.as_deref()) >= start {
-        Tail::at_start(path)
-    } else {
-        Tail::at_end(path)
-    }
-}
-
 /// The Unix second of a record's time, "2026-11-14T21:58:34.284Z"; a record
 /// without one is as old as can be.
 fn written(timestamp: Option<&str>) -> i64 {
@@ -559,9 +578,6 @@ fn written(timestamp: Option<&str>) -> i64 {
 /// What one rollout record says. Each detector says only its own fact; the
 /// table's order decides what they come to.
 fn says(id: &str, thread: &mut Thread, record: &Record, out: &mut Vec<Observation>) {
-    if record.before(thread.start) {
-        return;
-    }
     let payload = &record.payload;
     // A turn whose start was not read is named by its other records.
     if thread.open && thread.turn.is_none() {
@@ -690,15 +706,11 @@ impl Source for Codex {
         let mut seeded = Vec::new();
         for id in self.locked_ids() {
             let mut started = Vec::new();
-            self.look(k, &id, None, &mut started);
-            if !self.threads.contains_key(&id) {
+            if !self.look(k, &id, None, &mut started) {
                 continue;
             }
-            if let Err(error) = self.seed_rollout(&id) {
-                // The thread is still followed, from what it writes next.
-                let thread = &self.threads[&id];
-                eprintln!("agent-leds: reading {}: {error}", thread.rollout.display());
-            }
+            // Only where the rollout leaves the thread is told.
+            self.read_back(&id, &mut Vec::new());
             let turn = self.threads[&id].turn.clone();
             for o in &mut started {
                 o.turn = turn.clone();
@@ -748,8 +760,7 @@ impl Source for Codex {
         }
         let mut out = Vec::new();
         for (id, rollout) in changed {
-            self.look(k, &id, rollout.as_deref(), &mut out);
-            self.read(&id, &mut out);
+            self.follow(k, &id, rollout.as_deref(), &mut out);
         }
         out
     }
@@ -767,8 +778,7 @@ impl Source for Codex {
             return Vec::new();
         };
         let mut out = Vec::new();
-        self.look(k, id, None, &mut out);
-        self.read(id, &mut out);
+        self.follow(k, id, None, &mut out);
         if let Some(thread) = self.threads.get_mut(id)
             && thread.open
             && thread.turn.as_ref().is_some_and(|open| open.0 == turn)
@@ -914,6 +924,40 @@ mod tests {
     fn a_subagent_given_a_followup_task_keeps_the_turn_in_the_background() {
         let replay = replay("a_subagent_given_a_followup_task_keeps_the_turn_in_the_background");
         assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn a_resume_seen_with_its_first_prompt_shows_working() {
+        let replay = replay("a_resume_seen_with_its_first_prompt_shows_working");
+        assert_eq!(phase(&replay), Phase::Working);
+    }
+
+    #[test]
+    fn a_resume_reads_none_of_the_history_before_its_lock() {
+        let replay = replay("a_resumed_rollout_does_not_replay");
+        let home = replay.home.path();
+        let rollout = home.join(ROLLOUT);
+        let lock =
+            home.join(".codex/thread-writer-locks/01a1dc11-270f-7323-9536-360e91c12739.lock");
+        // Output an earlier process's turn wrote, more than one read takes.
+        let output = format!(
+            "{{\"timestamp\": \"2026-11-14T21:58:38.000Z\", \"type\": \"response_item\", \"payload\": {{\"type\": \"function_call_output\", \"call_id\": \"call_1\", \"output\": \"{}\"}}}}\n",
+            "x".repeat(1 << 20)
+        );
+        let mut file = fs::OpenOptions::new().append(true).open(&rollout).unwrap();
+        for _ in 0..20 {
+            std::io::Write::write_all(&mut file, output.as_bytes()).unwrap();
+        }
+        let mut source = replay.source();
+        let told = source.changed(&replay.kernel, Some(&[lock]));
+        assert!(matches!(
+            told[..],
+            [Observation {
+                event: Event::Started(_),
+                ..
+            }]
+        ));
+        assert!(!source.behind());
     }
 
     #[test]
