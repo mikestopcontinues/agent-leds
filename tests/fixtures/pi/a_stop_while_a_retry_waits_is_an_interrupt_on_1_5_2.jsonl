@@ -1,0 +1,21 @@
+{"cite":"gaps-pi sig152: Pi 1.5.2, the session's header and a 500 stopped during the retry's wait, which aborts no run's signal but sets agent_settled's own aborted","evidence":"observed"}
+{"alive":85599,"started_us":1794756420332000}
+{"expect":[]}
+{"hook":{"event":"session_start","session":"01a1dfd1-a393-755d-af32-fdf97c04d554","pid":85599,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-27-00-500Z_01a1dfd1-a393-755d-af32-fdf97c04d554.jsonl"},"ancestry":[{"pid":85599,"started_us":1794756420332000},{"pid":500,"started_us":1794692357000000}]}
+{"expect":[["started","hook"]]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-27-00-500Z_01a1dfd1-a393-755d-af32-fdf97c04d554.jsonl","line":{"type":"session","version":3,"id":"01a1dfd1-a393-755d-af32-fdf97c04d554","timestamp":"2026-11-15T15:27:00.500Z","cwd":"/Users/me/Code/app"}}
+{"expect":[]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-27-00-500Z_01a1dfd1-a393-755d-af32-fdf97c04d554.jsonl","line":{"type":"model_change","id":"bcb033b0","parentId":null,"timestamp":"2026-11-15T15:27:00.614Z","provider":"fake","modelId":"fake"}}
+{"expect":[]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-27-00-500Z_01a1dfd1-a393-755d-af32-fdf97c04d554.jsonl","line":{"type":"thinking_level_change","id":"be8a34bb","parentId":"bcb033b0","timestamp":"2026-11-15T15:27:00.614Z","thinkingLevel":"off"}}
+{"expect":[]}
+{"hook":{"event":"agent_start","session":"01a1dfd1-a393-755d-af32-fdf97c04d554","pid":85599,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-27-00-500Z_01a1dfd1-a393-755d-af32-fdf97c04d554.jsonl"},"ancestry":[{"pid":85599,"started_us":1794756420332000},{"pid":500,"started_us":1794692357000000}]}
+{"expect":[["started","hook"],["prompted","hook"]]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-27-00-500Z_01a1dfd1-a393-755d-af32-fdf97c04d554.jsonl","line":{"type":"message","id":"8a7017eb","parentId":"0bee1790","timestamp":"2026-11-15T15:27:14.712Z","message":{"role":"user","content":[{"type":"text","text":"fail500always again"}],"timestamp":1794756434619}}}
+{"expect":[["prompted","file"]]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-27-00-500Z_01a1dfd1-a393-755d-af32-fdf97c04d554.jsonl","line":{"type":"message","id":"8c18007f","parentId":"8a7017eb","timestamp":"2026-11-15T15:27:14.717Z","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"fake","model":"fake","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1794756434713,"errorMessage":"500: {\"message\":\"fake internal server error\"}","durationMs":3,"thinkingLevel":"off"}}}
+{"expect":[]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-27-00-500Z_01a1dfd1-a393-755d-af32-fdf97c04d554.jsonl","line":{"type":"context_edit","id":"7adf6560","parentId":"8c18007f","timestamp":"2026-11-15T15:27:14.717Z","targetId":"8c18007f","replacement":null}}
+{"expect":[]}
+{"hook":{"event":"agent_settled","session":"01a1dfd1-a393-755d-af32-fdf97c04d554","aborted":true,"stop_reason":"error"},"ancestry":[{"pid":85599,"started_us":1794756420332000},{"pid":500,"started_us":1794692357000000}]}
+{"expect":[[["turn_failed","interrupted"],"hook"]]}

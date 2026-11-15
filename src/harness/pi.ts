@@ -12,6 +12,8 @@ const AGENT_LEDS = "__AGENT_LEDS__";
 export default function (pi: any) {
   /** Whether a run is going on, which is when a prompt to the user holds it up. */
   let running = false;
+  /** What Pi aborts when the user stops the run, as the run began. */
+  let signal: AbortSignal | undefined;
 
   const send = (ctx: any, event: string, fields: object = {}) => {
     // Without a UI no one is there to need anything: print and JSON modes,
@@ -39,6 +41,7 @@ export default function (pi: any) {
   });
   pi.on("agent_start", (_event: any, ctx: any) => {
     running = true;
+    signal = ctx.signal;
     send(ctx, "agent_start", where(ctx));
   });
   pi.on("ui_prompt_start", (_event: any, ctx: any) => {
@@ -53,9 +56,12 @@ export default function (pi: any) {
       .reverse()
       .find((entry: any) => entry.type === "message" && entry.message?.role === "assistant")?.message;
     send(ctx, "agent_settled", {
-      aborted: event.aborted === true,
+      // The signal says so on every version; 1.5.2's own field also covers
+      // a stop during a retry's wait, which aborts no run.
+      aborted: signal?.aborted === true || event.aborted === true,
       stop_reason: last?.stopReason ?? null,
     });
+    signal = undefined;
   });
   pi.on("session_shutdown", (event: any, ctx: any) => {
     // A reload keeps the session; anything else leaves it.

@@ -148,7 +148,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - OpenCode, file, observed: 1.x: that message's error a MessageAbortedError, or the message with neither finish nor error; 2.x: the run's outcome interrupted (probe-opencode T7, T8, T10; gaps oc8 (2.3.0 escape during a shell))
 - OpenCode, hook, observed: 1.x's session.error with a MessageAbortedError (probe-opencode T7, T8)
 - Pi, file, observed: an assistant message entry with stopReason aborted, or error with errorMessage exactly Operation aborted, Request was aborted or This operation was aborted (probe-pi ext084, ext152, rpc1, tui1)
-- Pi, hook, observed: agent_settled with aborted (1.5.2) or stop_reason aborted, or after an assistant entry the file says was stopped, as 0.84.4's stop during a tool is with stop_reason error (probe-pi ext084, ext152)
+- Pi, hook, observed: agent_settled with aborted: the run's abort signal, taken at agent_start, was aborted, as at a stop mid-stream and 0.84.4's stop during a tool written with stop_reason error; or 1.5.2's agent_settled says aborted, as at a stop during a retry's wait (gaps-pi sig084, sig152)
 
 ### Backgrounded
 
@@ -173,7 +173,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Junie, file, inferred: a newer sidecar for the pid naming another session, the sidecar deleted, or its process gone (probe-junie session_start notes, quit/crash; Irrlicht pid.go)
 - OpenCode, file, observed: the session's row deleted or archived (probe-opencode T13; gaps oc8 (2.3.0 session delete))
 - OpenCode, hook, observed: the process the plugin's busy named gone (probe-opencode T14, T17; gaps oc8 (2.3.0 terminal interface quit, service stopped))
-- Pi, hook, observed: session_shutdown other than for a reload, as at quit and /new, or the Pi process gone; no file records an exit (probe-pi ext084, ext152, extfork, tq1–tq6, rpc5–rpc7)
+- Pi, hook, observed: session_shutdown other than for a reload, as at quit and /new, or the Pi process gone; no file records an exit; inferred: another session's session_start or agent_start from the same Pi process, which runs one session at a time, as after a /new whose session_shutdown was lost (probe-pi ext084, ext152, extfork, tq1–tq6, rpc5–rpc7; inferred from gaps-pi sig084 with its session_shutdown removed)
 
 ## Moves each harness cannot make
 
