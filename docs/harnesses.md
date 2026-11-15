@@ -2,7 +2,7 @@
 
 What each agent harness reports to the service and where it falls short. [design.md](design.md) covers what the service does with the reports.
 
-The service reads Claude Code's own files, and registers no hooks with it. With each other harness, `agent-leds install` registers `agent-leds hook <harness>` for the events listed below; OpenCode and Pi load a plugin of ours that runs it. The hook passes the event to the daemon with the processes it runs under, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked. Whatever the hooks say, a session leaves when the process running it ends.
+The service reads Claude Code's and Junie's own files, and registers no hooks with them. With each other harness, `agent-leds install` registers `agent-leds hook <harness>` for the events listed below; OpenCode and Pi load a plugin of ours that runs it. The hook passes the event to the daemon with the processes it runs under, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked. Whatever the hooks say, a session leaves when the process running it ends.
 
 The harnesses took their hook events from Claude Code, so most of the names agree. Each harness reads only its own spelling. [coverage.md](coverage.md) lists every signal each harness gives, how each is known, and the moves each cannot make.
 
@@ -79,20 +79,27 @@ The gaps:
 
 ## Junie
 
-Hooks are groups in `~/.junie/config.json`.
+Junie keeps its folder at `$JUNIE_HOME`, or at `~/.junie` in the account's home directory, which it takes from the system and never from `$HOME`; the daemon finds it the same way. Each Junie process writes a sidecar to `processes/` naming the session it takes, and each session appends its events to `sessions/<session>/events.jsonl`, which its first prompt creates. The daemon reads both as they change, and registers no hooks: an install removes the ones an older agent-leds registered in `~/.junie/config.json`, with the file their hook kept, `~/.local/state/agent-leds/junie-session.json`.
 
-| Hook event | Session becomes |
+| What Junie writes | Session becomes |
 | --- | --- |
-| `UserPromptSubmit`, `PostToolUse` | working |
-| `Stop` whose last line ends in a question mark | question, as a weak signal |
-| `Stop` otherwise | stopped |
-| `StopFailure` | error |
-| `SessionEnd` | removed |
+| `UserPromptEvent`, or `TaskStartedEvent` when a task resumes | working |
+| A block waiting in state `INPUT_REQUIRED` with an `approvalRequest` | question |
+| An `AskAsyncRequestUpdatedEvent` or `ChoiceRequestUpdatedEvent` waiting in state `INPUT_REQUIRED` | question |
+| The waiting step written again waiting on nothing, or the user's response | working |
+| `TaskState` after an `AgentFailureEvent` or `AgentTaskFailedEvent` | error |
+| `TaskState` after a `CancelAgentEvent` | removed |
+| `TaskState` whose result's last line ends in a question mark | question, as a weak signal |
+| `TaskState` otherwise | stopped |
+| A newer sidecar for the pid naming another session, the sidecar deleted, or its process gone | removed |
+
+Junie never removes a sidecar, and one process takes session after session (the session changes once the trust screen is answered), so the sidecar with the newest `startedAt` for a pid names the session it runs, and a sidecar counts only while a process with its pid started no later than its `startedAt`. Junie writes `TaskState COMPLETED` after a failure and a cancel too, so how a task ended is read from what the task wrote before it; and it writes every block of a task again as `COMPLETED` when the task ends, which answers nothing and asks nothing. Steps are told apart by `stepId` and ordered by their place in the file, since `timestampMs` goes backwards. An events log has reached hundreds of gigabytes, as Junie writes terminal output into it, so a log is only ever read from its end, or from its start when it began after its session did. The session's folder comes from the sidecar's `projectPath`, or from a later `CurrentDirectoryUpdatedEvent` when that is empty.
 
 The gaps:
 
-- No strong question. Junie reads a hook that succeeds on `PermissionRequest` as approval, and one that says nothing on `PreToolUse` as allowing the tool, so neither is hooked.
-- Junie names the session only in `UserPromptSubmit`. The hook keeps the last one in `~/.local/state/agent-leds/junie-session.json` and takes every other event to belong to it. With two Junie sessions at once, an event goes to the one that submitted a prompt last.
+- Junie was not installed when the files were studied. Every record is taken from captures of Junie CLI 26.8.24 that others published, and the fixtures in `tests/fixtures/junie/` are those captures with the text scrubbed, so every signal is inferred until a real session confirms it.
+- What a denied permission writes, whether Esc and Ctrl-C both write `CancelAgentEvent`, whether a resume appends to the same log, and what a subagent writes in `subagents/` and `task-*/` are not known. Those logs are not read.
+- No hook is registered for `PermissionRequest` or `PreToolUse`, ever: Junie reads a hook that succeeds there as approving the request or allowing the tool.
 
 ## OpenCode
 

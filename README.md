@@ -26,7 +26,7 @@ brew install mikestopcontinues/tap/agent-leds
 agent-leds install
 ```
 
-`agent-leds install` starts the service at login. The service reads Claude Code's own files, so Claude Code gets no hooks; the install adds hooks to each other harness you use (`~/.codex`, `~/.grok`, `~/.cursor`, `~/.junie`, `~/.config/opencode`, `~/.pi`), leaving other hooks alone and removing any of its own that this version no longer uses. OpenCode and Pi get a plugin of their own instead of hooks. Run it again after you start using another harness. `brew upgrade agent-leds` is the whole upgrade: the service restarts on the new version by itself.
+`agent-leds install` starts the service at login. The service reads Claude Code's and Junie's own files, so they get no hooks; the install adds hooks to each other harness you use (`~/.codex`, `~/.grok`, `~/.cursor`, `~/.config/opencode`, `~/.pi`), leaving other hooks alone and removing any of its own that this version no longer uses. OpenCode and Pi get a plugin of their own instead of hooks. Run it again after you start using another harness. `brew upgrade agent-leds` is the whole upgrade: the service restarts on the new version by itself.
 
 If the lights don't follow your sessions, `agent-leds doctor` checks the service, the card and each harness's hooks, and says what to fix.
 
