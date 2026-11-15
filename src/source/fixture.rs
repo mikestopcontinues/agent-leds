@@ -29,12 +29,15 @@
 //!   observation of several signals is `[["<signal>", ...], "<channel>"]`.
 //!   With `"restart":
 //!   "<phase>"` that a daemon started after one of those steps shows that
-//!   phase instead: a moment its files cannot tell from another.
+//!   phase instead: a moment its files cannot tell from another, which a
+//!   daemon started any time before may show otherwise too.
 //!
 //! A line or text that is not a string is written as compact JSON. After
-//! each step the replay also holds the source to three properties: a rescan
+//! each step the replay also holds the source to four properties: a rescan
 //! yields nothing, a daemon started then shows the phases the observations
-//! reached, and reading the file steps two at a time ends in the same phases.
+//! reached, that daemon goes on through the steps after to show what the
+//! replay showed after each, and reading the file steps two at a time ends
+//! in the same phases.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -360,6 +363,23 @@ impl Replay {
         self.queue
             .sweep(|liveness| liveness::alive(&self.kernel, liveness))
     }
+
+    /// Makes a step that is not an expect, and says what the source tells
+    /// of it.
+    fn step(&mut self, source: &mut dyn Source, step: &Step) -> Vec<Observation> {
+        match step {
+            Step::Expect { .. } => unreachable!("an expect makes no change"),
+            Step::Hook { hook, ancestry } => source.hook(&self.kernel, &self.hook(hook, ancestry)),
+            step if step.file().is_some() => {
+                let path = self.write(step);
+                changed(source, &self.kernel, Some(&[path]))
+            }
+            step => {
+                self.kernel(step);
+                self.sweep()
+            }
+        }
+    }
 }
 
 /// What a source reads of files that changed, and then of whatever its
@@ -384,6 +404,8 @@ pub fn replay(harness: Harness, name: &str) -> Replay {
     // The steps since the last expect after which a restart shows another
     // phase, with the phase it shows.
     let mut differs: Vec<(usize, Phase)> = Vec::new();
+    // The phases after each step that is not an expect.
+    let mut shown: Vec<(usize, BTreeMap<Key, Phase>)> = Vec::new();
     for (index, step) in fixture.steps.iter().enumerate() {
         let number = index + 1;
         let observations = match step {
@@ -408,17 +430,7 @@ pub fn replay(harness: Harness, name: &str) -> Replay {
                 differs.clear();
                 continue;
             }
-            Step::Hook { hook, ancestry } => {
-                source.hook(&replay.kernel, &replay.hook(hook, ancestry))
-            }
-            step if step.file().is_some() => {
-                let path = replay.write(step);
-                changed(source.as_mut(), &replay.kernel, Some(&[path]))
-            }
-            step => {
-                replay.kernel(step);
-                replay.sweep()
-            }
+            step => replay.step(source.as_mut(), step),
         };
         since.extend(replay.take(observations, number));
         let again = source.changed(&replay.kernel, None);
@@ -429,6 +441,7 @@ pub fn replay(harness: Harness, name: &str) -> Replay {
         );
         let restarted = phases(&restart(&replay));
         let live = replay.phases();
+        shown.push((number, live.clone()));
         assert!(
             restarted.keys().eq(live.keys()),
             "{name}: a daemon started after step {number} follows {restarted:?}, not {live:?}"
@@ -453,7 +466,51 @@ pub fn replay(harness: Harness, name: &str) -> Replay {
         replay.phases(),
         "{name}: reading the file steps two at a time ends elsewhere"
     );
+    for &(after, _) in &shown {
+        resume(harness, name, &fixture, after, &shown);
+    }
     replay
+}
+
+/// Replays a fixture with a daemon restarted after step `after`, which must
+/// show after each later step what the replay showed there, unless that
+/// step's expect says a restart shows another phase: whatever a hook told
+/// that the files cannot, the restarted source can still take on from there.
+fn resume(
+    harness: Harness,
+    name: &str,
+    fixture: &Fixture,
+    after: usize,
+    shown: &[(usize, BTreeMap<Key, Phase>)],
+) {
+    let mut replay = Replay::new(harness, name);
+    let mut source = replay.source();
+    let seeded = source.seed(&replay.kernel, &[]).unwrap();
+    replay.take(seeded, 0);
+    for (number, live) in shown {
+        let step = &fixture.steps[number - 1];
+        let observations = replay.step(source.as_mut(), step);
+        replay.take(observations, *number);
+        if *number == after {
+            (source, replay.queue) = restarted(&replay);
+        } else if *number > after && !untold(fixture, *number) {
+            assert_eq!(
+                replay.phases(),
+                *live,
+                "{name}: a daemon started after step {after} shows this after step {number}"
+            );
+        }
+    }
+}
+
+/// Whether the expect after a step says a restart shows another phase.
+fn untold(fixture: &Fixture, number: usize) -> bool {
+    let mut after = fixture.steps[number..].iter();
+    let restart = after.find_map(|step| match step {
+        Step::Expect { restart, .. } => Some(restart.is_some()),
+        _ => None,
+    });
+    restart.unwrap_or(false)
 }
 
 /// A payload with each string that starts `~/` made a path under `home`.
@@ -520,27 +577,28 @@ fn coalesce(harness: Harness, name: &str, fixture: &Fixture) -> BTreeMap<Key, Ph
     replay.phases()
 }
 
-/// The queue a fresh source seeds from what a replay left on disk, as a
-/// daemon starting then would, given the hook-bound sessions in `bound`.
-fn seeded(replay: &Replay, bound: &[(String, Liveness)]) -> Queue {
+/// A fresh source seeded from what a replay left on disk, as a daemon
+/// starting then would, given the hook-bound sessions in `bound`, with the
+/// queue its seed makes.
+fn seeded(replay: &Replay, bound: &[(String, Liveness)]) -> (Box<dyn Source>, Queue) {
     let mut source = replay.source();
     let mut queue = Queue::default();
     for o in source.seed(&replay.kernel, bound).unwrap() {
         assert!(o.quiet, "{}: a seed announced", replay.name);
         queue.apply(&o, 0);
     }
-    queue
+    (source, queue)
 }
 
 /// The queue a fresh source seeds from what a replay left on disk alone.
 pub fn seed(replay: &Replay) -> Queue {
-    seeded(replay, &[])
+    seeded(replay, &[]).1
 }
 
-/// The queue a daemon starting now would show: a fresh source's seed,
-/// given the hook-bound sessions the replay's queue holds, restored
-/// against that queue as saved.
-pub fn restart(replay: &Replay) -> Queue {
+/// A daemon starting now: a fresh source seeded with the hook-bound
+/// sessions the replay's queue holds, and the queue it shows, that seed
+/// restored against the replay's queue as saved.
+fn restarted(replay: &Replay) -> (Box<dyn Source>, Queue) {
     let saved: Queue =
         serde_json::from_value(serde_json::to_value(&replay.queue).unwrap()).unwrap();
     let bound: Vec<(String, Liveness)> = saved
@@ -549,7 +607,13 @@ pub fn restart(replay: &Replay) -> Queue {
         .filter(|(key, _)| key.harness == replay.harness)
         .map(|(key, liveness)| (key.id, liveness))
         .collect();
-    Queue::restore(saved, seeded(replay, &bound))
+    let (source, fresh) = seeded(replay, &bound);
+    (source, Queue::restore(saved, fresh))
+}
+
+/// The queue a daemon starting now would show.
+pub fn restart(replay: &Replay) -> Queue {
+    restarted(replay).1
 }
 
 /// The phase of each session a queue tracks.

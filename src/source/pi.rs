@@ -296,7 +296,8 @@ struct Session {
     /// A background subagent's report written since the last run ended,
     /// which is the turn of a run that comes after it.
     woke: Option<TurnKey>,
-    /// Whether the extension said a dialog holds the run up.
+    /// Whether a dialog may hold the run up, which nothing is written for:
+    /// the extension said one does, or the daemon started inside the run.
     dialog: bool,
     /// Whether the last assistant entry of the turn says the user stopped it.
     stopped: bool,
@@ -636,7 +637,11 @@ impl Source for Pi {
                 let session = self.sessions.get_mut(id).expect("seeded");
                 session.tail = Tail::at_end(&file).ok();
             }
-            let session = &self.sessions[id];
+            let session = self.sessions.get_mut(id).expect("seeded");
+            // Nothing is written while a dialog is open, so one the extension
+            // told before the daemon started may be open still: the first
+            // entry after says it is not.
+            session.dialog = !session.ended;
             let (cwd, turn) = (session.cwd.clone(), session.turn.clone());
             seeded.push(Observation::new(
                 Harness::Pi,

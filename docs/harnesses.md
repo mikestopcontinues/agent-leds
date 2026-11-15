@@ -45,6 +45,7 @@ Nothing is written while an approval waits, so `agent-leds install` registers th
 A thread whose `session_meta` names a subagent, by its `source` or its `thread_source`, is never followed: its parent's rollout says when it starts and completes, and the copy of the parent's history a forked subagent's rollout opens with is never read. That leaves out the agent that consolidates Codex's memories too. A thread the desktop app opened for an agent (`thread_source` `agent_created_thread`) is followed like the user's own. When the daemon starts, and when it first sees a thread's lock, it reads the thread's rollout back to its last `task_started`, at most 16 MiB, and only what was written since the lock was taken, so a resumed thread does not replay its history and a prompt written before the lock is seen still counts. The files are undocumented; the fixtures in `tests/fixtures/codex/`, recorded from Codex 0.153.2 and the desktop app's 0.162 rollouts, pin what the daemon expects of them. The gaps:
 
 - A thread opened in the terminal shows only once its first prompt creates its rollout.
+- An approval answered while the daemon was down still shows as a question when it starts, until the turn writes its next record, since nothing is written while an approval waits.
 - An approval a subagent asks for is not seen: it is not known whether its hook names the subagent's thread or its parent's, and the subagent's thread is not followed.
 - `request_user_input_async`, the desktop app's question, does not stop the agent, so the session stays working while it waits for the answer.
 - A failing request that Codex retries leaves no record, so the session stays working until the turn ends.
@@ -151,7 +152,7 @@ The rule is OpenCode's own: its loop goes on after a step that finished on `tool
 
 The gaps:
 
-- A pending permission is in the database only as a running tool, so only the plugin says it waits. A daemon that was not running when it was asked shows the session working until it moves on.
+- A pending permission is in the database only as a running tool, so only the plugin says it waits. A daemon that was not running when it was asked shows the session working until it moves on, and one that was not running when it was replied shows it as a question until the turn ends.
 - An error before a turn's first step, such as an unknown model, is in the database at most as a prompt with no reply. OpenCode 1.19.5 goes busy before it looks the model up, so the plugin's `session.error` shows it; 1.17.3 failed that way without ever going busy. A prompt that fails before the session goes busy, for an unknown agent or command, writes nothing and is not shown.
 - A turn waiting out a provider's retries shows as working, since nothing is written while it waits.
 - A step that overflowed the context and is compacted automatically is written as a step stopped with neither finish nor error, as an abort while retrying is, and its compaction is written just after. A read between the two shows the session idle for that moment.
@@ -179,7 +180,7 @@ An error entry in the file settles nothing, because Pi may retry it; only `agent
 
 What it cannot see:
 
-- A dialog answered while the daemon was down still shows as a question when it starts, until that turn ends, since nothing written says the dialog closed.
+- A dialog answered while the daemon was down still shows as a question when it starts, until the run writes its next entry, since nothing is written while a dialog is open.
 - A daemon started while a session writes to its own `sessionDir` cannot find the file, so the session shows nothing until its next prompt names the file again.
 - The hook does not wait for the daemon, which reads the file before each hook it handles. A reply written before the daemon handles that run's `agent_start` would leave the session working until its next event; no real provider answers that fast.
 - Pi has no permission prompts of its own; extensions that add them ask through dialogs, which show as a question. A session Pi keeps no file of, as with `--no-session`, is not shown.

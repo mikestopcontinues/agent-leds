@@ -91,7 +91,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 ### Answered
 
 - Claude Code, file, observed: the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt (probe-claude cc1, cc2)
-- Codex, file, observed: the output for the pending question's call_id; or, after the approval hook, the next call output or completed item that is not a subagent's (probe-codex runA PROMPT2, DENY-ESC; codex2 (approved))
+- Codex, file, observed: the output for the pending question's call_id; or, after the approval hook or a daemon start inside a turn, the next call output, completed item that is not a subagent's, or task_complete (probe-codex runA PROMPT2, DENY-ESC; codex2 (approved))
 - Grok, file, observed: events.jsonl tool_completed for ask_user_question (probe-grok question_pending, grok5)
 - Junie, file, inferred: the last waiting step written again as COMPLETED or in a state other than INPUT_REQUIRED, or a UserAsyncResponseEvent or UserResponseEvent while a step waits (probe-junie permission_resolved, question_answered; Irrlicht real-terminal-approval, real-lifecycle-session)
 - OpenCode, hook, observed: permission.replied, for the session or a subagent's session under it (probe-opencode T3, T7, T12)

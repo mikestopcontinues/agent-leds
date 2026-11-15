@@ -58,7 +58,7 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Answered,
-        "the output for the pending question's call_id; or, after the approval hook, the next call output or completed item that is not a subagent's",
+        "the output for the pending question's call_id; or, after the approval hook or a daemon start inside a turn, the next call output, completed item that is not a subagent's, or task_complete",
         "probe-codex runA PROMPT2, DENY-ESC; codex2 (approved)",
     ),
     file(
@@ -285,7 +285,8 @@ struct Thread {
     turn: Option<TurnKey>,
     /// The call of a question the turn waits on.
     question: Option<String>,
-    /// Whether the approval hook said the turn waits.
+    /// Whether an approval may wait, which nothing is written for: the
+    /// hook said one does, or the daemon started inside the turn.
     approval: bool,
     /// The subagents the turn started, or gave a follow-up task, that have
     /// not finished. A turn's start clears them: one that never says it
@@ -596,6 +597,12 @@ fn says(id: &str, thread: &mut Thread, record: &Record, out: &mut Vec<Observatio
         thread.background = false;
         tell(id, thread, Channel::File, [Signal::Prompted], out);
     } else if record.is("event_msg", "task_complete") {
+        // No approval outlasts its turn, which would otherwise hold the
+        // wait against an end told with work running on.
+        if thread.approval {
+            thread.approval = false;
+            tell(id, thread, Channel::File, [Signal::Answered], out);
+        }
         let mut end = BTreeSet::from([Signal::TurnEnded]);
         let message = payload.last_agent_message.as_deref().unwrap_or_default();
         if ends_on_question(message) || proposes_plan(message) {
@@ -697,7 +704,12 @@ impl Source for Codex {
             }
             // Only where the rollout leaves the thread is told.
             self.read_back(&id, &mut Vec::new());
-            let turn = self.threads[&id].turn.clone();
+            let thread = self.threads.get_mut(&id).expect("followed");
+            // Nothing is written while an approval waits, so one the hook
+            // told before the daemon started may wait still: the first
+            // record after says none does.
+            thread.approval = thread.open && thread.question.is_none();
+            let turn = thread.turn.clone();
             for o in &mut started {
                 o.turn = turn.clone();
             }
@@ -956,6 +968,12 @@ mod tests {
     fn the_first_record_after_a_hook_permission_answers_it() {
         let replay = replay("the_first_record_after_a_hook_permission_answers_it");
         assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn a_turn_that_ends_after_a_late_approval_hook_lets_the_wait_go() {
+        let replay = replay("a_turn_that_ends_after_a_late_approval_hook_lets_the_wait_go");
+        assert_eq!(phase(&replay), Phase::Background);
     }
 
     #[test]
