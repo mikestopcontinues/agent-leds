@@ -4,18 +4,23 @@
 //! `~/.codex/sessions/YYYY/MM/DD/rollout-<time>-<thread>.jsonl`, a record at
 //! a time: when each turn starts and how it ends, what it asks, and the
 //! subagents it starts. Nothing is written while an approval waits, so the
-//! `PermissionRequest` hook says that.
+//! `PermissionRequest` hook says that. Two of its databases say what a turn
+//! end leads to: `goals_1.sqlite`, whether Codex goes on with the thread's
+//! goal by itself or the goal waits on the user, and `queue_1.sqlite`,
+//! whether a prompt the user queued starts next.
 //!
 //! The files are undocumented. What they say at each moment of a session
-//! was taken from Codex 0.153.2, and the desktop app's rollouts up to 0.162.
+//! was taken from Codex 0.153.2, and the desktop app's rollouts and
+//! databases up to 0.162.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 use serde_json::Value;
@@ -23,7 +28,7 @@ use serde_json::Value;
 use super::tail::{self, Lines, MAX_LINE, Tail};
 use super::{Event, Hook, Observation, Seed, Source, Start, Told, Unread};
 use crate::coverage::{Declared, Evidence};
-use crate::fsm::{Channel, Signal};
+use crate::fsm::{self, Channel, Phase, Signal};
 use crate::harness::{Harness, ends_on_question};
 use crate::liveness::{self, Kernel, Liveness};
 use crate::queue::TurnKey;
@@ -48,8 +53,8 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Prompted,
-        "event_msg task_started, keyed by its turn_id",
-        "probe-codex runA, runB, runC",
+        "event_msg task_started, keyed by its turn_id; or task_complete while queue_1.sqlite holds a prompt queued for the thread, which Codex starts next",
+        "probe-codex runA, runB, runC; the queue from Codex 0.162's schema and a desktop rollout's queued turn, 2026-10-11, its row unseen",
     ),
     file(
         Signal::QuestionAsked,
@@ -68,8 +73,8 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::TurnEndedAsking,
-        "task_complete whose last_agent_message's last line ends in a question mark, or that holds a <proposed_plan> block, which no rollout has shown yet",
-        "probe-codex runA PROMPT6",
+        "task_complete whose last_agent_message's last line ends in a question mark, or that holds a <proposed_plan> block, which no rollout has shown yet; or while an item of a request_user_input_async call has no answer since the last prompt the user typed, or the thread's goal in goals_1.sqlite went blocked, usage_limited or budget_limited at or after the turn's started_at",
+        "probe-codex runA PROMPT6; desktop rollouts 0.162 and goals_1.sqlite, 2026-10-14 and 2026-10-15",
     ),
     file(
         Signal::TurnFailed,
@@ -83,13 +88,13 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Backgrounded,
-        "task_complete while a subagent the turn started, or gave a followup_task, has not completed",
-        "probe-codex runA PROMPT5; desktop rollout 2026-10-13",
+        "task_complete while a subagent the turn started, or gave a followup_task, has not completed, or while the thread's goal in goals_1.sqlite is active with no continuation deferral, which Codex goes on with by itself",
+        "probe-codex runA PROMPT5; desktop rollouts 2026-10-13 and 2026-10-15",
     ),
     file(
         Signal::BackgroundDone,
-        "the last such subagent's SubAgentActivity completed or interrupted, after the turn ended",
-        "probe-codex runA PROMPT5; desktop rollout 2026-10-13",
+        "after the turn ended, the last such subagent's SubAgentActivity completed or interrupted, or the goal no longer active, with neither left",
+        "probe-codex runA PROMPT5; desktop rollout 2026-10-13; the goal from Codex 0.162's statements on goals_1.sqlite, unseen",
     ),
     file(
         Signal::Ended,
@@ -152,6 +157,9 @@ struct Record {
     timestamp: Option<String>,
     #[serde(default)]
     payload: Payload,
+    /// The async question items a user message answers.
+    #[serde(skip)]
+    answers: Vec<(String, usize)>,
 }
 
 #[derive(Default, Deserialize)]
@@ -159,14 +167,106 @@ struct Payload {
     #[serde(rename = "type")]
     kind: Option<String>,
     turn_id: Option<String>,
+    /// What started a turn, which the desktop app and Codex 0.163 write.
+    turn_attribution: Option<Attribution>,
     last_agent_message: Option<String>,
+    /// The Unix second a turn started, which its task_complete also says.
+    started_at: Option<i64>,
     /// Why a turn was aborted: `interrupted`, or `replaced` by a new turn.
     reason: Option<String>,
     error: Option<IgnoredAny>,
     /// A function call's tool, with or without its namespace.
     name: Option<String>,
     call_id: Option<String>,
+    /// A function call's arguments, as JSON in a string.
+    arguments: Option<String>,
+    /// A message's author: `user`, `assistant` or `developer`.
+    role: Option<String>,
     item: Option<Item>,
+}
+
+#[derive(Default, Deserialize)]
+struct Attribution {
+    /// `composer`, `queue` or `remote_android` for a prompt the user typed;
+    /// `goal`, `automation_heartbeat_scheduled`, `app_tool_send_message`,
+    /// `send_user_message_async_question` or `capacity_retry_automatic` for
+    /// a turn Codex started; `exec` for `codex exec`.
+    turn_trigger: Option<String>,
+}
+
+/// The triggers of a turn the user started by typing a prompt: in the
+/// composer, queued while a turn ran, or from the phone.
+const TYPED: &[&str] = &["composer", "queue", "remote_android"];
+
+/// The desktop app's question, which does not stop the turn.
+const ASYNC_QUESTION: &str = "request_user_input_async";
+
+/// The block a user message answers async question items in.
+const ANSWER_OPEN: &str = "<send_user_message_question_reply>";
+const ANSWER_CLOSE: &str = "</send_user_message_question_reply>";
+
+/// The question items a user message answers, as the desktop app writes an
+/// answer to `request_user_input_async`: a block of JSON naming each item as
+/// a JSON array in a string, `[{"questionItemId":
+/// "[\"request_user_input_async\",\"call_…\",0]", "answer": …}]`.
+fn answers(line: &[u8]) -> Vec<(String, usize)> {
+    #[derive(Deserialize)]
+    struct Message {
+        payload: Content,
+    }
+    #[derive(Deserialize)]
+    struct Content {
+        content: Vec<Text>,
+    }
+    #[derive(Deserialize)]
+    struct Text {
+        text: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct Answer {
+        #[serde(rename = "questionItemId")]
+        item: String,
+    }
+    let Ok(message) = serde_json::from_slice::<Message>(line) else {
+        return Vec::new();
+    };
+    let mut answered = Vec::new();
+    for text in message
+        .payload
+        .content
+        .iter()
+        .filter_map(|t| t.text.as_deref())
+    {
+        let block = text
+            .split_once(ANSWER_OPEN)
+            .and_then(|(_, rest)| rest.split_once(ANSWER_CLOSE));
+        let Some((block, _)) = block else {
+            continue;
+        };
+        let Ok(items) = serde_json::from_str::<Vec<Answer>>(block.trim()) else {
+            continue;
+        };
+        for Answer { item } in items {
+            if let Ok((tool, call, index)) = serde_json::from_str::<(String, String, usize)>(&item)
+                && tool == ASYNC_QUESTION
+            {
+                answered.push((call, index));
+            }
+        }
+    }
+    answered
+}
+
+/// How many question items an async question's arguments hold, each
+/// answered on its own; one when they cannot be read.
+fn items(arguments: Option<&str>) -> usize {
+    #[derive(Deserialize)]
+    struct Arguments {
+        #[serde(default)]
+        questions: Vec<IgnoredAny>,
+    }
+    let arguments = arguments.and_then(|text| serde_json::from_str::<Arguments>(text).ok());
+    arguments.map_or(1, |arguments| arguments.questions.len().max(1))
 }
 
 /// An item an `item_completed` record completes.
@@ -186,7 +286,11 @@ struct Item {
 
 impl Record {
     fn read(line: &[u8]) -> Option<Record> {
-        serde_json::from_slice(line).ok()
+        let mut record: Record = serde_json::from_slice(line).ok()?;
+        if record.is("response_item", "message") && record.payload.role.as_deref() == Some("user") {
+            record.answers = answers(line);
+        }
+        Some(record)
     }
 
     /// Whether the record was written before a process took the thread's
@@ -201,6 +305,13 @@ impl Record {
 
     fn starts_turn(&self) -> bool {
         self.is("event_msg", "task_started")
+    }
+
+    /// Whether the record starts a turn the user typed the prompt of.
+    fn starts_typed_turn(&self) -> bool {
+        let trigger = self.payload.turn_attribution.as_ref();
+        let trigger = trigger.and_then(|attribution| attribution.turn_trigger.as_deref());
+        self.starts_turn() && trigger.is_some_and(|trigger| TYPED.contains(&trigger))
     }
 
     fn ends_turn(&self) -> bool {
@@ -270,6 +381,145 @@ fn proposes_plan(message: &str) -> bool {
     lines.any(|line| line == "<proposed_plan>") && lines.any(|line| line == "</proposed_plan>")
 }
 
+/// Where a thread's goal stands in `goals_1.sqlite`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Goal {
+    /// None, or one paused, complete, or active with its continuation
+    /// deferred: nothing goes on by itself.
+    #[default]
+    Quiet,
+    /// Active with no deferral: Codex starts the goal's next turn itself.
+    Active,
+    /// Blocked, or stopped at the usage or the token budget limit, since the
+    /// turn began: it waits on the user. Codex leaves a goal so while the
+    /// user goes on in the thread, and a goal that stopped before the turn
+    /// is no news at its end.
+    Waiting,
+}
+
+/// Codex's databases, each opened read-only for one read and closed again.
+struct Databases {
+    goals: PathBuf,
+    queue: PathBuf,
+}
+
+const GOAL: &str = "select status, updated_at_ms, exists(select 1 from thread_goal_continuation_deferrals \
+     where thread_goal_continuation_deferrals.thread_id = thread_goals.thread_id) \
+     from thread_goals where thread_id = ?1";
+const QUEUED: &str = "select exists(select 1 from queued_items where thread_id = ?1)";
+
+impl Databases {
+    fn new(codex: &Path) -> Databases {
+        Databases {
+            goals: codex.join("goals_1.sqlite"),
+            queue: codex.join("queue_1.sqlite"),
+        }
+    }
+
+    /// Whether a change to `path` can be a commit to the goals.
+    fn goals_changed(&self, path: &Path) -> bool {
+        let wal = wal(&self.goals);
+        path == self.goals || path == wal
+    }
+
+    /// The goal of `thread` for a turn that began at the Unix second
+    /// `since`; Quiet when the database cannot be read, which is said.
+    fn goal(&self, thread: &str, since: Option<i64>) -> Goal {
+        let read = query(&self.goals, GOAL, thread, |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, bool>(2)?,
+            ))
+        });
+        // The second a turn began holds its start, so a change in it counts.
+        let lately = |updated: i64| since.is_some_and(|since| updated >= since * 1000);
+        match read {
+            Ok(Some((status, updated, deferred))) => match status.as_str() {
+                "active" if !deferred => Goal::Active,
+                "blocked" | "usage_limited" | "budget_limited" if lately(updated) => Goal::Waiting,
+                _ => Goal::Quiet,
+            },
+            Ok(None) => Goal::Quiet,
+            Err(error) => {
+                eprintln!("agent-leds: reading {}: {error}", self.goals.display());
+                Goal::Quiet
+            }
+        }
+    }
+
+    /// Whether the user queued a prompt for `thread`; not when the database
+    /// cannot be read, which is said.
+    fn queued(&self, thread: &str) -> bool {
+        match query(&self.queue, QUEUED, thread, |row| row.get(0)) {
+            Ok(queued) => queued.unwrap_or(false),
+            Err(error) => {
+                eprintln!("agent-leds: reading {}: {error}", self.queue.display());
+                false
+            }
+        }
+    }
+}
+
+/// The write-ahead log of the database at `path`.
+fn wal(path: &Path) -> PathBuf {
+    let mut wal = path.as_os_str().to_owned();
+    wal.push("-wal");
+    PathBuf::from(wal)
+}
+
+/// One row of `sql`, about `thread`, from the database at `path` as it is
+/// now; None when there is no database or no row. Codex keeps its databases
+/// in WAL mode: a read-only connection reads what is committed to the log,
+/// and takes no lock a writer waits on. A database no process has open has
+/// no log, and a read-only connection cannot open it then, but its file
+/// holds every commit, so it is read as immutable, also when the last
+/// process closes it between the look and the read.
+fn query<T>(
+    path: &Path,
+    sql: &str,
+    thread: &str,
+    row: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+) -> rusqlite::Result<Option<T>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    if wal(path).exists() {
+        let read = Connection::open_with_flags(path, flags).and_then(|db| {
+            db.busy_timeout(Duration::from_millis(250))?;
+            db.query_row(sql, [thread], &row).optional()
+        });
+        if read.is_ok() || wal(path).exists() {
+            return read;
+        }
+    }
+    let path = path.to_string_lossy();
+    let path = path
+        .replace('%', "%25")
+        .replace('?', "%3f")
+        .replace('#', "%23");
+    let uri = format!("file:{path}?immutable=1");
+    let db = Connection::open_with_flags(uri, flags | OpenFlags::SQLITE_OPEN_URI)?;
+    db.query_row(sql, [thread], row).optional()
+}
+
+/// How a thread's last turn ended, from its task_complete until another
+/// turn starts or it is interrupted.
+struct Rest {
+    /// What the rollout says: TurnEnded, and TurnEndedAsking or TurnFailed.
+    told: BTreeSet<Signal>,
+    /// The Unix second the turn began, as its task_complete says.
+    started: Option<i64>,
+    /// The goal, which changes after the turn ended.
+    goal: Goal,
+}
+
+/// The phase a turn that ended on `signals` comes to.
+fn rests(signals: &BTreeSet<Signal>) -> Phase {
+    fsm::next(Phase::Working, signals).map_or(Phase::Working, |rule| rule.to.phase(Phase::Working))
+}
+
 /// What the files have said of one thread the user runs.
 struct Thread {
     /// When the lock was last taken: a process taking the thread writes it.
@@ -294,31 +544,59 @@ struct Thread {
     children: HashSet<String>,
     /// The turn's follow-up task calls whose subagent is not known yet.
     followups: HashSet<String>,
-    /// Whether the last turn ended with subagents still at work.
-    background: bool,
+    /// The async question items, by call and index, that have no answer
+    /// since the last turn the user typed a prompt for.
+    asks: BTreeSet<(String, usize)>,
+    /// How the last turn ended, while no other has started.
+    rest: Option<Rest>,
     told: Told,
 }
 
-/// Codex's threads, from its locks and rollouts.
+impl Thread {
+    /// What the last turn's end comes to now, if it is the last thing the
+    /// thread did: the rollout's end, with the work that goes on by itself
+    /// and the goal that waits on the user.
+    fn end(&self) -> Option<BTreeSet<Signal>> {
+        let rest = self.rest.as_ref()?;
+        let mut end = rest.told.clone();
+        if !self.children.is_empty() || rest.goal == Goal::Active {
+            end.insert(Signal::Backgrounded);
+        }
+        if rest.goal == Goal::Waiting {
+            end.insert(Signal::TurnEndedAsking);
+        }
+        Some(end)
+    }
+}
+
+/// Codex's threads, from its locks, rollouts and databases.
 pub struct Codex {
+    /// `~/.codex`, which holds the rest.
+    dir: PathBuf,
     locks_dir: PathBuf,
     sessions_dir: PathBuf,
+    databases: Databases,
     threads: HashMap<String, Thread>,
     /// Threads that are not the user's, by their rollout, never read again.
     others: HashSet<String>,
 }
 
-/// What a changed path is to the source: a thread's lock, or its rollout.
+/// What a changed path is to the source: a thread's lock, its rollout, or
+/// the goals.
 enum Changed {
     Lock(String),
     Rollout(String, PathBuf),
+    Goals,
 }
 
 impl Codex {
     pub fn new(home: &Path) -> Codex {
+        let dir = home.join(".codex");
         Codex {
-            locks_dir: home.join(".codex/thread-writer-locks"),
-            sessions_dir: home.join(".codex/sessions"),
+            locks_dir: dir.join("thread-writer-locks"),
+            sessions_dir: dir.join("sessions"),
+            databases: Databases::new(&dir),
+            dir,
             threads: HashMap::new(),
             others: HashSet::new(),
         }
@@ -329,6 +607,9 @@ impl Codex {
     }
 
     fn changed_path(&self, path: &Path) -> Option<Changed> {
+        if self.databases.goals_changed(path) {
+            return Some(Changed::Goals);
+        }
         let name = path.file_name()?.to_str()?;
         if path.parent() == Some(&self.locks_dir) {
             let id = name.strip_suffix(".lock")?;
@@ -462,7 +743,8 @@ impl Codex {
                 approval: false,
                 children: HashSet::new(),
                 followups: HashSet::new(),
-                background: false,
+                asks: BTreeSet::new(),
+                rest: None,
                 told: Told::default(),
             },
         );
@@ -518,23 +800,42 @@ impl Codex {
         };
         for line in lines {
             if let Some(record) = Record::read(&line) {
-                says(id, thread, &record, out);
+                says(id, thread, &self.databases, &record, out);
+            }
+        }
+    }
+
+    /// Tells what a change to the goals makes of each thread whose last
+    /// turn has ended.
+    fn regoal(&mut self, out: &mut Vec<Observation>) {
+        for (id, thread) in &mut self.threads {
+            let Some(rest) = &thread.rest else {
+                continue;
+            };
+            let goal = self.databases.goal(id, rest.started);
+            if goal != rest.goal {
+                retell(id, thread, out, |thread| {
+                    thread.rest.as_mut().expect("rested").goal = goal;
+                });
             }
         }
     }
 
     /// Reads the rollout of a thread `look` started following back from its
-    /// end, to where its last turn began or as far as `tail_back` reads, and
-    /// tells what that says: at most 16 MiB of a resumed thread's rollout,
-    /// which can be gigabytes long. What was written before
-    /// the lock was taken is history of a process before this one, as after
-    /// a resume or a crash, and says nothing.
+    /// end, to where the last turn the user typed a prompt for began, which
+    /// leaves no async question open from before it, or as far as
+    /// `tail_back` reads, and tells what that says: at most 16 MiB of a
+    /// resumed thread's rollout, which can be gigabytes long. What was
+    /// written before the lock was taken is history of a process before this
+    /// one, as after a resume or a crash, and says nothing.
     fn read_back(&mut self, id: &str, out: &mut Vec<Observation>) -> Result<(), Unread> {
         let thread = self.threads.get_mut(id).expect("started");
         let start = thread.start;
-        // Back to the last turn's start, or to what an earlier process wrote.
+        // Back to the last typed turn's start, or to what an earlier
+        // process wrote.
         let read = tail::tail_back(&thread.rollout, |line| {
-            Record::read(line).is_some_and(|record| record.starts_turn() || record.before(start))
+            Record::read(line)
+                .is_some_and(|record| record.starts_typed_turn() || record.before(start))
         });
         let lines = match read {
             Ok((lines, tail)) => {
@@ -554,7 +855,7 @@ impl Codex {
             tell(id, thread, Channel::File, [Signal::Prompted], out);
         }
         for record in &records {
-            says(id, thread, record, out);
+            says(id, thread, &self.databases, record, out);
         }
         Ok(())
     }
@@ -590,7 +891,13 @@ fn written(timestamp: Option<&str>) -> i64 {
 
 /// What one rollout record says. Each detector says only its own fact; the
 /// table's order decides what they come to.
-fn says(id: &str, thread: &mut Thread, record: &Record, out: &mut Vec<Observation>) {
+fn says(
+    id: &str,
+    thread: &mut Thread,
+    databases: &Databases,
+    record: &Record,
+    out: &mut Vec<Observation>,
+) {
     let payload = &record.payload;
     // A turn whose start was not read is named by its other records.
     if thread.open && thread.turn.is_none() {
@@ -604,7 +911,12 @@ fn says(id: &str, thread: &mut Thread, record: &Record, out: &mut Vec<Observatio
         thread.approval = false;
         thread.children.clear();
         thread.followups.clear();
-        thread.background = false;
+        thread.rest = None;
+        // A prompt the user typed moves on from the questions before it;
+        // a turn Codex started does not.
+        if record.starts_typed_turn() {
+            thread.asks.clear();
+        }
         tell(id, thread, Channel::File, [Signal::Prompted], out);
     } else if record.is("event_msg", "task_complete") {
         // No approval outlasts its turn, which would otherwise hold the
@@ -613,25 +925,32 @@ fn says(id: &str, thread: &mut Thread, record: &Record, out: &mut Vec<Observatio
             thread.approval = false;
             tell(id, thread, Channel::File, [Signal::Answered], out);
         }
-        let mut end = BTreeSet::from([Signal::TurnEnded]);
+        close(thread, payload);
+        // The prompt the user queued starts next, so the session works on.
+        if databases.queued(id) {
+            tell(id, thread, Channel::File, [Signal::Prompted], out);
+            return;
+        }
+        let mut told = BTreeSet::from([Signal::TurnEnded]);
         let message = payload.last_agent_message.as_deref().unwrap_or_default();
-        if ends_on_question(message) || proposes_plan(message) {
-            end.insert(Signal::TurnEndedAsking);
+        if ends_on_question(message) || proposes_plan(message) || !thread.asks.is_empty() {
+            told.insert(Signal::TurnEndedAsking);
         }
         if payload.error.is_some() {
-            end.insert(Signal::TurnFailed);
+            told.insert(Signal::TurnFailed);
         }
-        if !thread.children.is_empty() {
-            end.insert(Signal::Backgrounded);
-        }
-        thread.background = !thread.children.is_empty();
-        close(thread, payload);
+        thread.rest = Some(Rest {
+            told,
+            started: payload.started_at,
+            goal: databases.goal(id, payload.started_at),
+        });
+        let end = thread.end().expect("rested");
         tell(id, thread, Channel::File, end, out);
     } else if record.is("event_msg", "turn_aborted") {
         // A turn replaced by another is followed by that turn's start,
         // which is all there is to tell.
-        thread.background = false;
         close(thread, payload);
+        thread.rest = None;
         if payload.reason.as_deref() != Some("replaced") {
             tell(id, thread, Channel::File, [Signal::Interrupted], out);
         }
@@ -646,14 +965,19 @@ fn says(id: &str, thread: &mut Thread, record: &Record, out: &mut Vec<Observatio
             "interacted" if call.is_some_and(|call| thread.followups.remove(call)) => {
                 thread.children.insert(child.to_owned());
             }
-            "completed" | "interrupted" => {
+            "completed" | "interrupted" => retell(id, thread, out, |thread| {
                 thread.children.remove(child);
-                if thread.children.is_empty() && thread.background {
-                    thread.background = false;
-                    tell(id, thread, Channel::File, [Signal::BackgroundDone], out);
-                }
-            }
+            }),
             _ => {}
+        }
+    } else if let Some(call) = record.calls(ASYNC_QUESTION) {
+        let items = items(payload.arguments.as_deref());
+        thread
+            .asks
+            .extend((0..items).map(|index| (call.to_owned(), index)));
+    } else if !record.answers.is_empty() {
+        for answer in &record.answers {
+            thread.asks.remove(answer);
         }
     } else if let Some(call) = record.question() {
         thread.question = Some(call.to_owned());
@@ -681,6 +1005,32 @@ fn close(thread: &mut Thread, payload: &Payload) {
     thread.approval = false;
 }
 
+/// Makes `change` to a thread, and tells what it makes of the last turn's
+/// end when no other turn has started: work going on by itself, or that
+/// work finished, or a goal that waits on the user. Any other move waits
+/// for the next turn.
+fn retell(
+    id: &str,
+    thread: &mut Thread,
+    out: &mut Vec<Observation>,
+    change: impl FnOnce(&mut Thread),
+) {
+    let before = thread.end();
+    change(thread);
+    let (Some(before), Some(after)) = (before, thread.end()) else {
+        return;
+    };
+    let (from, to) = (rests(&before), rests(&after));
+    let signal = match to {
+        _ if from == to => return,
+        Phase::Asked => Signal::TurnEndedAsking,
+        Phase::Background => Signal::Backgrounded,
+        Phase::Stopped if from == Phase::Background => Signal::BackgroundDone,
+        _ => return,
+    };
+    tell(id, thread, Channel::File, [signal], out);
+}
+
 /// Tells what one record or the hook says.
 fn tell(
     id: &str,
@@ -701,8 +1051,10 @@ impl Source for Codex {
         Harness::Codex
     }
 
+    /// `~/.codex`, for the locks and rollouts in its folders and the goals
+    /// database beside them.
     fn roots(&self) -> Vec<PathBuf> {
-        vec![self.locks_dir.clone(), self.sessions_dir.clone()]
+        vec![self.dir.clone()]
     }
 
     fn seed(&mut self, k: &dyn Kernel, _bound: &[(String, Liveness)]) -> Result<Seed> {
@@ -761,6 +1113,7 @@ impl Source for Codex {
             Some((_, known)) => *known = known.take().or(rollout),
             None => changed.push((id, rollout)),
         };
+        let mut goals = paths.is_none();
         match paths {
             Some(paths) => {
                 for path in paths {
@@ -770,6 +1123,7 @@ impl Source for Codex {
                         // thread it works for, is not looked at again.
                         Some(Changed::Rollout(id, _)) if self.others.contains(&id) => {}
                         Some(Changed::Rollout(id, path)) => add(id, Some(path)),
+                        Some(Changed::Goals) => goals = true,
                         None => {}
                     }
                 }
@@ -784,6 +1138,10 @@ impl Source for Codex {
         let mut out = Vec::new();
         for (id, rollout) in changed {
             self.follow(k, &id, rollout.as_deref(), &mut out);
+        }
+        // After the rollouts, whose turn ends read the goals as they are.
+        if goals {
+            self.regoal(&mut out);
         }
         out
     }
@@ -1044,6 +1402,149 @@ mod tests {
                 .iter()
                 .all(|told| !told.contains(&Signal::QuestionAsked))
         );
+    }
+
+    #[test]
+    fn a_goal_goes_on_by_itself_until_it_is_blocked() {
+        let replay = replay("a_goal_goes_on_by_itself_until_it_is_blocked");
+        assert_eq!(phase(&replay), Phase::Asked);
+    }
+
+    #[test]
+    fn a_goal_blocked_before_a_turn_does_not_ask_at_its_end() {
+        let replay = replay("a_goal_blocked_before_a_turn_does_not_ask_at_its_end");
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn a_goal_that_moves_after_its_turn_ended_moves_the_light() {
+        let replay = replay("a_goal_that_moves_after_its_turn_ended_moves_the_light");
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn an_async_question_unanswered_at_the_turn_end_asks() {
+        let replay = replay("an_async_question_unanswered_at_the_turn_end_asks");
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn a_typed_prompt_lets_an_unanswered_async_question_go() {
+        let replay = replay("a_typed_prompt_lets_an_unanswered_async_question_go");
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn a_prompt_queued_when_the_turn_ends_keeps_the_session_working() {
+        let replay = replay("a_prompt_queued_when_the_turn_ends_keeps_the_session_working");
+        assert_eq!(phase(&replay), Phase::Working);
+        assert!(
+            told(&replay)
+                .iter()
+                .all(|told| !told.contains(&Signal::TurnEnded))
+        );
+    }
+
+    /// A goals database as Codex leaves it, with `status` for the thread.
+    fn goals(dir: &Path, status: &str) -> rusqlite::Connection {
+        let db = rusqlite::Connection::open(dir.join("goals_1.sqlite")).unwrap();
+        db.pragma_update(None, "journal_mode", "wal").unwrap();
+        db.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        let schema = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/codex/goals.sql");
+        db.execute_batch(&fs::read_to_string(schema).unwrap())
+            .unwrap();
+        db.execute(
+            "insert into thread_goals (thread_id, goal_id, objective, status, created_at_ms, updated_at_ms) values ('t', 'g', 'o', ?1, 0, 0)",
+            [status],
+        )
+        .unwrap();
+        db
+    }
+
+    #[test]
+    fn a_goal_committed_to_the_log_and_not_checkpointed_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = goals(dir.path(), "active");
+        let databases = Databases::new(dir.path());
+        assert_eq!(databases.goal("t", Some(0)), Goal::Active);
+        writer
+            .execute("update thread_goals set status = 'blocked'", [])
+            .unwrap();
+        assert!(fs::metadata(wal(&databases.goals)).unwrap().len() > 0);
+        assert_eq!(databases.goal("t", Some(0)), Goal::Waiting);
+        // A reader takes no lock the writer waits on.
+        writer
+            .execute(
+                "insert into thread_goal_continuation_deferrals values ('t')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(databases.goal("u", Some(0)), Goal::Quiet);
+    }
+
+    #[test]
+    fn a_goals_database_no_process_has_open_is_read_from_its_file() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(goals(dir.path(), "usage_limited"));
+        let databases = Databases::new(dir.path());
+        // As a Codex that links its own SQLite leaves it on quitting.
+        for file in [wal(&databases.goals), dir.path().join("goals_1.sqlite-shm")] {
+            let _ = fs::remove_file(file);
+        }
+        assert_eq!(databases.goal("t", Some(0)), Goal::Waiting);
+        assert!(!wal(&databases.goals).exists());
+        assert!(!databases.queued("t"));
+    }
+
+    #[test]
+    fn a_goal_that_stopped_before_the_turn_began_does_not_wait_on_its_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = goals(dir.path(), "blocked");
+        writer
+            .execute("update thread_goals set updated_at_ms = 41999", [])
+            .unwrap();
+        let databases = Databases::new(dir.path());
+        assert_eq!(databases.goal("t", Some(42)), Goal::Quiet);
+        assert_eq!(databases.goal("t", None), Goal::Quiet);
+        // Within the second the turn began, or after it.
+        writer
+            .execute("update thread_goals set updated_at_ms = 42000", [])
+            .unwrap();
+        assert_eq!(databases.goal("t", Some(42)), Goal::Waiting);
+        // An active goal goes on whenever it was set so.
+        writer
+            .execute("update thread_goals set status = 'active'", [])
+            .unwrap();
+        assert_eq!(databases.goal("t", Some(43)), Goal::Active);
+    }
+
+    #[test]
+    fn an_active_goal_whose_continuation_is_deferred_goes_on_by_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = goals(dir.path(), "active");
+        writer
+            .execute(
+                "insert into thread_goal_continuation_deferrals values ('t')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(Databases::new(dir.path()).goal("t", Some(0)), Goal::Quiet);
+    }
+
+    #[test]
+    fn an_answer_names_each_async_question_item_it_answers() {
+        let text = "<send_user_message_question_reply>\n[{\"questionItemId\":\"[\\\"request_user_input_async\\\",\\\"call_e2\\\",0]\",\"answer\":\"a\"},{\"questionItemId\":\"[\\\"request_user_input_async\\\",\\\"call_e2\\\",1]\",\"answer\":\"b\"}]\n</send_user_message_question_reply>\n";
+        let line = serde_json::json!({
+            "type": "response_item",
+            "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}
+        });
+        let record = Record::read(line.to_string().as_bytes()).unwrap();
+        assert_eq!(
+            record.answers,
+            [("call_e2".to_owned(), 0), ("call_e2".to_owned(), 1)]
+        );
+        assert_eq!(items(Some("{\"questions\":[{},{}]}")), 2);
+        assert_eq!(items(Some("not json")), 1);
     }
 
     #[test]
