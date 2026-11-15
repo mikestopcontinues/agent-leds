@@ -130,13 +130,13 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 ### Backgrounded
 
 - Claude Code, file, observed: an end_turn record while the session file is busy with delegated work, or waiting to busy after the turn closed (probe-claude cc3, cc4, cc5)
-- Codex, file, observed: task_complete while a subagent the thread started has not completed (probe-codex runA PROMPT5)
+- Codex, file, observed: task_complete while a subagent the turn started, or gave a followup_task, has not completed (probe-codex runA PROMPT5; desktop rollout 2026-10-13)
 - OpenCode, hook, observed: any event of a subagent's session, put to its parent (0.5.0 plugin, probe-opencode T2–T17)
 
 ### BackgroundDone
 
 - Claude Code, file, observed: the session file going from busy to idle after a backgrounded turn (probe-claude cc3)
-- Codex, file, observed: the last such subagent's SubAgentActivity completed or interrupted, after the turn ended (probe-codex runA PROMPT5)
+- Codex, file, observed: the last such subagent's SubAgentActivity completed or interrupted, after the turn ended (probe-codex runA PROMPT5; desktop rollout 2026-10-13)
 
 ### Ended
 

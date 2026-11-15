@@ -34,7 +34,7 @@ A Codex process holds a lock on `~/.codex/thread-writer-locks/<thread>.lock` for
 | A `request_user_input` call with no output yet | question |
 | The question's output | working |
 | `task_complete` whose last line ends in a question mark, or that holds a `<proposed_plan>` | question, as a weak signal |
-| `task_complete` while a subagent it started is still at work | working, in the background |
+| `task_complete` while a subagent the turn started, or gave a `followup_task`, is still at work | working, in the background |
 | `task_complete` otherwise, or the last such subagent completed after the turn ended | stopped |
 | `task_complete` with an error | error |
 | `turn_aborted`, which a cancelled approval writes too | removed |
@@ -48,7 +48,8 @@ A thread whose `session_meta` names a subagent, by its `source` or its `thread_s
 - An approval a subagent asks for is not seen: it is not known whether its hook names the subagent's thread or its parent's, and the subagent's thread is not followed.
 - `request_user_input_async`, the desktop app's question, does not stop the agent, so the session stays working while it waits for the answer.
 - A failing request that Codex retries leaves no record, so the session stays working until the turn ends.
-- A subagent that never reports completing keeps its parent in the background until the next prompt or the process ends. So does one started in an earlier turn when the daemon starts, which reads back only to the last turn's start.
+- A subagent that never reports completing keeps its parent in the background until the next prompt.
+- A subagent started or given its task in an earlier turn does not keep its parent in the background: when the turn ends the session shows stopped while the subagent works. A `send_message` to a subagent starts no turn of its own, so it does not count either.
 - A plan proposal is recognised by its `<proposed_plan>` block, which no rollout has shown yet.
 - Codex's desktop app was not running during the probe, so whether it holds the thread locks the same way is not confirmed.
 

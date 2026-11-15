@@ -83,13 +83,13 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Backgrounded,
-        "task_complete while a subagent the thread started has not completed",
-        "probe-codex runA PROMPT5",
+        "task_complete while a subagent the turn started, or gave a followup_task, has not completed",
+        "probe-codex runA PROMPT5; desktop rollout 2026-10-13",
     ),
     file(
         Signal::BackgroundDone,
         "the last such subagent's SubAgentActivity completed or interrupted, after the turn ended",
-        "probe-codex runA PROMPT5",
+        "probe-codex runA PROMPT5; desktop rollout 2026-10-13",
     ),
     file(
         Signal::Ended,
@@ -177,6 +177,9 @@ struct Payload {
 struct Item {
     #[serde(rename = "type", default)]
     kind: String,
+    /// A SubAgentActivity's call: the parent's for `started` and
+    /// `interacted`.
+    id: Option<String>,
     /// What a SubAgentActivity says of the subagent: started, interacted,
     /// completed or interrupted.
     #[serde(rename = "kind")]
@@ -213,11 +216,22 @@ impl Record {
         self.kind == "response_item" || self.is("event_msg", "item_completed")
     }
 
+    /// The call this record makes to `tool`, if it is one.
+    fn calls(&self, tool: &str) -> Option<&str> {
+        let name = self.payload.name.as_deref()?.rsplit('.').next()?;
+        let calls = self.is("response_item", "function_call") && name == tool;
+        calls.then_some(self.payload.call_id.as_deref()?)
+    }
+
     /// The call a blocking question to the user makes, if this is one.
     fn question(&self) -> Option<&str> {
-        let tool = self.payload.name.as_deref()?.rsplit('.').next()?;
-        let asks = self.is("response_item", "function_call") && tool == "request_user_input";
-        asks.then_some(self.payload.call_id.as_deref()?)
+        self.calls("request_user_input")
+    }
+
+    /// The call that gives a subagent a task and starts its turn, if this
+    /// is one. A `send_message` to a subagent starts none.
+    fn followup(&self) -> Option<&str> {
+        self.calls("followup_task")
     }
 
     /// The call a tool's output answers, if this is an output.
@@ -231,13 +245,19 @@ impl Record {
         output.then_some(self.payload.call_id.as_deref()?)
     }
 
-    /// What a SubAgentActivity record says, with the subagent it is about.
-    fn subagent(&self) -> Option<(&str, &str)> {
+    /// What a SubAgentActivity record says, with the subagent it is about
+    /// and the call that made it.
+    fn subagent(&self) -> Option<(&str, &str, Option<&str>)> {
         let item = self.payload.item.as_ref()?;
         if !self.is("event_msg", "item_completed") || item.kind != "SubAgentActivity" {
             return None;
         }
-        Some((item.activity.as_deref()?, item.agent_thread_id.as_deref()?))
+        let activity = item.activity.as_deref()?;
+        Some((
+            activity,
+            item.agent_thread_id.as_deref()?,
+            item.id.as_deref(),
+        ))
     }
 
     /// Whether the record completes an item of the turn's own, which only a
@@ -270,8 +290,12 @@ struct Thread {
     question: Option<String>,
     /// Whether the approval hook said the turn waits.
     approval: bool,
-    /// The subagents the thread started that have not finished.
+    /// The subagents the turn started, or gave a follow-up task, that have
+    /// not finished. A turn's start clears them: one that never says it
+    /// finished keeps only the turn it worked for in the background.
     children: HashSet<String>,
+    /// The turn's follow-up task calls whose subagent is not known yet.
+    followups: HashSet<String>,
     /// Whether the last turn ended with subagents still at work.
     background: bool,
     told: Told,
@@ -429,6 +453,7 @@ impl Codex {
                 question: None,
                 approval: false,
                 children: HashSet::new(),
+                followups: HashSet::new(),
                 background: false,
                 told: Told::default(),
             },
@@ -548,6 +573,8 @@ fn says(id: &str, thread: &mut Thread, record: &Record, out: &mut Vec<Observatio
         thread.turn = payload.turn_id.clone().map(TurnKey);
         thread.question = None;
         thread.approval = false;
+        thread.children.clear();
+        thread.followups.clear();
         thread.background = false;
         tell(id, thread, Channel::File, [Signal::Prompted], out);
     } else if record.is("event_msg", "task_complete") {
@@ -573,9 +600,15 @@ fn says(id: &str, thread: &mut Thread, record: &Record, out: &mut Vec<Observatio
         if payload.reason.as_deref() != Some("replaced") {
             tell(id, thread, Channel::File, [Signal::Interrupted], out);
         }
-    } else if let Some((activity, child)) = record.subagent() {
+    } else if let Some(call) = record.followup() {
+        thread.followups.insert(call.to_owned());
+    } else if let Some((activity, child, call)) = record.subagent() {
         match activity {
             "started" => {
+                thread.children.insert(child.to_owned());
+            }
+            // A follow-up task starts the subagent's turn; a message does not.
+            "interacted" if call.is_some_and(|call| thread.followups.remove(call)) => {
                 thread.children.insert(child.to_owned());
             }
             "completed" | "interrupted" => {
@@ -868,6 +901,18 @@ mod tests {
     #[test]
     fn a_completed_subagent_after_the_turn_ends_the_background() {
         let replay = replay("a_completed_subagent_after_the_turn_ends_the_background");
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn a_subagent_that_never_completes_holds_only_its_own_turn() {
+        let replay = replay("a_subagent_that_never_completes_holds_only_its_own_turn");
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn a_subagent_given_a_followup_task_keeps_the_turn_in_the_background() {
+        let replay = replay("a_subagent_given_a_followup_task_keeps_the_turn_in_the_background");
         assert_eq!(phase(&replay), Phase::Stopped);
     }
 
