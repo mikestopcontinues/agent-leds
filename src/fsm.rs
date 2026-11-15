@@ -355,9 +355,10 @@ pub const TABLE: &[Rule] = &[
         on: Interrupted,
         to: Idle,
     },
-    // A question or an error beats work going on in the background.
+    // A wait on the user, a question or an error beats work going on in
+    // the background.
     Rule {
-        from: &[Idle, Working, Blocked, Stopped, StoppedRead],
+        from: &[Idle, Working, Stopped, StoppedRead],
         on: Backgrounded,
         to: Background,
     },
@@ -547,6 +548,7 @@ mod tests {
         assert!(!announces(Idle, Prompted, Working));
         assert!(!announces(Blocked, Answered, Working));
         assert!(!announces(Stopped, Backgrounded, Background));
+        assert!(!announces(Working, Backgrounded, Background));
         assert!(!announces(Stopped, Looked, StoppedRead));
         assert!(!announces(Working, Interrupted, Idle));
         assert!(!announces(Gone, Started, Idle));

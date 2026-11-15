@@ -405,7 +405,7 @@ Each cell is the phase the signal moves to; `·` means no rule, so the signal ch
 | Idle | · | Working | Blocked | Blocked | · | Stopped | Asked | Failed | · | Background | · | Gone | · | · | · | · |
 | Working | · | · | Blocked | Blocked | · | Stopped | Asked | Failed | Idle | Background | · | Gone | · | · | Idle | Idle |
 | Background | · | Working | Blocked | Blocked | · | Stopped | Asked | Failed | Idle | · | Stopped | Gone | · | · | Idle | Idle |
-| Blocked | · | Working | · | · | Working | Stopped | Asked | Failed | Idle | Background | · | Gone | · | · | Idle | Idle |
+| Blocked | · | Working | · | · | Working | Stopped | Asked | Failed | Idle | · | · | Gone | · | · | Idle | Idle |
 | Asked | · | Working | Blocked | Blocked | · | Stopped | Asked | Failed | Idle | · | · | Gone | AskedRead | · | Idle | Idle |
 | AskedRead | · | Working | Blocked | Blocked | · | Stopped | Asked | Failed | Idle | · | · | Gone | · | Idle | Idle | Idle |
 | Stopped | · | Working | Blocked | Blocked | · | Stopped | Asked | Failed | Idle | Background | · | Gone | StoppedRead | · | Idle | Idle |
@@ -493,7 +493,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 **Backgrounded**: a turn whose background work runs on shows as stopped while that work runs.
 
-- Claude Code: Idle, Working, Blocked, Stopped, StoppedRead → Background
+- Claude Code: Idle, Working, Stopped, StoppedRead → Background
 - Codex: Idle, Working → Background
 
 ## Phases never entered

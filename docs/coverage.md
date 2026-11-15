@@ -12,7 +12,7 @@ Each cell is the phase the signal moves to; `·` means no rule, so the signal ch
 | Idle | · | Working | Blocked | Blocked | · | Stopped | Asked | Failed | · | Background | · | Gone | · | · | · | · |
 | Working | · | · | Blocked | Blocked | · | Stopped | Asked | Failed | Idle | Background | · | Gone | · | · | Idle | Idle |
 | Background | · | Working | Blocked | Blocked | · | Stopped | Asked | Failed | Idle | · | Stopped | Gone | · | · | Idle | Idle |
-| Blocked | · | Working | · | · | Working | Stopped | Asked | Failed | Idle | Background | · | Gone | · | · | Idle | Idle |
+| Blocked | · | Working | · | · | Working | Stopped | Asked | Failed | Idle | · | · | Gone | · | · | Idle | Idle |
 | Asked | · | Working | Blocked | Blocked | · | Stopped | Asked | Failed | Idle | · | · | Gone | AskedRead | · | Idle | Idle |
 | AskedRead | · | Working | Blocked | Blocked | · | Stopped | Asked | Failed | Idle | · | · | Gone | · | Idle | Idle | Idle |
 | Stopped | · | Working | Blocked | Blocked | · | Stopped | Asked | Failed | Idle | Background | · | Gone | StoppedRead | · | Idle | Idle |
@@ -77,7 +77,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### Answered
 
-- Claude Code, file, observed: the session file going from waiting to busy while the turn is open (probe-claude cc1, cc2)
+- Claude Code, file, observed: the session file going from waiting to busy: while the turn is open, or after it closed, when a subagent it left is let go on (probe-claude cc1, cc2)
 
 ### TurnEnded
 
@@ -170,10 +170,10 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 **Backgrounded**: a turn whose background work runs on shows as stopped while that work runs.
 
-- Grok: Idle, Working, Blocked, Stopped, StoppedRead → Background
+- Grok: Idle, Working, Stopped, StoppedRead → Background
 - Cursor: Idle, Working, Stopped, StoppedRead → Background
 - Junie: Idle, Working, Stopped, StoppedRead → Background
-- Pi: Idle, Working, Blocked, Stopped, StoppedRead → Background
+- Pi: Idle, Working, Stopped, StoppedRead → Background
 
 **BackgroundDone**: background work that finishes is never announced, and shows as working until the next turn.
 

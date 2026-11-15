@@ -157,3 +157,20 @@ impl Source for Interim {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::fsm::Phase;
+    use crate::harness::Harness;
+    use crate::source::fixture;
+
+    #[test]
+    fn a_subagent_at_work_keeps_its_parent_asking() {
+        let replay = fixture::replay(
+            Harness::OpenCode,
+            "a_subagent_at_work_keeps_its_parent_asking",
+        );
+        let phases: Vec<Phase> = replay.phases().into_values().collect();
+        assert_eq!(phases, [Phase::Blocked]);
+    }
+}

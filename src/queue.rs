@@ -495,14 +495,18 @@ mod tests {
         tell(&mut queue, "done", &[TurnEnded], 1);
         tell(&mut queue, "asks", &[TurnEndedAsking], 1);
         tell(&mut queue, "fails", &[TurnFailed], 1);
+        tell(&mut queue, "waits", &[PermissionAsked], 1);
         assert_eq!(tell(&mut queue, "done", &[Backgrounded], 2), Change::Settle);
         assert_eq!(tell(&mut queue, "asks", &[Backgrounded], 2), Change::None);
         assert_eq!(tell(&mut queue, "fails", &[Backgrounded], 2), Change::None);
+        // A subagent at work while the user is asked to approve something.
+        assert_eq!(tell(&mut queue, "waits", &[Backgrounded], 2), Change::None);
         assert_eq!(
             states(&queue),
             [
                 ("fails", State::Error),
                 ("asks", State::Question),
+                ("waits", State::Question),
                 ("done", State::Working)
             ]
         );

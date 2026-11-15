@@ -58,7 +58,7 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Answered,
-        "the session file going from waiting to busy while the turn is open",
+        "the session file going from waiting to busy: while the turn is open, or after it closed, when a subagent it left is let go on",
         "probe-claude cc1, cc2",
     ),
     file(
@@ -537,6 +537,7 @@ impl Claude {
             (Status::Waiting(_), Status::Busy) => {
                 session.closed_waiting = None;
                 session.background = true;
+                tell(id, session, Signal::Answered, out);
                 tell(id, session, Signal::Backgrounded, out);
             }
             (Status::Waiting(_), Status::Idle | Status::Starting) if !session.open => {
