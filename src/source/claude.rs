@@ -117,7 +117,7 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Backgrounded,
-        "an end_turn record while the session file is busy with delegated work, not while it says a dialog is open; or waiting to busy after the turn closed",
+        "an end_turn record while the session file is busy with delegated work, not while it says a dialog is open; or waiting to busy after the turn ended, not after an interrupt or a failure",
         "probe-claude cc3, cc4, cc5",
     ),
     file(
@@ -1215,12 +1215,16 @@ impl Claude {
             }
             // A subagent was let go on after the turn ended: the wait is
             // over, then how the turn ended is told, with the work going on.
+            // Busy after an interrupt or a failure is no work the turn left,
+            // as for a desktop dialog, which leaves the session file busy.
             (Status::Waiting(_), Status::Busy)
                 if session.closed_waiting.is_some() || session.background =>
             {
                 let mut end = session.closed_waiting.take().unwrap_or_default();
-                end.insert(Signal::Backgrounded);
-                session.background = true;
+                if end.is_empty() || end.contains(&Signal::TurnEnded) {
+                    end.insert(Signal::Backgrounded);
+                }
+                session.background = end.contains(&Signal::Backgrounded);
                 tell(id, session, [Signal::Answered], out);
                 tell(id, session, end, out);
             }
@@ -1608,6 +1612,17 @@ mod tests {
         let seeded = fixture::seed(&replay);
         let phases: Vec<Phase> = seeded.sessions().iter().map(|s| s.phase).collect();
         assert_eq!(phases, [Phase::Idle]);
+    }
+
+    /// The session file stays busy through a desktop dialog, so its busy
+    /// is no work the interrupted turn left running.
+    #[test]
+    fn an_interrupt_read_before_a_desktop_dialog_s_abort_leaves_no_work_running() {
+        let replay =
+            replay("an_interrupt_read_before_a_desktop_dialog_s_abort_leaves_no_work_running");
+        assert_eq!(told(&replay, Signal::Backgrounded), 0);
+        assert_eq!(told(&replay, Signal::BackgroundDone), 0);
+        assert_eq!(phase(&replay), Phase::Idle);
     }
 
     #[test]

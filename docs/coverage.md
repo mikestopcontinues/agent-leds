@@ -156,7 +156,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### Backgrounded
 
-- Claude Code, file, observed: an end_turn record while the session file is busy with delegated work, not while it says a dialog is open; or waiting to busy after the turn closed (probe-claude cc3, cc4, cc5)
+- Claude Code, file, observed: an end_turn record while the session file is busy with delegated work, not while it says a dialog is open; or waiting to busy after the turn ended, not after an interrupt or a failure (probe-claude cc3, cc4, cc5)
 - Codex, file, observed: task_complete while a subagent the turn started, or gave a followup_task, has not completed, or while the thread's goal in goals_1.sqlite is active with no continuation deferral, which Codex goes on with by itself (probe-codex runA PROMPT5; desktop rollouts 2026-10-13 and 2026-10-15)
 - Grok, file, observed: a turn_ended while updates.jsonl has a subagent_spawned with no subagent_finished; not for a background command left running, which wakes the session with a turn of its own when it finishes; nothing at its start says whether it ever will, as a dev server never does (probe-grok subagent, run e)
 - OpenCode, file, observed: 2.x: the run ended while a subagent's job of the session's is left, at work or not yet reported to it; not for a shell moved to the background, which wakes the session with a run of its own when it finishes; nothing says whether it ever will, as a dev server never does (gaps oc8 (2.3.0 a task subagent run in the background))
