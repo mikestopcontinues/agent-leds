@@ -703,12 +703,12 @@ impl Claude {
             held.extend(self.said(k, said));
             held.extend(self.resolve());
             for id in held.drain(..) {
-                self.desktop(&id, edges);
+                self.desktop(k, &id, edges);
             }
         }
         // Sessions whose files could not be read before.
         for id in self.resolve() {
-            self.desktop(&id, edges);
+            self.desktop(k, &id, edges);
         }
     }
 
@@ -760,17 +760,26 @@ impl Claude {
         found
     }
 
-    /// Sets what the log holds open for the session `id` since its process
-    /// started, collecting the edge in `edges` if its status changes.
-    fn desktop(&mut self, id: &str, edges: &mut Vec<(String, Status, Status)>) {
+    /// Sets what the log holds open for the session `id` since the first of
+    /// the running processes that run it started, collecting the edge in
+    /// `edges` if its status changes. A dialog opened before that was left
+    /// by a run that has ended.
+    fn desktop(&mut self, k: &dyn Kernel, id: &str, edges: &mut Vec<(String, Status, Status)>) {
+        let first = self
+            .procs
+            .values()
+            .filter(|proc| proc.session == id && liveness::alive(k, &proc.liveness()))
+            .map(|proc| proc.start)
+            .min();
         let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
+        let since = first.unwrap_or(session.start);
         let before = session.status();
         session.desktop = self
             .dialogs
             .iter()
-            .find(|dialog| dialog.session.as_deref() == Some(id) && dialog.opened >= session.start)
+            .find(|dialog| dialog.session.as_deref() == Some(id) && dialog.opened >= since)
             .map(|dialog| dialog.wait);
         let after = session.status();
         if before != after {
@@ -911,14 +920,21 @@ impl Claude {
                 let before = session.status();
                 session.file = status;
                 if session.status() != before {
-                    edges.push((id, before, session.status()));
+                    edges.push((id.clone(), before, session.status()));
                 }
+            }
+            // What the file says anew is the moment to look again at the
+            // runs a dialog can hold up, as after its owner was killed.
+            if new {
+                self.desktop(k, &id, edges);
             }
             return Ok(());
         }
         // Gone, or another session in the process (/clear), or another process.
         if let Some(gone) = self.procs.remove(path) {
-            self.end(k, &gone.session, path, out);
+            self.end(k, &gone.session, path, out, edges);
+            // A dialog of its run holds up the session it leaves no more.
+            self.desktop(k, &gone.session, edges);
         }
         let Some((process, start)) = read else {
             return Ok(());
@@ -968,13 +984,21 @@ impl Claude {
             edges.push((id.clone(), Status::Starting, session.status()));
         }
         // A dialog the desktop app's log holds open for it.
-        self.desktop(&id, edges);
+        self.desktop(k, &id, edges);
         Ok(())
     }
 
     /// Ends the session the file at `path` named, if that file's process
-    /// ran it and no other running process does.
-    fn end(&mut self, k: &dyn Kernel, id: &str, path: &Path, out: &mut Vec<Observation>) {
+    /// ran it and no other running process does, and collects in `edges`
+    /// the change of status a handoff to another makes.
+    fn end(
+        &mut self,
+        k: &dyn Kernel,
+        id: &str,
+        path: &Path,
+        out: &mut Vec<Observation>,
+        edges: &mut Vec<(String, Status, Status)>,
+    ) {
         if !self
             .sessions
             .get(id)
@@ -1003,11 +1027,15 @@ impl Claude {
             .as_ref()
             .map_or(Some(Status::Starting), |(process, _)| process.status());
         let session = self.sessions.get_mut(id).expect("owned");
+        let before = session.status();
         session.start = start;
         session.owner = other;
         session.dialog = status.is_none();
         session.request = process.is_some_and(|(process, _)| process.requests());
         session.file = status.unwrap_or(Status::Starting);
+        if session.status() != before {
+            edges.push((id.to_owned(), before, session.status()));
+        }
         out.push(self.started(k, id, String::new()));
     }
 
@@ -1575,6 +1603,26 @@ mod tests {
             replay("a_desktop_dialog_the_session_file_does_not_show_blocks_until_it_closes");
         assert_eq!(told(&replay, Signal::PermissionAsked), 1);
         assert_eq!(told(&replay, Signal::Answered), 1);
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    /// A second process that starts on the session while a dialog of the
+    /// first one's run is open leaves the dialog holding the session up,
+    /// and its close lets it go.
+    #[test]
+    fn a_dialog_holds_up_its_run_while_a_second_process_runs_the_session() {
+        let replay = replay("a_dialog_holds_up_its_run_while_a_second_process_runs_the_session");
+        assert_eq!(told(&replay, Signal::PermissionAsked), 2);
+        assert_eq!(told(&replay, Signal::Released), 1);
+        assert_eq!(phase(&replay), Phase::Working);
+    }
+
+    /// The same, with the first process quitting while its dialog is open:
+    /// the dialog holds up the run left no more.
+    #[test]
+    fn a_dialog_lets_go_when_the_run_that_raised_it_quits() {
+        let replay = replay("a_dialog_lets_go_when_the_run_that_raised_it_quits");
+        assert_eq!(told(&replay, Signal::Released), 1);
         assert_eq!(phase(&replay), Phase::Stopped);
     }
 
