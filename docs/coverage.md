@@ -57,7 +57,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Cursor, hook, observed: any hook, run under the process that Cursor's .running marker names (0.5.0 hooks, probe-cursor runs A–I)
 - Junie, hook, inferred: any hook of the session the last prompt named, run under the process named junie (0.5.0 hooks; Junie was not installed for the probe)
 - OpenCode, hook, observed: any event the plugin passes on, from the OpenCode process that runs the hook (0.5.0 plugin, probe-opencode T2–T17)
-- Pi, hook, observed: session_start or agent_start from a Pi with a UI, naming its own pid, which is the hook's parent, and its session file (probe-pi ext084, ext152, extfork, extdir)
+- Pi, hook, observed: session_start or agent_start from a Pi with a UI, naming its own pid, which is the hook's parent, and its session file (probe-pi ext084, ext152, extfork, extdir, extresume)
 
 ### Prompted
 

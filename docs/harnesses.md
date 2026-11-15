@@ -129,7 +129,7 @@ Pi writes each session to a file, `~/.pi/agent/sessions/--<cwd>--/<time>_<sessio
 | An assistant entry the user stopped, or `agent_settled` after a stop | removed |
 | `session_shutdown` other than a reload, or the Pi process gone | removed |
 
-An error entry in the file settles nothing, because Pi may retry it; only `agent_settled`, which comes once nothing will run by itself, says the turn failed. Pi 0.84.4 writes a stop during a tool as an error with the abort's text, so an entry the user stopped is told by its text, never by a provider's error that only mentions an abort. 0.84.4 also writes a new session's first prompt to no file until the reply ends, so `agent_start` says the turn runs. A background subagent's report is written whether or not it wakes Pi, so only a reply after it says a run began. A fork or clone copies the turns before it into its new file, and those are never read as new.
+An error entry in the file settles nothing, because Pi may retry it; only `agent_settled`, which comes once nothing will run by itself, says the turn failed. Pi 0.84.4 writes a stop during a tool as an error with the abort's text, so an entry the user stopped is told by its text, never by a provider's error that only mentions an abort. 0.84.4 also writes a new session's first prompt to no file until the reply ends, so `agent_start` says the turn runs. A background subagent's report is written whether or not it wakes Pi, so only a reply after it says a run began. A fork or clone copies the turns before it into its new file, and those are never read as new; a session resumed, in a new Pi or with `/resume` in the same one, starts where its file ends.
 
 What it cannot see:
 

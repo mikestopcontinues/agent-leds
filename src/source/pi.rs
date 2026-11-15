@@ -51,7 +51,7 @@ pub const SIGNALS: &[Declared] = &[
         Channel::Hook,
         Evidence::Observed,
         "session_start or agent_start from a Pi with a UI, naming its own pid, which is the hook's parent, and its session file",
-        "probe-pi ext084, ext152, extfork, extdir",
+        "probe-pi ext084, ext152, extfork, extdir, extresume",
     ),
     declared(
         Signal::Prompted,
@@ -260,6 +260,13 @@ fn header(path: &Path) -> io::Result<Option<Entry>> {
         return Ok(None);
     }
     Ok(Entry::read(&line).filter(|entry| entry.kind == "session"))
+}
+
+/// Whether a tail of a session file reaches back to a prompt, where the
+/// turn the file ends on began.
+fn holds_prompt(lines: &[Vec<u8>]) -> bool {
+    let mut entries = lines.iter().filter_map(|line| Entry::read(line));
+    entries.any(|entry| entry.is_prompt())
 }
 
 /// What the extension passes on, by Pi's own name for the event.
@@ -472,7 +479,13 @@ impl Pi {
             session.made = entry.timestamp.clone();
             return;
         }
-        if !entry.is_message() || session.history(entry) {
+        if !entry.is_message() {
+            return;
+        }
+        // What this session's process did not write tells nothing, but
+        // says which turn the file is on.
+        if session.history(entry) {
+            session.facts(entry);
             return;
         }
         // Nothing is written while a dialog is open, so whatever comes next
@@ -506,25 +519,28 @@ impl Pi {
         };
         let cwd = payload.cwd.clone().unwrap_or_default();
         let id = &payload.session;
-        // The same process going on with it, or a session a seed found
-        // before the extension named its file.
+        // The same process going on with it.
         let known = self
             .sessions
             .get(id)
-            .filter(|session| session.liveness == liveness);
-        if known.is_none_or(|session| session.file != file) {
+            .is_some_and(|session| session.liveness == liveness && session.file == file);
+        if !known {
             let mut session = Session::new(liveness.clone(), file, cwd.clone());
             // What is already written, as a resumed, forked or cloned file
-            // holds, is history.
-            session.tail = Tail::at_end(&session.file).ok();
+            // holds, is history: it says only which turn the session is on,
+            // as a seed reads it, though this process may have written it
+            // before it went to another session and back.
+            if let Ok((lines, tail)) = tail::tail_back(&session.file, holds_prompt) {
+                let entries = lines.iter().filter_map(|line| Entry::read(line));
+                for entry in entries.filter(Entry::is_message) {
+                    session.facts(&entry);
+                }
+                session.tail = Some(tail);
+            }
             session.made = header(&session.file)
                 .ok()
                 .flatten()
                 .and_then(|header| header.timestamp);
-            if let Some(known) = known {
-                session.turn = known.turn.clone();
-                session.told = known.told;
-            }
             self.sessions.insert(id.clone(), session);
         }
         let turn = self.sessions[id].turn.clone();
@@ -536,8 +552,8 @@ impl Pi {
         ));
     }
 
-    /// Where the tail of a session's file leaves it: back to where its last
-    /// turn began, or to what its process did not write.
+    /// Where the tail of a session's file leaves it, back to where its last
+    /// turn began.
     fn seed_file(&mut self, id: &str) -> io::Result<()> {
         let path = self.sessions[id].file.clone();
         if let Some(header) = header(&path)? {
@@ -545,12 +561,7 @@ impl Pi {
             session.made = header.timestamp;
             session.cwd = header.cwd.unwrap_or_default();
         }
-        let session = &self.sessions[id];
-        let anchors = |entry: &Entry| entry.is_prompt() || session.history(entry);
-        let (lines, tail) = tail::tail_back(&path, |lines| {
-            let mut entries = lines.iter().filter_map(|line| Entry::read(line));
-            entries.any(|entry| anchors(&entry))
-        })?;
+        let (lines, tail) = tail::tail_back(&path, holds_prompt)?;
         let entries: Vec<Entry> = lines.iter().filter_map(|line| Entry::read(line)).collect();
         self.sessions.get_mut(id).expect("seeded").tail = Some(tail);
         let mut history = Vec::new();
@@ -922,6 +933,22 @@ mod tests {
             .filter(|signals| signals.contains(&Signal::Prompted))
             .count();
         assert_eq!(prompts, 3);
+    }
+
+    #[test]
+    fn a_session_resumed_in_its_own_process_starts_where_it_was() {
+        let replay = replay("a_session_resumed_in_its_own_process_starts_where_it_was");
+        // On the turn it ran before it went to another session, which a
+        // daemon started after the resume does not show again.
+        let resumed = replay
+            .yielded
+            .iter()
+            .rfind(|(o, _)| {
+                o.key.id == "01a1df40-5fd9-7ebd-8458-13e9dd839625"
+                    && matches!(o.event, Event::Started(_))
+            })
+            .unwrap();
+        assert_eq!(resumed.0.turn, Some(TurnKey("d4a87a05".into())));
     }
 
     #[test]
