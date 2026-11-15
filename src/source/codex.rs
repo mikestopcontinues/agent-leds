@@ -1148,22 +1148,7 @@ impl Source for Codex {
             // record after says none does.
             thread.approval = thread.open && thread.question.is_none();
             let turn = thread.turn.clone();
-            for o in &mut started {
-                o.turn = turn.clone();
-            }
-            seeded.extend(started);
-            seeded.extend(self.threads[&id].told.current().into_iter().map(|signal| {
-                Observation::new(
-                    Harness::Codex,
-                    &id,
-                    Channel::File,
-                    Event::one(signal),
-                    turn.clone(),
-                )
-            }));
-        }
-        for o in &mut seeded {
-            o.quiet = true;
+            seeded.extend(thread.told.seeded(started, turn, |_| Channel::File));
         }
         Ok(Seed {
             observations: seeded,

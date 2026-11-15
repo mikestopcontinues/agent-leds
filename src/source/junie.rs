@@ -542,7 +542,7 @@ impl Junie {
             session.log = Tail::at_end(&log).ok();
         }
         let session = &self.sessions[id];
-        out.push(Observation::new(
+        let started = Observation::new(
             Harness::Junie,
             id,
             Channel::File,
@@ -551,18 +551,12 @@ impl Junie {
                 liveness: session.liveness.clone(),
             }),
             session.turn.clone(),
-        ));
+        );
         if seeding {
-            for signal in session.told.current() {
-                out.push(Observation::new(
-                    Harness::Junie,
-                    id,
-                    Channel::File,
-                    Event::one(signal),
-                    session.turn.clone(),
-                ));
-            }
+            let turn = session.turn.clone();
+            out.extend(session.told.seeded(vec![started], turn, |_| Channel::File));
         } else {
+            out.push(started);
             out.extend(read);
         }
         unread.map_or(Ok(()), Err)
@@ -798,9 +792,6 @@ impl Source for Junie {
             if liveness::alive(k, &sidecar.liveness()) {
                 unread.extend(self.start(&id, path, &sidecar, true, &mut seeded).err());
             }
-        }
-        for o in &mut seeded {
-            o.quiet = true;
         }
         Ok(Seed {
             observations: seeded,

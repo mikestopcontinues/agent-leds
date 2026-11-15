@@ -745,30 +745,23 @@ impl Source for Cursor {
             if let Err(error) = self.read(id, &mut Vec::new()) {
                 unread.push(error);
             }
-            let turn = self.sessions[id].turn();
             let start = Start {
                 cwd: self.folder(id),
                 liveness: liveness.clone(),
             };
-            seeded.push(Observation::new(
+            let started = Observation::new(
                 Harness::Cursor,
                 id,
                 Channel::Hook,
                 Event::Started(start),
-                turn.clone(),
-            ));
-            seeded.extend(self.sessions[id].told.current().into_iter().map(|signal| {
-                Observation::new(
-                    Harness::Cursor,
-                    id,
-                    Channel::File,
-                    Event::one(signal),
-                    turn.clone(),
-                )
-            }));
-        }
-        for o in &mut seeded {
-            o.quiet = true;
+                None,
+            );
+            let session = &self.sessions[id];
+            seeded.extend(
+                session
+                    .told
+                    .seeded(vec![started], session.turn(), |_| Channel::File),
+            );
         }
         Ok(Seed {
             observations: seeded,

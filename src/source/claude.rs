@@ -1018,24 +1018,12 @@ impl Source for Claude {
             for (id, from, to) in edges {
                 self.edge(&id, from, to, &mut Vec::new());
             }
-            let turn = self.sessions[&id].turn.clone();
-            let current = self.sessions[&id].told.current();
-            for o in &mut started {
-                o.turn = turn.clone();
-            }
-            seeded.extend(started);
-            seeded.extend(current.into_iter().map(|signal| {
-                Observation::new(
-                    Harness::Claude,
-                    &id,
-                    Channel::File,
-                    Event::one(signal),
-                    turn.clone(),
-                )
-            }));
-        }
-        for o in &mut seeded {
-            o.quiet = true;
+            let session = &self.sessions[&id];
+            seeded.extend(
+                session
+                    .told
+                    .seeded(started, session.turn.clone(), |_| Channel::File),
+            );
         }
         Ok(Seed {
             observations: seeded,

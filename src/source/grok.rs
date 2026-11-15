@@ -798,24 +798,13 @@ impl Source for Grok {
         for id in ids {
             let mut started = Vec::new();
             unread.extend(self.start(k, &rows[id], &mut started));
-            let Some(mut started) = started.into_iter().next() else {
+            // Only where the logs leave the session is told, after its start.
+            started.truncate(1);
+            let Some(session) = self.sessions.get(id) else {
                 continue;
             };
-            let turn = self.sessions[id].turn.clone();
-            started.turn = turn.clone();
-            seeded.push(started);
-            seeded.extend(self.sessions[id].told.current().into_iter().map(|signal| {
-                Observation::new(
-                    Harness::Grok,
-                    id,
-                    Channel::File,
-                    Event::one(signal),
-                    turn.clone(),
-                )
-            }));
-        }
-        for o in &mut seeded {
-            o.quiet = true;
+            let turn = session.turn.clone();
+            seeded.extend(session.told.seeded(started, turn, |_| Channel::File));
         }
         Ok(Seed {
             observations: seeded,

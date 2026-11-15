@@ -676,29 +676,22 @@ impl Source for Pi {
             // told before the daemon started may be open still: the first
             // entry after says it is not.
             session.dialog = !session.ended;
-            let (cwd, turn) = (session.cwd.clone(), session.turn.clone());
-            seeded.push(Observation::new(
+            let started = Observation::new(
                 Harness::Pi,
                 id,
                 Channel::Hook,
                 Event::Started(Start {
-                    cwd,
+                    cwd: session.cwd.clone(),
                     liveness: liveness.clone(),
                 }),
-                turn.clone(),
-            ));
-            for signal in self.sessions[id].told.current() {
-                seeded.push(Observation::new(
-                    Harness::Pi,
-                    id,
-                    channel(signal),
-                    Event::one(signal),
-                    turn.clone(),
-                ));
-            }
-        }
-        for o in &mut seeded {
-            o.quiet = true;
+                None,
+            );
+            let session = &self.sessions[id];
+            seeded.extend(
+                session
+                    .told
+                    .seeded(vec![started], session.turn.clone(), channel),
+            );
         }
         Ok(Seed {
             observations: seeded,

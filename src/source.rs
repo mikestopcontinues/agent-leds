@@ -302,6 +302,30 @@ impl Told {
         Observation::new(harness, id, channel, Event::Signals(signals), turn)
     }
 
+    /// What a seed tells of a session its files leave where this says: the
+    /// observations that start it, on `turn`, then each signal `current`
+    /// gives, through the channel `channel` names for it, all of them quiet.
+    pub fn seeded(
+        &self,
+        started: Vec<Observation>,
+        turn: Option<TurnKey>,
+        channel: impl Fn(Signal) -> Channel,
+    ) -> Vec<Observation> {
+        let Some(key) = started.first().map(|o| o.key.clone()) else {
+            return Vec::new();
+        };
+        let current = self.current().into_iter().map(|signal| {
+            let event = Event::one(signal);
+            Observation::new(key.harness, &key.id, channel(signal), event, None)
+        });
+        let mut seeded: Vec<Observation> = started.into_iter().chain(current).collect();
+        for o in &mut seeded {
+            o.turn = turn.clone();
+            o.quiet = true;
+        }
+        seeded
+    }
+
     /// The shortest signals from Idle to the same phase, each told on its
     /// own: for Blocked, by way of the phase it was blocked from.
     pub fn current(&self) -> Vec<Signal> {
