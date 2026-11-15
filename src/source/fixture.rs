@@ -597,6 +597,14 @@ fn seeded(replay: &Replay, bound: &[(Key, Liveness)]) -> (Box<dyn Source>, Queue
     let mut queue = Queue::default();
     // What it could not read, `unread` says.
     let seed = super::seed(source.as_mut(), &replay.kernel, bound).unwrap();
+    // A line a crash or a rewrite cut short is the harness's own; a kind
+    // its source does not know is not.
+    let kinds = source.strange().kinds;
+    assert!(
+        kinds.is_empty(),
+        "{}: records of kinds its harness was not seen to write: {kinds:?}",
+        replay.name
+    );
     for o in seed.observations {
         assert!(o.quiet, "{}: a seed announced", replay.name);
         queue.apply(&o, 0);

@@ -17,7 +17,7 @@ pub mod opencode;
 pub mod pi;
 pub mod tail;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
@@ -146,6 +146,56 @@ impl Unread {
     }
 }
 
+/// What a source's reads could not make sense of: lines that are not
+/// records it can read, and records of kinds its harness was not seen to
+/// write, by kind. A harness that writes otherwise after an update shows up
+/// here first.
+#[derive(Debug, Default, PartialEq)]
+pub struct Strange {
+    pub unparsed: usize,
+    pub kinds: BTreeMap<String, usize>,
+}
+
+impl Strange {
+    /// A line read as `record`, counted if it is none.
+    pub fn parsed<R>(&mut self, record: Option<R>) -> Option<R> {
+        if record.is_none() {
+            self.unparsed += 1;
+        }
+        record
+    }
+
+    /// A record of `kind`, counted if it is none of those `known`.
+    pub fn kind(&mut self, kind: &str, known: &[&str]) {
+        if !known.contains(&kind) {
+            *self.kinds.entry(kind.to_owned()).or_default() += 1;
+        }
+    }
+
+    /// What was counted, as `harness`'s source says it, if anything.
+    pub fn said(&self, harness: Harness) -> Option<String> {
+        let mut said = Vec::new();
+        match self.unparsed {
+            0 => {}
+            1 => said.push("1 line is not a record it reads".to_owned()),
+            n => said.push(format!("{n} lines are not records it reads")),
+        }
+        if !self.kinds.is_empty() {
+            let kinds: Vec<String> = self
+                .kinds
+                .iter()
+                .map(|(kind, n)| format!("{kind} ({n})"))
+                .collect();
+            said.push(format!(
+                "records of kinds {} was not seen to write: {}",
+                harness.title(),
+                kinds.join(", ")
+            ));
+        }
+        (!said.is_empty()).then(|| said.join("; "))
+    }
+}
+
 /// What one harness's files and hooks say about its sessions.
 pub trait Source {
     fn harness(&self) -> Harness;
@@ -165,6 +215,8 @@ pub trait Source {
     fn hook(&mut self, k: &dyn Kernel, hook: &Hook) -> Vec<Observation>;
     /// Whether a read stopped at its budget and left bytes to read.
     fn behind(&self) -> bool;
+    /// What its reads since it was last asked could not make sense of.
+    fn strange(&mut self) -> Strange;
 }
 
 /// Where a source last left a session, by the signals it told: kept so the
@@ -342,6 +394,9 @@ impl Sources {
                                     unread.error
                                 );
                             }
+                            if let Some(said) = source.strange().said(source.harness()) {
+                                eprintln!("agent-leds: {title}: {said}");
+                            }
                             seeded.extend(seed.observations);
                         }
                         Err(error) => eprintln!("agent-leds: {title}: {error:#}"),
@@ -508,6 +563,10 @@ mod tests {
 
         fn behind(&self) -> bool {
             self.behind
+        }
+
+        fn strange(&mut self) -> Strange {
+            Strange::default()
         }
     }
 

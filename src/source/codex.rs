@@ -16,6 +16,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read};
+use std::mem;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -26,7 +27,7 @@ use serde::de::IgnoredAny;
 use serde_json::Value;
 
 use super::tail::{self, Lines, MAX_LINE, Tail};
-use super::{Event, Hook, Observation, Seed, Source, Start, Told, Unread};
+use super::{Event, Hook, Observation, Seed, Source, Start, Strange, Told, Unread};
 use crate::coverage::{Declared, Evidence};
 use crate::fsm::{self, Channel, Phase, Signal};
 use crate::harness::{Harness, ends_on_question};
@@ -286,7 +287,53 @@ struct Item {
     agent_thread_id: Option<String>,
 }
 
+/// The kinds of rollout record Codex was seen to write, in the rollouts of
+/// 0.153 to 0.163 on the author's Mac, and those of an `event_msg` and a
+/// `response_item`'s payload.
+const KINDS: &[&str] = &[
+    "compacted",
+    "event_msg",
+    "inter_agent_communication_metadata",
+    "response_item",
+    "session_meta",
+    "token_usage_record",
+    "turn_context",
+    "world_state",
+];
+const EVENTS: &[&str] = &[
+    "item_completed",
+    "task_complete",
+    "task_started",
+    "thread_goal_updated",
+    "thread_settings_applied",
+    "token_count",
+    "turn_aborted",
+];
+const ITEMS: &[&str] = &[
+    "agent_message",
+    "custom_tool_call",
+    "custom_tool_call_output",
+    "function_call",
+    "function_call_output",
+    "message",
+    "reasoning",
+];
+
 impl Record {
+    /// The record on a line, counted in `strange` if it is none, or of a
+    /// kind or with a payload Codex was not seen to write.
+    fn counted(line: &[u8], strange: &mut Strange) -> Option<Record> {
+        let record = strange.parsed(Record::read(line))?;
+        strange.kind(&record.kind, KINDS);
+        let payloads = match record.kind.as_str() {
+            "event_msg" => EVENTS,
+            "response_item" => ITEMS,
+            _ => return Some(record),
+        };
+        strange.kind(record.payload.kind.as_deref().unwrap_or_default(), payloads);
+        Some(record)
+    }
+
     fn read(line: &[u8]) -> Option<Record> {
         let mut record: Record = serde_json::from_slice(line).ok()?;
         if record.is("response_item", "message") && record.payload.role.as_deref() == Some("user") {
@@ -581,6 +628,8 @@ pub struct Codex {
     threads: HashMap<String, Thread>,
     /// Threads that are not the user's, by their rollout, never read again.
     others: HashSet<String>,
+    /// What its reads could not make sense of, since it was last asked.
+    strange: Strange,
 }
 
 /// What a changed path is to the source: a thread's lock, its rollout, or
@@ -601,6 +650,7 @@ impl Codex {
             dir,
             threads: HashMap::new(),
             others: HashSet::new(),
+            strange: Strange::default(),
         }
     }
 
@@ -801,7 +851,7 @@ impl Codex {
             }
         };
         for line in lines {
-            if let Some(record) = Record::read(&line) {
+            if let Some(record) = Record::counted(&line, &mut self.strange) {
                 says(id, thread, &self.databases, &record, out);
             }
         }
@@ -847,7 +897,9 @@ impl Codex {
             // The thread is still followed, from what it writes next.
             Err(error) => return Err(Unread::new(&thread.rollout, error)),
         };
-        let read = |line: &Vec<u8>| Record::read(line).filter(|record| !record.before(start));
+        let strange = &mut self.strange;
+        let read =
+            |line: &Vec<u8>| Record::counted(line, strange).filter(|record| !record.before(start));
         let records: Vec<Record> = lines.iter().filter_map(read).collect();
         // A turn's work with neither its start nor its end: the turn began
         // further back than `tail_back` reads.
@@ -1180,6 +1232,10 @@ impl Source for Codex {
 
     fn behind(&self) -> bool {
         self.threads.values().any(|thread| thread.behind)
+    }
+
+    fn strange(&mut self) -> Strange {
+        mem::take(&mut self.strange)
     }
 }
 

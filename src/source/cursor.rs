@@ -20,12 +20,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::mem;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde::Deserialize;
 
-use super::{Event, Hook, Observation, Seed, Source, Start, Told, Unread, tail};
+use super::{Event, Hook, Observation, Seed, Source, Start, Strange, Told, Unread, tail};
 use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
 use crate::harness::{Harness, ends_on_question};
@@ -197,15 +198,34 @@ struct Level {
     text: String,
 }
 
+/// The kinds of transcript record Cursor was seen to write: by role, or by
+/// type for a record with none.
+const KINDS: &[&str] = &["assistant", "metadata", "turn_ended", "user"];
+
 impl Level {
-    fn read(bytes: &[u8]) -> Level {
+    /// What a whole transcript says, counting in `strange` each line that
+    /// is not a record and each record of a kind Cursor was not seen to write.
+    fn read(bytes: &[u8], strange: &mut Strange) -> Level {
         let mut level = Level {
             users: 0,
             last: None,
             text: String::new(),
         };
-        let records = bytes.split(|&byte| byte == b'\n');
-        for record in records.filter_map(|line| serde_json::from_slice::<Record>(line).ok()) {
+        let lines = bytes
+            .split(|&byte| byte == b'\n')
+            .filter(|line| !line.is_empty());
+        for line in lines {
+            let Some(record) = strange.parsed(serde_json::from_slice::<Record>(line).ok()) else {
+                continue;
+            };
+            strange.kind(
+                record
+                    .role
+                    .as_deref()
+                    .or(record.kind.as_deref())
+                    .unwrap_or_default(),
+                KINDS,
+            );
             match (record.role.as_deref(), record.kind.as_deref()) {
                 (Some("user"), _) => {
                     level.users += 1;
@@ -335,6 +355,8 @@ pub struct Cursor {
     versions: PathBuf,
     chats: PathBuf,
     sessions: BTreeMap<String, Session>,
+    /// What its reads could not make sense of, since it was last asked.
+    strange: Strange,
 }
 
 impl Cursor {
@@ -344,6 +366,7 @@ impl Cursor {
             versions: home.join(".local/share/cursor-agent/versions"),
             chats: home.join(".cursor/chats"),
             sessions: BTreeMap::new(),
+            strange: Strange::default(),
         }
     }
 
@@ -493,7 +516,7 @@ impl Cursor {
         if !finished(&bytes, session.taken.as_deref()) {
             return Ok(());
         }
-        let level = Level::read(&bytes);
+        let level = Level::read(&bytes, &mut self.strange);
         let signals = level.since(session.level.as_ref());
         session.taken = Some(bytes);
         session.level = Some(level);
@@ -771,6 +794,10 @@ impl Source for Cursor {
     fn behind(&self) -> bool {
         false
     }
+
+    fn strange(&mut self) -> Strange {
+        mem::take(&mut self.strange)
+    }
 }
 
 #[cfg(test)]
@@ -843,7 +870,7 @@ mod tests {
                 transcripts += 1;
                 match tail::stable(&path) {
                     Ok(Some(bytes)) => {
-                        let level = Level::read(&bytes);
+                        let level = Level::read(&bytes, &mut Strange::default());
                         println!(
                             "chat {id}  {:>3} user records  {:?}  asks {}",
                             level.users,

@@ -144,7 +144,7 @@ Junie never removes a sidecar, and one process takes session after session (the 
 
 The gaps:
 
-- Junie was not installed when the files were studied. Every record is taken from captures of Junie CLI 26.8.24 that others published, and the fixtures in `tests/fixtures/junie/` are those captures with the text scrubbed, so every signal is inferred until a real session confirms it. So that a newer Junie that writes otherwise shows, a daemon starting logs, and `agent-leds doctor` reports, for each running session, how many lines of its log as far as the seed reads it back are not records, and how many records are of kinds or wrap blocks of kinds those captures and the parsers built on them never showed.
+- Junie was not installed when the files were studied. Every record is taken from captures of Junie CLI 26.8.24 that others published, and the fixtures in `tests/fixtures/junie/` are those captures with the text scrubbed, so every signal is inferred until a real session confirms it. So that a newer Junie that writes otherwise shows, a daemon starting logs, and `agent-leds doctor` reports, as for every harness, how many lines of the running sessions' logs, as far as the seed reads them back, are not records, and how many records are of kinds or wrap blocks of kinds those captures and the parsers built on them never showed.
 - What a denied permission writes, whether Esc and Ctrl-C both write `CancelAgentEvent`, whether a resume appends to the same log, and what a subagent writes in `subagents/` and `task-*/` are not known. Those logs are not read.
 - No hook is registered for `PermissionRequest` or `PreToolUse`, ever: Junie reads a hook that succeeds there as approving the request or allowing the tool.
 

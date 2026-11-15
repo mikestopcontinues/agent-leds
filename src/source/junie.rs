@@ -16,7 +16,7 @@
 //! hundreds of gigabytes, as Junie writes terminal output into it, so it is
 //! only ever read from its end or from where it began after its session did.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::{CStr, OsStr};
 use std::fs;
 use std::io;
@@ -31,7 +31,7 @@ use serde::Deserialize;
 use serde::de::IgnoredAny;
 
 use super::tail::{self, Lines, Tail};
-use super::{Event, Hook, Observation, Seed, Source, Start, Told, Unread};
+use super::{Event, Hook, Observation, Seed, Source, Start, Strange, Told, Unread};
 use crate::config;
 use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
@@ -259,13 +259,15 @@ impl Record {
             .is_some_and(|(state, _)| matches!(state, Some("IN_PROGRESS" | "INPUT_REQUIRED")))
     }
 
-    /// The record's kind, or its block's, when Junie was not seen to write it.
-    fn unknown(&self) -> Option<&str> {
-        if !KINDS.contains(&self.kind.as_str()) {
-            return Some(&self.kind);
+    /// The record on a line, counted in `strange` if it is none, or of a
+    /// kind or with a block Junie was not seen to write.
+    fn counted(line: &[u8], strange: &mut Strange) -> Option<Record> {
+        let record = strange.parsed(Record::read(line))?;
+        strange.kind(&record.kind, KINDS);
+        if let Some((_, block)) = record.block() {
+            strange.kind(&block.kind, BLOCKS);
         }
-        let (_, block) = self.block()?;
-        (!BLOCKS.contains(&block.kind.as_str())).then_some(block.kind.as_str())
+        Some(record)
     }
 }
 
@@ -308,51 +310,6 @@ const BLOCKS: &[&str] = &[
     "ViewFilesBlockUpdatedEvent",
 ];
 
-/// What a read of a log could not make sense of: lines that are not
-/// records, and records of kinds Junie was not seen to write, by kind. A
-/// newer Junie that writes otherwise shows up here first.
-#[derive(Default)]
-struct Strange {
-    unparsed: usize,
-    kinds: BTreeMap<String, usize>,
-}
-
-impl Strange {
-    /// The record on a line, counted if it is none or of an unknown kind.
-    fn read(&mut self, line: &[u8]) -> Option<Record> {
-        let Some(record) = Record::read(line) else {
-            self.unparsed += 1;
-            return None;
-        };
-        if let Some(kind) = record.unknown() {
-            *self.kinds.entry(kind.to_owned()).or_default() += 1;
-        }
-        Some(record)
-    }
-
-    /// What `path`'s read could not make sense of, if anything.
-    fn unread(&self, path: &Path) -> Option<Unread> {
-        let mut said = Vec::new();
-        match self.unparsed {
-            0 => {}
-            1 => said.push("1 line is not a record".to_owned()),
-            n => said.push(format!("{n} lines are not records")),
-        }
-        if !self.kinds.is_empty() {
-            let kinds: Vec<String> = self
-                .kinds
-                .iter()
-                .map(|(kind, n)| format!("{kind} ({n})"))
-                .collect();
-            said.push(format!(
-                "records of kinds Junie was not seen to write: {}",
-                kinds.join(", ")
-            ));
-        }
-        (!said.is_empty()).then(|| Unread::new(path, said.join("; ")))
-    }
-}
-
 /// What the task under way has said of itself, which its end is told with.
 #[derive(Default)]
 struct Task {
@@ -385,6 +342,8 @@ pub struct Junie {
     /// Every sidecar read, by its path.
     sidecars: HashMap<PathBuf, Sidecar>,
     sessions: HashMap<String, Session>,
+    /// What its reads could not make sense of, since it was last asked.
+    strange: Strange,
 }
 
 impl Junie {
@@ -395,6 +354,7 @@ impl Junie {
             sessions_dir: root.join("sessions"),
             sidecars: HashMap::new(),
             sessions: HashMap::new(),
+            strange: Strange::default(),
         }
     }
 
@@ -541,8 +501,8 @@ impl Junie {
     /// the session, which is told after its start. Otherwise the session
     /// begins idle: a resumed log tells what the process wrote to it already,
     /// and a log the process began is read from its first line. A log that
-    /// cannot be read is followed from what is written to it next. What a
-    /// read back could not make sense of is returned.
+    /// cannot be read is followed from what is written to it next, and is
+    /// returned.
     fn start(
         &mut self,
         id: &str,
@@ -573,15 +533,13 @@ impl Junie {
         };
         let mut read = Vec::new();
         let mut unread = None;
-        if created.is_ok() && (seeding || since.is_some()) {
-            match self.read_back(id, &log, since, &mut read) {
-                Ok(strange) => unread = strange.unread(&log),
-                Err(error) => {
-                    unread = Some(Unread::new(&log, error));
-                    let session = self.sessions.get_mut(id).expect("just started");
-                    session.log = Tail::at_end(&log).ok();
-                }
-            }
+        if created.is_ok()
+            && (seeding || since.is_some())
+            && let Err(error) = self.read_back(id, &log, since, &mut read)
+        {
+            unread = Some(Unread::new(&log, error));
+            let session = self.sessions.get_mut(id).expect("just started");
+            session.log = Tail::at_end(&log).ok();
         }
         let session = &self.sessions[id];
         out.push(Observation::new(
@@ -613,19 +571,22 @@ impl Junie {
     /// Opens a session's log at its end, and tells into `out` what its tail
     /// says: read back to where its last task began or, of a log a process
     /// resumed after taking the session at `since`, from the first task that
-    /// process began. Returns what the read could not make sense of.
+    /// process began.
     fn read_back(
         &mut self,
         id: &str,
         path: &Path,
         since: Option<u64>,
         out: &mut Vec<Observation>,
-    ) -> io::Result<Strange> {
+    ) -> io::Result<()> {
         let (lines, tail) = tail::tail_back(path, |line| {
             Record::read(line).is_some_and(|record| record.starts_turn())
         })?;
-        let mut strange = Strange::default();
-        let mut records: Vec<Record> = lines.iter().filter_map(|line| strange.read(line)).collect();
+        let strange = &mut self.strange;
+        let mut records: Vec<Record> = lines
+            .iter()
+            .filter_map(|line| Record::counted(line, strange))
+            .collect();
         // What came before the first task the process began is a dead
         // process's. A task start's stamp tells whose it is; a block's does
         // not, since a task's end writes its blocks again with their first
@@ -646,7 +607,7 @@ impl Junie {
         for record in &records {
             self.record(id, record, out);
         }
-        Ok(strange)
+        Ok(())
     }
 
     /// Reads what was appended to a session's log, from its first line if
@@ -686,7 +647,7 @@ impl Junie {
             }
         };
         for line in lines {
-            if let Some(record) = Record::read(&line) {
+            if let Some(record) = Record::counted(&line, &mut self.strange) {
                 self.record(id, &record, out);
             }
         }
@@ -905,6 +866,10 @@ impl Source for Junie {
 
     fn behind(&self) -> bool {
         self.sessions.values().any(|session| session.behind)
+    }
+
+    fn strange(&mut self) -> Strange {
+        mem::take(&mut self.strange)
     }
 }
 
@@ -1161,20 +1126,18 @@ mod tests {
         ];
         let mut file = fs::OpenOptions::new().append(true).open(&log).unwrap();
         std::io::Write::write_all(&mut file, (lines.join("\n") + "\n").as_bytes()).unwrap();
-        let seed = replay.source().seed(&replay.kernel, &[]).unwrap();
-        let unread: Vec<(&Path, &str)> = seed
-            .unread
-            .iter()
-            .map(|unread| (unread.path.as_path(), unread.error.as_str()))
-            .collect();
+        let mut source = replay.source();
+        let seed = source.seed(&replay.kernel, &[]).unwrap();
+        assert!(seed.unread.is_empty());
         assert_eq!(
-            unread,
-            [(
-                log.as_path(),
-                "2 lines are not records; records of kinds Junie was not seen to write: \
-                 PlanBlockUpdatedEvent (2), TaskPausedEvent (1)"
-            )]
+            source.strange().said(Harness::Junie).as_deref(),
+            Some(
+                "2 lines are not records it reads; records of kinds Junie was not seen to \
+                 write: PlanBlockUpdatedEvent (2), TaskPausedEvent (1)"
+            )
         );
+        // What the next read finds is counted from then on.
+        assert_eq!(source.strange().said(Harness::Junie), None);
         // What it did make sense of still seeds the session.
         assert_eq!(seed.observations.len(), 2);
     }

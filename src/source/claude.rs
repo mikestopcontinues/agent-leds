@@ -13,6 +13,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
+use std::mem;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -22,7 +23,7 @@ use serde::de::IgnoredAny;
 use serde_json::Value;
 
 use super::tail::{self, Lines, Tail};
-use super::{Event, Hook, Observation, Seed, Source, Start, Told, Unread};
+use super::{Event, Hook, Observation, Seed, Source, Start, Strange, Told, Unread};
 use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
 use crate::harness::{Harness, ends_on_question};
@@ -236,9 +237,47 @@ impl Content {
     }
 }
 
+/// The kinds of transcript record Claude Code was seen to write, in a
+/// month of the author's transcripts up to 2.1.325 and in the fixtures.
+const KINDS: &[&str] = &[
+    "agent-name",
+    "api-request",
+    "api-request-blob",
+    "api-request-shape",
+    "artifact-autoreact-ledger",
+    "artifact-comment-monitor",
+    "assistant",
+    "atis-latch",
+    "attachment",
+    "bridge-session",
+    "cost-state",
+    "custom-title",
+    "file-history-delta",
+    "file-history-snapshot",
+    "frame-link",
+    "last-prompt",
+    "mode",
+    "permission-mode",
+    "queue-operation",
+    "relocated",
+    "session-owner",
+    "system",
+    "tools-used",
+    "user",
+    "worktree-state",
+];
+
 impl Record {
     fn read(line: &[u8]) -> Option<Record> {
         let record: Record = serde_json::from_slice(line).ok()?;
+        (!record.is_sidechain).then_some(record)
+    }
+
+    /// The record on a line, counted in `strange` if it is none or of a
+    /// kind Claude Code was not seen to write. A subagent's is none.
+    fn counted(line: &[u8], strange: &mut Strange) -> Option<Record> {
+        let record: Record = strange.parsed(serde_json::from_slice(line).ok())?;
+        strange.kind(&record.kind, KINDS);
         (!record.is_sidechain).then_some(record)
     }
 
@@ -395,6 +434,8 @@ pub struct Claude {
     projects_dir: PathBuf,
     procs: HashMap<PathBuf, Proc>,
     sessions: HashMap<String, Session>,
+    /// What its reads could not make sense of, since it was last asked.
+    strange: Strange,
 }
 
 /// Claude Code's folder for the account at `home`, as this process's
@@ -421,6 +462,7 @@ impl Claude {
             projects_dir: folder.join("projects"),
             procs: HashMap::new(),
             sessions: HashMap::new(),
+            strange: Strange::default(),
         }
     }
 
@@ -709,7 +751,7 @@ impl Claude {
     }
 
     fn line(&mut self, id: &str, line: &[u8], out: &mut Vec<Observation>) {
-        if let Some(record) = Record::read(line) {
+        if let Some(record) = Record::counted(line, &mut self.strange) {
             self.record(id, &record, out);
         }
     }
@@ -796,7 +838,11 @@ impl Claude {
         let (lines, tail) = tail::tail_back(path, |line| {
             Record::read(line).is_some_and(|record| anchors(&record))
         })?;
-        let records: Vec<Record> = lines.iter().filter_map(|line| Record::read(line)).collect();
+        let strange = &mut self.strange;
+        let records: Vec<Record> = lines
+            .iter()
+            .filter_map(|line| Record::counted(line, strange))
+            .collect();
         let session = self.sessions.get_mut(id).expect("started");
         session.transcript = Some((path.to_owned(), tail));
         let mut history = Vec::new();
@@ -1013,6 +1059,10 @@ impl Source for Claude {
 
     fn behind(&self) -> bool {
         self.sessions.values().any(|session| session.behind)
+    }
+
+    fn strange(&mut self) -> Strange {
+        mem::take(&mut self.strange)
     }
 }
 

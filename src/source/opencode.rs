@@ -24,6 +24,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
+use std::mem;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -33,7 +34,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{Event, Hook, Observation, Seed, Source, Start, Told, Unread};
+use super::{Event, Hook, Observation, Seed, Source, Start, Strange, Told, Unread};
 use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
 use crate::harness::{Harness, ends_on_question};
@@ -488,15 +489,24 @@ fn stamp(db: &Connection, schema: Schema, id: &str) -> Result<Stamp> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-fn level(db: &Connection, schema: Schema, id: &str) -> Result<Level> {
+/// The roles and finishes of a 1.x message, and the outcomes of a 2.x run,
+/// that OpenCode was seen to write, in the sessions of 1.18.25, 1.19.5 and
+/// 2.3.0 the fixtures were taken from.
+const ROLES: &[&str] = &["assistant", "user"];
+const FINISHES: &[&str] = &["error", "stop", "tool-calls", "unknown"];
+const OUTCOMES: &[&str] = &["failed", "interrupted", "succeeded"];
+
+/// Where the session's rows leave its turn, counting in `strange` what
+/// they say that OpenCode was not seen to write.
+fn level(db: &Connection, schema: Schema, id: &str, strange: &mut Strange) -> Result<Level> {
     match schema {
-        Schema::V1 => level1(db, id),
-        Schema::V2 => level2(db, id),
+        Schema::V1 => level1(db, id, strange),
+        Schema::V2 => level2(db, id, strange),
     }
 }
 
 /// Where the session's 1.x messages leave its turn.
-fn level1(db: &Connection, id: &str) -> Result<Level> {
+fn level1(db: &Connection, id: &str, strange: &mut Strange) -> Result<Level> {
     let latest = db
         .prepare_cached(LATEST)?
         .query_row([id], |row| {
@@ -512,6 +522,10 @@ fn level1(db: &Connection, id: &str) -> Result<Level> {
     };
     let data: Message =
         serde_json::from_str(&data).with_context(|| format!("reading message {message}"))?;
+    strange.kind(&data.role, ROLES);
+    if let Some(finish) = &data.finish {
+        strange.kind(finish, FINISHES);
+    }
     if data.role == "user" {
         return Ok(Level::Open {
             turn: message,
@@ -584,7 +598,7 @@ fn text1(db: &Connection, message: &str) -> Result<String> {
 /// writing `time_busy` and ends by writing `time_idle`, never earlier, and
 /// how it ended; a run cut short by OpenCode shutting down writes no end,
 /// and is resumed when it starts again.
-fn level2(db: &Connection, id: &str) -> Result<Level> {
+fn level2(db: &Connection, id: &str, strange: &mut Strange) -> Result<Level> {
     let (busy, idle, outcome, viewed, jobs) = db.prepare_cached(RUN2)?.query_row([id], |row| {
         Ok((
             row.get::<_, Option<i64>>(0)?,
@@ -604,6 +618,9 @@ fn level2(db: &Connection, id: &str) -> Result<Level> {
     let Some(idle) = idle.filter(|&idle| idle >= busy) else {
         return Ok(Level::Open { turn, question });
     };
+    if let Some(outcome) = &outcome {
+        strange.kind(outcome, OUTCOMES);
+    }
     let mut signals = BTreeSet::from([Signal::TurnEnded]);
     match outcome.as_deref() {
         Some("failed") => signals.insert(Signal::TurnFailed),
@@ -664,6 +681,8 @@ pub struct OpenCode {
     db: Option<Database>,
     /// By id, so they are read in the same order every time.
     sessions: BTreeMap<String, Session>,
+    /// What its reads could not make sense of, since it was last asked.
+    strange: Strange,
 }
 
 impl OpenCode {
@@ -674,6 +693,7 @@ impl OpenCode {
             folder,
             db: None,
             sessions: BTreeMap::new(),
+            strange: Strange::default(),
         }
     }
 
@@ -733,7 +753,7 @@ impl OpenCode {
         let mut ended = Vec::new();
         let mut read = true;
         for (id, session) in &mut self.sessions {
-            match read_session(&tx, db.tables, id, session, out) {
+            match read_session(&tx, db.tables, id, session, &mut self.strange, out) {
                 Ok(true) => {}
                 Ok(false) => ended.push(id.clone()),
                 // The others are read all the same, and this one is read
@@ -777,13 +797,19 @@ impl OpenCode {
 
     /// Where the database leaves a session now, if it has the session.
     fn look(&mut self, id: &str) -> Result<Option<(Row, Stamp, Level)>> {
-        let Some(db) = self.open()? else {
+        if self.open()?.is_none() {
             return Ok(None);
-        };
+        }
+        let db = self.db.as_ref().expect("opened");
+        let strange = &mut self.strange;
         let tx = db.connection.unchecked_transaction()?;
         let read = match schema(&tx, db.tables, id)? {
             Some(schema) => match row(&tx, schema, id)? {
-                Some(row) => Some((row, stamp(&tx, schema, id)?, level(&tx, schema, id)?)),
+                Some(row) => Some((
+                    row,
+                    stamp(&tx, schema, id)?,
+                    level(&tx, schema, id, strange)?,
+                )),
                 None => None,
             },
             None => None,
@@ -893,6 +919,7 @@ fn read_session(
     tables: Tables,
     id: &str,
     session: &mut Session,
+    strange: &mut Strange,
     out: &mut Vec<Observation>,
 ) -> Result<bool> {
     let schema = schema(db, tables, id)?;
@@ -911,7 +938,7 @@ fn read_session(
     if stamp == session.stamp {
         return Ok(true);
     }
-    let level = level(db, schema, id)?;
+    let level = level(db, schema, id, strange)?;
     moved(id, &session.level, &level, out);
     session.stamp = stamp;
     session.level = level;
@@ -1174,6 +1201,10 @@ impl Source for OpenCode {
     fn behind(&self) -> bool {
         false
     }
+
+    fn strange(&mut self) -> Strange {
+        mem::take(&mut self.strange)
+    }
 }
 
 #[cfg(test)]
@@ -1221,7 +1252,7 @@ mod tests {
         println!("{} sessions", roots.len());
         for (id, title) in roots {
             let schema = schema(&db.connection, db.tables, &id).unwrap().unwrap();
-            let level = level(&db.connection, schema, &id).unwrap();
+            let level = level(&db.connection, schema, &id, &mut Strange::default()).unwrap();
             println!("{id}  {title:<40.40}  {schema:?} {level:?}");
         }
     }

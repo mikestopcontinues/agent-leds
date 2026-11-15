@@ -20,6 +20,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
+use std::mem;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -28,7 +29,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::tail::{self, Lines, Tail};
-use super::{Event, Hook, Observation, Seed, Source, Start, Told, Unread};
+use super::{Event, Hook, Observation, Seed, Source, Start, Strange, Told, Unread};
 use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
 use crate::harness::{Harness, ends_on_question};
@@ -154,6 +155,41 @@ struct Row {
     #[serde(default)]
     cwd: String,
 }
+
+/// The kinds of `events.jsonl` and `updates.jsonl` record Grok was seen to
+/// write, in the sessions on the author's Mac and the fixtures.
+const EVENTS: &[&str] = &[
+    "first_token",
+    "loop_started",
+    "mcp_config_resolved",
+    "mcp_init_completed",
+    "mcp_server_connected",
+    "mcp_server_starting",
+    "permission_requested",
+    "permission_resolved",
+    "phase_changed",
+    "tool_completed",
+    "tool_started",
+    "turn_ended",
+    "turn_started",
+];
+const UPDATES: &[&str] = &[
+    "agent_message_chunk",
+    "agent_thought_chunk",
+    "background_tasks",
+    "current_mode_update",
+    "hook_execution",
+    "retry_state",
+    "rewind_marker",
+    "subagent_finished",
+    "subagent_spawned",
+    "task_backgrounded",
+    "task_completed",
+    "tool_call",
+    "tool_call_update",
+    "turn_completed",
+    "user_message_chunk",
+];
 
 /// One `events.jsonl` record, with only the fields that carry state.
 #[derive(Deserialize)]
@@ -361,6 +397,8 @@ pub struct Grok {
     registry: PathBuf,
     sessions_dir: PathBuf,
     sessions: HashMap<String, Session>,
+    /// What its reads could not make sense of, since it was last asked.
+    strange: Strange,
 }
 
 impl Grok {
@@ -371,6 +409,7 @@ impl Grok {
             sessions_dir: root.join("sessions"),
             root,
             sessions: HashMap::new(),
+            strange: Strange::default(),
         }
     }
 
@@ -618,9 +657,10 @@ impl Grok {
 
     /// What one events record says.
     fn event(&mut self, id: &str, line: &[u8], out: &mut Vec<Observation>) {
-        let Some(record) = Record::read(line) else {
+        let Some(record) = self.strange.parsed(Record::read(line)) else {
             return;
         };
+        self.strange.kind(&record.kind, EVENTS);
         let session = self.sessions.get_mut(id).expect("tracked");
         if record.before(session.start) {
             return;
@@ -683,9 +723,10 @@ impl Grok {
 
     /// What one updates record says.
     fn update(&mut self, id: &str, line: &[u8], out: &mut Vec<Observation>) {
-        let Some(update) = Update::read(line) else {
+        let Some(update) = self.strange.parsed(Update::read(line)) else {
             return;
         };
+        self.strange.kind(&update.params.update.kind, UPDATES);
         let session = self.sessions.get_mut(id).expect("tracked");
         if update.before(session.start) {
             return;
@@ -881,6 +922,10 @@ impl Source for Grok {
     fn behind(&self) -> bool {
         let behind = |session: &Session| session.events.behind || session.updates.behind;
         self.sessions.values().any(behind)
+    }
+
+    fn strange(&mut self) -> Strange {
+        mem::take(&mut self.strange)
     }
 }
 

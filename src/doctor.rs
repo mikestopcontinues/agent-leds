@@ -253,25 +253,31 @@ fn files(source: &mut dyn Source, k: &dyn Kernel, saved: &Queue, home: &Path) ->
         sessions(&seeded.observations, saved, "running")?
     };
     let said = format!("{sessions}, read from {}", roots.join(", "));
-    // A file it could not make sense of may be a session it missed.
-    if seeded.unread.is_empty() {
+    // A file or record it could not make sense of may be a session or a
+    // move it missed.
+    let mut problems = Vec::new();
+    if !seeded.unread.is_empty() {
+        let mut unread: Vec<String> = seeded
+            .unread
+            .iter()
+            .take(UNREAD_SHOWN)
+            .map(|unread| format!("{}: {}", tilde(&unread.path, home), unread.error))
+            .collect();
+        if seeded.unread.len() > UNREAD_SHOWN {
+            unread.push(format!(
+                "and {} more files",
+                seeded.unread.len() - UNREAD_SHOWN
+            ));
+        }
+        problems.push(format!("could not read {}", unread.join("; ")));
+    }
+    problems.extend(source.strange().said(harness));
+    if problems.is_empty() {
         return Ok(said);
     }
-    let mut unread: Vec<String> = seeded
-        .unread
-        .iter()
-        .take(UNREAD_SHOWN)
-        .map(|unread| format!("{}: {}", tilde(&unread.path, home), unread.error))
-        .collect();
-    if seeded.unread.len() > UNREAD_SHOWN {
-        unread.push(format!(
-            "and {} more files",
-            seeded.unread.len() - UNREAD_SHOWN
-        ));
-    }
     bail!(
-        "{said}; but could not read {}; the harness's format may have changed",
-        unread.join("; ")
+        "{said}; but {}; the harness's format may have changed",
+        problems.join("; and ")
     )
 }
 
@@ -502,6 +508,29 @@ mod tests {
     }
 
     #[test]
+    fn records_of_unknown_kinds_and_lines_that_are_none_need_attention() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        write(home, ".claude/sessions/90859.json", CLAUDE_SESSION);
+        write(
+            home,
+            ".claude/projects/-Users-me-Code-app/e8f843a7-1f54-44e3-b14d-99f53e9cec7a.jsonl",
+            "{\"type\": \"user\", \"promptId\": \"p1\", \"promptSource\": \"typed\", \
+             \"timestamp\": \"2026-11-14T21:56:23.616Z\", \"message\": {\"content\": \"Go\"}}\n\
+             {\"type\": \"turn-summary\", \"timestamp\": \"2026-11-14T21:56:24.000Z\"}\n\
+             not json\n",
+        );
+        let mut claude = source_of(Harness::Claude, home);
+        let problem = files(claude.as_mut(), &Running(90859), &Queue::default(), home);
+        assert_eq!(
+            problem.unwrap_err().to_string(),
+            "1 session running (working), read from ~/.claude/sessions, ~/.claude/projects; \
+             but 1 line is not a record it reads; records of kinds Claude Code was not seen to \
+             write: turn-summary (1); the harness's format may have changed"
+        );
+    }
+
+    #[test]
     fn records_a_running_junie_session_holds_of_unknown_kinds_need_attention() {
         let home = tempfile::tempdir().unwrap();
         let home = home.path();
@@ -521,8 +550,7 @@ mod tests {
         assert_eq!(
             problem.unwrap_err().to_string(),
             "1 session running (working), read from ~/.junie/processes, ~/.junie/sessions; \
-             but could not read ~/.junie/sessions/session-261114-215557-ab12/events.jsonl: \
-             records of kinds Junie was not seen to write: TaskPausedEvent (1); the \
+             but records of kinds Junie was not seen to write: TaskPausedEvent (1); the \
              harness's format may have changed"
         );
     }

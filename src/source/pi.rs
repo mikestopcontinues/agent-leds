@@ -13,13 +13,14 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
+use std::mem;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde::Deserialize;
 
 use super::tail::{self, Lines, Tail};
-use super::{Event, Hook, Observation, Seed, Source, Start, Told, Unread};
+use super::{Event, Hook, Observation, Seed, Source, Start, Strange, Told, Unread};
 use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
 use crate::harness::{self, Harness, ends_on_question};
@@ -164,11 +165,35 @@ struct Block {
     text: Option<String>,
 }
 
+/// The kinds of entry Pi was seen to write, in the sessions of 0.84 and
+/// 1.5.2 on the author's Mac and the fixtures.
+const KINDS: &[&str] = &[
+    "cache_warm",
+    "compaction",
+    "context_edit",
+    "custom",
+    "custom_message",
+    "label",
+    "message",
+    "model_change",
+    "session",
+    "session_info",
+    "thinking_level_change",
+];
+
 impl Entry {
     /// An entry Pi wrote whole. A line a crash cut short, which Pi ends with
     /// a newline when it loads the file again, is none.
     fn read(line: &[u8]) -> Option<Entry> {
         serde_json::from_slice(line).ok()
+    }
+
+    /// The entry on a line, counted in `strange` if it is none or of a kind
+    /// Pi was not seen to write.
+    fn counted(line: &[u8], strange: &mut Strange) -> Option<Entry> {
+        let entry = strange.parsed(Entry::read(line))?;
+        strange.kind(&entry.kind, KINDS);
+        Some(entry)
     }
 
     /// What starts a turn: a prompt.
@@ -383,6 +408,8 @@ impl Session {
 pub struct Pi {
     sessions_dir: PathBuf,
     sessions: HashMap<String, Session>,
+    /// What its reads could not make sense of, since it was last asked.
+    strange: Strange,
 }
 
 impl Pi {
@@ -390,6 +417,7 @@ impl Pi {
         Pi {
             sessions_dir: home.join(".pi/agent/sessions"),
             sessions: HashMap::new(),
+            strange: Strange::default(),
         }
     }
 
@@ -462,7 +490,7 @@ impl Pi {
             }
         };
         for line in lines {
-            if let Some(entry) = Entry::read(&line) {
+            if let Some(entry) = Entry::counted(&line, &mut self.strange) {
                 self.entry(id, &entry, out);
             }
         }
@@ -539,7 +567,10 @@ impl Pi {
             // as a seed reads it, though this process may have written it
             // before it went to another session and back.
             if let Ok((lines, tail)) = tail::tail_back(&file, holds_prompt) {
-                let entries = lines.iter().filter_map(|line| Entry::read(line));
+                let strange = &mut self.strange;
+                let entries = lines
+                    .iter()
+                    .filter_map(|line| Entry::counted(line, strange));
                 for entry in entries.filter(Entry::is_message) {
                     session.facts(&entry);
                 }
@@ -570,7 +601,11 @@ impl Pi {
             session.cwd = header.cwd.unwrap_or_default();
         }
         let (lines, tail) = tail::tail_back(path, holds_prompt)?;
-        let entries: Vec<Entry> = lines.iter().filter_map(|line| Entry::read(line)).collect();
+        let strange = &mut self.strange;
+        let entries: Vec<Entry> = lines
+            .iter()
+            .filter_map(|line| Entry::counted(line, strange))
+            .collect();
         self.sessions.get_mut(id).expect("seeded").tail = Some(tail);
         let mut history = Vec::new();
         // A tail that holds no prompt starts in a run, which its first reply
@@ -775,6 +810,10 @@ impl Source for Pi {
 
     fn behind(&self) -> bool {
         self.sessions.values().any(|session| session.behind)
+    }
+
+    fn strange(&mut self) -> Strange {
+        mem::take(&mut self.strange)
     }
 }
 
