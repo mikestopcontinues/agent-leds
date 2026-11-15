@@ -1,6 +1,8 @@
 //! Grok: its hooks live in files of their own in `~/.grok/hooks/`. The
-//! daemon reads Grok's files instead, so an install registers none and
-//! removes the file an older version wrote.
+//! daemon reads Grok's files, and needs one hook, for a tool's approval
+//! card, which nothing in them tells from an approval Grok gave itself.
+//! While any hook of the user's own is registered, Grok asks once to trust
+//! each folder but the home folder itself before it runs any of them.
 //!
 //! Grok also runs the hooks in `~/.claude/settings.json`, unless its config
 //! sets `[compat.claude] hooks = false`, so a hook registered for Claude Code
@@ -9,22 +11,31 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use serde_json::json;
 
 use super::{Harness, claude, commands, read_hooks};
 use crate::files;
+use crate::source::grok::PERMISSION_PROMPT;
 
-/// The file an older version wrote. Grok reads every JSON file in the
+/// Our hooks' own file, written whole. Grok reads every JSON file in the
 /// folder.
 pub const FILE: &str = ".grok/hooks/agent-leds.json";
 
-/// The hook events the daemon needs: none, since its files say it all.
-pub const HOOKS: [&str; 0] = [];
+/// The hook events the daemon needs: `Notification`, only for
+/// [`PERMISSION_PROMPT`].
+pub const HOOKS: [&str; 1] = ["Notification"];
 
 const CONFIG: &str = ".grok/config.toml";
 
-/// Removes the file an older version wrote.
-pub fn install(home: &Path, _exe: &Path) -> Result<()> {
-    uninstall(home)
+/// Writes our hooks' file whole, in place of whatever an older version wrote.
+pub fn install(home: &Path, exe: &Path) -> Result<()> {
+    let handler = json!({ "type": "command", "command": Harness::Grok.command(exe), "timeout": 5 });
+    let hooks =
+        json!({ "hooks": { HOOKS[0]: [{ "matcher": PERMISSION_PROMPT, "hooks": [handler] }] } });
+    files::replace(
+        &home.join(FILE),
+        &(serde_json::to_string_pretty(&hooks)? + "\n"),
+    )
 }
 
 /// The hooks in every file of the folder, since Grok runs them all.
@@ -98,7 +109,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn installing_over_0_5_0_removes_its_file_and_leaves_the_rest() {
+    fn installing_over_0_5_0_leaves_only_the_permission_prompt_and_the_rest() {
         let home = Home::new();
         home.write(".grok/hooks/sidepulse.json", "{}");
         let ours = json!([{ "hooks": [{ "type": "command", "command": "/opt/homebrew/bin/agent-leds hook grok", "timeout": 5 }] }]);
@@ -127,11 +138,22 @@ mod tests {
             "{leftover}"
         );
         install(&home, exe).unwrap();
-        assert!(!home.join(FILE).exists());
+        assert_eq!(
+            home.json(FILE),
+            json!({ "hooks": { "Notification": [{ "matcher": "permission_prompt", "hooks": ours[0]["hooks"] }] } })
+        );
         assert!(home.join(".grok/hooks/sidepulse.json").exists());
         Harness::Grok.check(&home, exe).unwrap();
-        install(&home, exe).unwrap();
+        let moved = Harness::Grok.check(&home, Path::new("/usr/local/bin/agent-leds"));
+        let moved = moved.unwrap_err().to_string();
+        assert!(moved.contains("not this binary"), "{moved}");
         uninstall(&home).unwrap();
+        assert!(!home.join(FILE).exists());
+        assert!(home.join(".grok/hooks/sidepulse.json").exists());
+        assert_eq!(
+            Harness::Grok.check(&home, exe).unwrap_err().to_string(),
+            "not registered; run `agent-leds install`"
+        );
     }
 
     #[test]
@@ -139,6 +161,7 @@ mod tests {
         let home = Home::new();
         let exe = Path::new("/opt/homebrew/bin/agent-leds");
         home.write(CONFIG, "[cli]\nauto_update = true\n");
+        install(&home, exe).unwrap();
         Harness::Grok.check(&home, exe).unwrap();
         let handler =
             json!({ "type": "command", "command": "/opt/homebrew/bin/agent-leds hook claude" });

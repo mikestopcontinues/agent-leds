@@ -38,7 +38,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | [Started](#started) | file | file | file | hook | file | hook | hook |
 | [Prompted](#prompted) | file | file | file | file+hook | file | file+hook | file+hook |
-| [PermissionAsked](#permissionasked) | file | hook | file | — | file | hook | — |
+| [PermissionAsked](#permissionasked) | file | hook | file+hook | — | file | hook | — |
 | [QuestionAsked](#questionasked) | file | file | file | — | file | file | hook |
 | [Answered](#answered) | file | file | file | — | file | file+hook | file*+hook |
 | [Released](#released) | file* | — | — | — | — | — | — |
@@ -80,7 +80,8 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 - Claude Code, file, observed: the session file going to status waiting, for anything but input needed or dialog open; or a prompt read while the session file waits (probe-claude cc1, cc4, cc10)
 - Codex, hook, observed: PermissionRequest naming the turn the rollout has open (0.5.0 hooks during probe-codex runA PROMPT4 and codex2)
-- Grok, file, observed: plan_mode.json awaiting_plan_approval true while a turn is open, as exit_plan_mode's plan card waits on the user; not for a tool's approval card (gaps p3)
+- Grok, file, observed: plan_mode.json awaiting_plan_approval true while a turn is open, as exit_plan_mode's plan card waits on the user (gaps p3)
+- Grok, hook, observed: Notification permission_prompt while the open turn has a permission_requested in events.jsonl with no permission_resolved after it, ask_user_question's own pair aside; the prompt of a plan card comes once exit_plan_mode's request is resolved, so plan_mode.json alone tells it (ap-grok runs 1, 2)
 - Junie, file, observed: a SessionA2uxEvent in state INPUT_REQUIRED whose block carries an approvalRequest and is not COMPLETED, once per stepId; by default 4020.10 asks only to edit a hidden, config or build file, or one outside the project (probe-junie 4020.10 s5 (FileChangesBlockUpdatedEvent, ApproveEditFileData))
 - OpenCode, hook, observed: permission.asked, for the session or a subagent's session under it, which 2.x does not write either (probe-opencode T3, T4, T7, T8, T12; gaps oc8 (2.3.0, a subagent's included))
 
@@ -98,7 +99,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 - Claude Code, file, observed: the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt (probe-claude cc1, cc2)
 - Codex, file, observed: the output for the pending question's call_id; or, after the approval hook or a daemon start inside a turn, the next call output, completed item that is not a subagent's, or task_complete (probe-codex runA PROMPT2, DENY-ESC; codex2 (approved))
-- Grok, file, observed: events.jsonl tool_completed for ask_user_question, or plan_mode.json awaiting_plan_approval false again while the turn goes on (probe-grok question_pending, grok5; gaps p3)
+- Grok, file, observed: events.jsonl tool_completed for ask_user_question, plan_mode.json awaiting_plan_approval false again while the turn goes on, or, once the hook told an approval card or a daemon started inside a turn, the permission_resolved that leaves no request waiting, or a tool_completed or loop_started while none waits (probe-grok question_pending, grok5; gaps p3; ap-grok runs 1, 2)
 - Junie, file, observed: the last waiting step written again as COMPLETED or in a state other than INPUT_REQUIRED, as an approval, a denial and an Esc on an approval do, or a UserAsyncResponseEvent or CancelAgentEvent while a step waits (probe-junie 4020.10 s1 turns 5, 6, s5)
 - Junie, file, inferred: a UserResponseEvent while a step waits, which 4020.10 never wrote (Irrlicht parser.go parseUserResponse)
 - OpenCode, hook, observed: permission.replied, for the session or a subagent's session under it, that leaves no request asked since the turn began unreplied (probe-opencode T3, T7, T12; gaps oc8 (2.3.0, two requests of a subagent's at once))
@@ -192,7 +193,6 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 **PermissionAsked**: an approval wait shows as the light it interrupts.
 
-- Grok, for a tool's approval card
 - Cursor: Idle, Working, Asked, Stopped, Failed → Blocked
 - Pi: Idle, Working, Asked, Stopped, Failed → Blocked
 
