@@ -94,7 +94,7 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::TurnEnded,
-        "TaskState after a task started, COMPLETED or CANCELED, unless it completes a task that has not taken a follow-up; or a SessionA2uxEvent in state FAILED during a task",
+        "TaskState after a task started, COMPLETED or CANCELED, unless it completes a task with a follow-up it has not taken; or a SessionA2uxEvent in state FAILED during a task",
         "probe-junie 4020.10 s1-s8",
     ),
     file(
