@@ -269,8 +269,9 @@ impl Queue {
     /// The queue at startup: what the harnesses' files show now (`fresh`),
     /// keeping a saved session's phase when it is about the same turn and
     /// either the daemon alone could have taken it there, as with a read
-    /// mark or a dismissal, or a hook took it there from where the files
-    /// still show it, as with a dialog open or a failure only a hook tells.
+    /// mark or a dismissal, or a hook took it there from where the daemon
+    /// alone could take what the files still show, as with a dialog open,
+    /// a failure only a hook tells, or a prompt after a dismissal.
     /// A turn that ended while the daemon was down shows unread, and a
     /// session whose process is gone is not in `fresh` at all. A session
     /// only its hooks told of, which no file can contradict, is kept as it
@@ -291,8 +292,9 @@ impl Queue {
             }
             // Nothing new was heard of it, so its silence goes on.
             session.seen = old.seen;
-            let kept = old.hooked == Some(session.phase)
-                || fsm::reachable(session.phase, &daemon).contains(&old.phase);
+            let reached = fsm::reachable(session.phase, &daemon);
+            let kept = reached.contains(&old.phase)
+                || old.hooked.is_some_and(|from| reached.contains(&from));
             if old.turn.is_some() && kept {
                 session.phase = old.phase;
                 session.since = old.since;
@@ -785,6 +787,14 @@ mod tests {
         // The turn went on to end while the daemon was down.
         let restored = Queue::restore(hooked(QuestionAsked), seeded(&[TurnEnded], "t1"));
         assert_eq!(phase(&restored, "a"), Stopped);
+        // A prompt a hook told after the session was dismissed, before
+        // the files say the turn began.
+        let mut saved = one(&[TurnEnded], false, true);
+        let mut prompted = signal("a", Prompted, None);
+        prompted.channel = Channel::Hook;
+        saved.apply(&prompted, 4);
+        let restored = Queue::restore(saved, seeded(&[TurnEnded], "t1"));
+        assert_eq!(phase(&restored, "a"), Working);
         // What the files told is theirs to tell again.
         let restored = Queue::restore(one(&[TurnFailed], false, false), seeded(&[Prompted], "t1"));
         assert_eq!(phase(&restored, "a"), Working);
