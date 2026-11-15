@@ -331,6 +331,14 @@ fn stuck(harnesses: &[(Harness, &[Declared])]) -> Vec<String> {
                 ));
             } else if phase.unread() && !signals.contains(&Signal::Looked) {
                 lines.push(format!("- {}, {phase:?}: never read", harness.title()));
+            } else if phase.unread() {
+                let looked = declared.iter().filter(|d| d.signal == Signal::Looked);
+                for case in looked.filter_map(|d| d.untold) {
+                    lines.push(format!(
+                        "- {}, {phase:?}: never read, for {case}",
+                        harness.title()
+                    ));
+                }
             }
         }
     }
@@ -474,6 +482,7 @@ mod tests {
             .untold("a hook's approval"),
         declared(TurnEnded, File, Observed, "end_turn"),
         declared(Ended, File, Observed, "pid file deleted"),
+        declared(Looked, Daemon, Observed, "the app's file").untold("a terminal session"),
     ];
 
     const HOOKS: &[Declared] = &[
@@ -534,7 +543,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 | Backgrounded | — | — |
 | BackgroundDone | — | — |
 | [Ended](#ended) | file | hook |
-| Looked | — | — |
+| [Looked](#looked) | daemon | — |
 
 ### Started
 
@@ -560,6 +569,10 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Claude Code, file, observed: pid file deleted (probe-toy run1)
 - Codex, hook, observed: SessionEnd (probe-toy run1)
 
+### Looked
+
+- Claude Code, daemon, observed: the app's file; not for a terminal session (probe-toy run1)
+
 ## Moves each harness cannot make
 
 **PermissionAsked**: an approval wait shows as the light it interrupts.
@@ -569,7 +582,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 **QuestionAsked**: a question the agent waits on shows as the light it interrupts.
 
-- Claude Code: Idle, Working, Stopped → Blocked
+- Claude Code: Idle, Working, Stopped, StoppedRead → Blocked
 - Codex: Idle, Working → Blocked
 
 **Answered**: an answered approval or question shows as a question until the turn ends.
@@ -586,40 +599,40 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 **TurnEndedAsking**: a turn that ends on a question shows as stopped, not as a question.
 
-- Claude Code: Idle, Working, Blocked, Stopped → Asked
+- Claude Code: Idle, Working, Blocked, Stopped, StoppedRead → Asked
 - Codex: Idle, Working → Asked
 
 **TurnFailed**: a turn that ends on an error never shows the error light.
 
-- Claude Code: Idle, Working, Blocked, Stopped → Failed
+- Claude Code: Idle, Working, Blocked, Stopped, StoppedRead → Failed
 - Codex: Idle, Working → Failed
 
 **Interrupted**: an interrupted turn keeps its light until the next turn or the process ends.
 
-- Claude Code: Working, Blocked, Stopped → Idle
+- Claude Code: Working, Blocked, Stopped, StoppedRead → Idle
 - Codex: Working → Idle
 
 **Backgrounded**: a turn whose background work runs on shows as stopped while that work runs.
 
-- Claude Code: Idle, Working, Stopped → Background
+- Claude Code: Idle, Working, Stopped, StoppedRead → Background
 - Codex: Idle, Working → Background
 
 **Looked**: looking at a session never marks it read.
 
-- Claude Code: Stopped → StoppedRead
+- Claude Code, for a terminal session
 
 ## Phases never entered
 
 Searched from `Gone` over the signals a harness declares and those the daemon tells of every session.
 
-- Claude Code: Background, Asked, AskedRead, StoppedRead, Failed
+- Claude Code: Background, Asked, AskedRead, Failed
 - Codex: Background, Blocked, Asked, AskedRead, Stopped, StoppedRead, Failed
 
 ## Stuck phases
 
 Phases with a light that a harness reaches but leaves only when its process ends or through the daemon's own signals, and phases reading settles that a harness never marks read, which keep their light until the session moves on, ends, or is dismissed or abandoned. Each is a place where an experiment or a deliberate guess is worth considering.
 
-- Claude Code, Stopped: never read
+- Claude Code, Stopped: never read, for a terminal session
 - Codex, Working: left only by Ended, Abandoned, Dismissed
 "#;
 

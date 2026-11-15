@@ -180,8 +180,8 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### Looked
 
-- Claude Code, daemon, observed: the desktop app's file for the session, ~/Library/Application Support/Claude/claude-code-sessions/*.json, with a lastFocusedAt since the light took its state; or the session it names opened last while the app is in front and the keyboard or pointer was used in the last five seconds (the desktop app's session files, as desktop.rs and its tests read them)
-- OpenCode, file, observed: 2.x: the session seen idle since it last went idle, as the terminal interface writes once it shows the session while its terminal has focus; not for a 1.x session, whose rows record no viewing (gaps oc8 (2.3.0 session.viewed))
+- Claude Code, daemon, observed: the desktop app's file for the session, ~/Library/Application Support/Claude/claude-code-sessions/*.json, with a lastFocusedAt since the light took its state; or the session it names opened last while the app is in front and the keyboard or pointer was used in the last five seconds; not for a session run in a terminal, which the desktop app keeps no file for (the desktop app's session files, as desktop.rs and its tests read them)
+- OpenCode, file, observed: 2.x: the session seen idle since it last went idle, as the terminal interface writes once it shows the session while its terminal has focus; not for a 1.x session, whose rows record no viewing, or a 2.x session no terminal interface shows, as one `opencode run` or another client runs through the service (gaps oc8 (2.3.0 session.viewed))
 
 ## Moves each harness cannot make
 
@@ -217,6 +217,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 **Looked**: looking at a session never marks it read.
 
+- Claude Code, for a session run in a terminal, which the desktop app keeps no file for
 - Codex: Stopped → StoppedRead
 - Codex: Asked → AskedRead
 - Grok: Stopped → StoppedRead
@@ -225,7 +226,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Cursor: Asked → AskedRead
 - Junie: Stopped → StoppedRead
 - Junie: Asked → AskedRead
-- OpenCode, for a 1.x session, whose rows record no viewing
+- OpenCode, for a 1.x session, whose rows record no viewing, or a 2.x session no terminal interface shows, as one `opencode run` or another client runs through the service
 - Pi: Stopped → StoppedRead
 - Pi: Asked → AskedRead
 
@@ -243,6 +244,8 @@ Searched from `Gone` over the signals a harness declares and those the daemon te
 
 Phases with a light that a harness reaches but leaves only when its process ends or through the daemon's own signals, and phases reading settles that a harness never marks read, which keep their light until the session moves on, ends, or is dismissed or abandoned. Each is a place where an experiment or a deliberate guess is worth considering.
 
+- Claude Code, Asked: never read, for a session run in a terminal, which the desktop app keeps no file for
+- Claude Code, Stopped: never read, for a session run in a terminal, which the desktop app keeps no file for
 - Codex, Asked: never read
 - Codex, Stopped: never read
 - Grok, Asked: never read
@@ -251,5 +254,7 @@ Phases with a light that a harness reaches but leaves only when its process ends
 - Cursor, Stopped: never read
 - Junie, Asked: never read
 - Junie, Stopped: never read
+- OpenCode, Asked: never read, for a 1.x session, whose rows record no viewing, or a 2.x session no terminal interface shows, as one `opencode run` or another client runs through the service
+- OpenCode, Stopped: never read, for a 1.x session, whose rows record no viewing, or a 2.x session no terminal interface shows, as one `opencode run` or another client runs through the service
 - Pi, Asked: never read
 - Pi, Stopped: never read

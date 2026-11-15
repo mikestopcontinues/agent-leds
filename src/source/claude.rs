@@ -117,7 +117,8 @@ pub const SIGNALS: &[Declared] = &[
         Evidence::Observed,
         "the desktop app's file for the session, ~/Library/Application Support/Claude/claude-code-sessions/*.json, with a lastFocusedAt since the light took its state; or the session it names opened last while the app is in front and the keyboard or pointer was used in the last five seconds",
         "the desktop app's session files, as desktop.rs and its tests read them",
-    ),
+    )
+    .untold("a session run in a terminal, which the desktop app keeps no file for"),
 ];
 
 /// What a session file says the process is doing.
