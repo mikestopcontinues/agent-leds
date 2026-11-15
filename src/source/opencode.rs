@@ -14,7 +14,7 @@
 //! The database is undocumented. What it holds at each moment of a session
 //! was taken from OpenCode 1.19.5, and from 1.18.25's `run`.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
@@ -239,9 +239,8 @@ struct Session {
     /// Whether its row has been read: one never read is not yet written,
     /// not deleted.
     known: bool,
-    /// The session and its subagents' sessions, each with its last event's
-    /// seq. While they hold, so does the level.
-    stamp: Vec<(String, Option<i64>)>,
+    /// While it holds, so does the level.
+    stamp: Stamp,
     level: Level,
 }
 
@@ -323,8 +322,10 @@ fn row(db: &Connection, id: &str) -> Result<Option<Row>> {
     Ok(row)
 }
 
-/// The session and its subagents' sessions, each with its last event's seq.
-fn stamp(db: &Connection, id: &str) -> Result<Vec<(String, Option<i64>)>> {
+/// A session and its subagents' sessions, each with its last event's seq.
+type Stamp = Vec<(String, Option<i64>)>;
+
+fn stamp(db: &Connection, id: &str) -> Result<Stamp> {
     let mut statement = db.prepare_cached(STAMP)?;
     let rows = statement.query_map([id], |row| Ok((row.get(0)?, row.get(1)?)))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -433,7 +434,8 @@ pub struct OpenCode {
     folder: PathBuf,
     path: PathBuf,
     db: Option<Database>,
-    sessions: HashMap<String, Session>,
+    /// By id, so they are read in the same order every time.
+    sessions: BTreeMap<String, Session>,
 }
 
 impl OpenCode {
@@ -443,7 +445,7 @@ impl OpenCode {
             path: folder.join("opencode.db"),
             folder,
             db: None,
-            sessions: HashMap::new(),
+            sessions: BTreeMap::new(),
         }
     }
 
@@ -494,33 +496,26 @@ impl OpenCode {
         if db.version == Some(version) {
             return Ok(());
         }
-        db.version = Some(version);
         // One snapshot for every session, held only for the reads.
         let tx = db.connection.unchecked_transaction()?;
         let mut ended = Vec::new();
+        let mut read = true;
         for (id, session) in &mut self.sessions {
-            match row(&tx, id)? {
-                None if !session.known => continue,
-                None => {
-                    ended.push(id.clone());
-                    continue;
+            match read_session(&tx, id, session, out) {
+                Ok(true) => {}
+                Ok(false) => ended.push(id.clone()),
+                // The others are read all the same, and this one is read
+                // again at the next change.
+                Err(error) => {
+                    eprintln!("agent-leds: reading OpenCode session {id}: {error:#}");
+                    read = false;
                 }
-                Some(row) if row.archived => {
-                    ended.push(id.clone());
-                    continue;
-                }
-                Some(_) => session.known = true,
             }
-            let stamp = stamp(&tx, id)?;
-            if stamp == session.stamp {
-                continue;
-            }
-            let level = level(&tx, id)?;
-            moved(id, &session.level, &level, out);
-            session.stamp = stamp;
-            session.level = level;
         }
         tx.commit()?;
+        if read {
+            db.version = Some(version);
+        }
         for id in ended {
             self.sessions.remove(&id);
             out.push(Observation::new(
@@ -542,22 +537,30 @@ impl OpenCode {
         }
     }
 
-    /// Starts following a session from where the database leaves it now, or
-    /// goes on following it if the same process still runs it. Says where it
-    /// works: the database's folder for it, else `directory`.
-    fn follow(&mut self, id: &str, liveness: Liveness, directory: String) -> Result<String> {
-        let read = match self.open()? {
-            Some(db) => {
-                let tx = db.unchecked_transaction()?;
-                let read = match row(&tx, id)? {
-                    Some(row) => Some((row, stamp(&tx, id)?, level(&tx, id)?)),
-                    None => None,
-                };
-                tx.commit()?;
-                read
-            }
+    /// Where the database leaves a session now, if it has the session.
+    fn look(&mut self, id: &str) -> Result<Option<(Row, Stamp, Level)>> {
+        let Some(db) = self.open()? else {
+            return Ok(None);
+        };
+        let tx = db.unchecked_transaction()?;
+        let read = match row(&tx, id)? {
+            Some(row) => Some((row, stamp(&tx, id)?, level(&tx, id)?)),
             None => None,
         };
+        tx.commit()?;
+        Ok(read)
+    }
+
+    /// Starts following a session from where the database leaves it now, or
+    /// goes on following it if the same process still runs it. Says where it
+    /// works: the database's folder for it, else `directory`. A session the
+    /// database cannot be read for is followed from nothing, and read again
+    /// at the next change.
+    fn follow(&mut self, id: &str, liveness: Liveness, directory: String) -> String {
+        let read = self.look(id).unwrap_or_else(|error| {
+            eprintln!("agent-leds: reading OpenCode session {id}: {error:#}");
+            None
+        });
         let cwd = match &read {
             Some((row, _, _)) => row.directory.clone(),
             None => directory,
@@ -567,7 +570,7 @@ impl OpenCode {
             .get(id)
             .is_some_and(|session| session.liveness == liveness)
         {
-            return Ok(cwd);
+            return cwd;
         }
         let (known, stamp, level) = match read {
             Some((_, stamp, level)) => (true, stamp, level),
@@ -582,7 +585,7 @@ impl OpenCode {
                 level,
             },
         );
-        Ok(cwd)
+        cwd
     }
 
     fn turn(&self, id: &str) -> Option<TurnKey> {
@@ -590,6 +593,31 @@ impl OpenCode {
             .get(id)
             .and_then(|session| session.level.turn())
     }
+}
+
+/// Reads one followed session again, if its rows changed. False if it is
+/// gone from the database or archived.
+fn read_session(
+    db: &Connection,
+    id: &str,
+    session: &mut Session,
+    out: &mut Vec<Observation>,
+) -> Result<bool> {
+    match row(db, id)? {
+        None if !session.known => return Ok(true),
+        None => return Ok(false),
+        Some(row) if row.archived => return Ok(false),
+        Some(_) => session.known = true,
+    }
+    let stamp = stamp(db, id)?;
+    if stamp == session.stamp {
+        return Ok(true);
+    }
+    let level = level(db, id)?;
+    moved(id, &session.level, &level, out);
+    session.stamp = stamp;
+    session.level = level;
+    Ok(true)
 }
 
 /// What a session's level moving from `from` to `to` tells.
@@ -654,12 +682,14 @@ impl Source for OpenCode {
             if !liveness::alive(k, liveness) {
                 continue;
             }
+            // Gone from the database, or archived; a row that cannot be read
+            // is followed all the same.
             if let Some(db) = self.open()?
-                && row(db, id)?.is_none_or(|row| row.archived)
+                && row(db, id).is_ok_and(|row| row.is_none_or(|row| row.archived))
             {
                 continue;
             }
-            let cwd = self.follow(id, liveness.clone(), String::new())?;
+            let cwd = self.follow(id, liveness.clone(), String::new());
             let turn = self.turn(id);
             seeded.push(Observation::new(
                 Harness::OpenCode,
@@ -731,13 +761,7 @@ impl Source for OpenCode {
                     return out;
                 };
                 let directory = payload.directory.unwrap_or_default();
-                let cwd = match self.follow(&id, liveness.clone(), directory.clone()) {
-                    Ok(cwd) => cwd,
-                    Err(error) => {
-                        eprintln!("agent-leds: reading {}: {error:#}", self.path.display());
-                        directory
-                    }
-                };
+                let cwd = self.follow(&id, liveness.clone(), directory);
                 out.push(Observation::new(
                     Harness::OpenCode,
                     &id,
@@ -847,6 +871,13 @@ mod tests {
             .any(|(o, _)| o.event.signals() == BTreeSet::from([Signal::QuestionAsked]));
         assert!(blocked);
         assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn a_session_whose_reply_cannot_be_read_holds_up_no_other() {
+        let replay = replay("a_session_whose_reply_cannot_be_read_holds_up_no_other");
+        let phases: Vec<Phase> = replay.phases().into_values().collect();
+        assert_eq!(phases, [Phase::Stopped, Phase::Stopped]);
     }
 
     #[test]
