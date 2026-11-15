@@ -80,6 +80,7 @@ The gaps:
 
 - No question state. Nothing is written while a tool waits for approval, and the hooks that run before a tool fire for approved tools too, so a session waiting for approval stays green. The `AskQuestion` dialog was never offered to the model, so what it writes is unknown.
 - An error ending a turn is read from Cursor's code, not from a real session, as is the `stop` hook's status `aborted`.
+- Cursor writes a reply's reasoning after its text, in the same block. With a reasoning model, the question test reads the reasoning's last line instead of the reply's, so a question can show as stopped and a statement as a question. The probe used the Auto model, which wrote no reasoning.
 - A chat no hook bound names no process, so it does not show. That includes every chat already running when the daemon first starts with this version: it shows from its next prompt.
 - A daemon that restarts during a text-only turn shows the previous turn's end, because such a turn writes nothing until it ends.
 - After `/new`, the old chat stays bound to the process until it exits.

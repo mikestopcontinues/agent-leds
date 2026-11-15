@@ -79,7 +79,7 @@ pub const SIGNALS: &[Declared] = &[
         Signal::TurnEndedAsking,
         Channel::File,
         Evidence::Observed,
-        "turn_ended after an assistant text whose last line ends in a question mark",
+        "turn_ended after an assistant text whose last line ends in a question mark; a reasoning model's reasoning follows its reply in that text, so its last line is tested instead",
         "probe-cursor runs A, B",
     ),
     declared(
@@ -161,7 +161,9 @@ struct Block {
 }
 
 impl Record {
-    /// The record's last text, or nothing.
+    /// The record's last text, or nothing. Cursor writes a reply's
+    /// reasoning after it, in the same block and with a blank line between,
+    /// so a reply with reasoning cannot be told from its reasoning.
     fn text(&self) -> String {
         match self.message.as_ref().map(|message| &message.content) {
             Some(Content::Text(text)) => text.clone(),
@@ -844,6 +846,18 @@ mod tests {
             [(
                 "b6f5f883-1823-4bc2-a601-1cc761c083a1".to_owned(),
                 Phase::Idle
+            )]
+        );
+    }
+
+    #[test]
+    fn a_reply_with_reasoning_is_judged_by_the_reasoning() {
+        let replay = replay("a_reply_with_reasoning_is_judged_by_the_reasoning");
+        assert_eq!(
+            phases(&replay),
+            [(
+                "052e7079-8ae4-44f9-a205-4b80fb790165".to_owned(),
+                Phase::Stopped
             )]
         );
     }
