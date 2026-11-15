@@ -8,9 +8,9 @@
 //! that names no chat. The `beforeSubmitPrompt` hook binds the chat to the
 //! CLI's process it runs under, and says that the turn started, which a
 //! text-only turn writes nothing of until it ends. The `stop` hook says
-//! that the user interrupted the turn: an interrupt before the turn's first
-//! checkpoint, after a turn that was interrupted too, leaves the transcript
-//! as it was.
+//! that the turn was interrupted or failed, which can leave the transcript
+//! as it was: an interrupt before the turn's first checkpoint after a turn
+//! that was interrupted too, and a failure after one the same.
 //!
 //! The files are undocumented. What they say at each moment of a session
 //! was taken from Cursor 2026.11.13.
@@ -69,16 +69,23 @@ pub const SIGNALS: &[Declared] = &[
     Declared::new(
         Signal::TurnFailed,
         Channel::File,
-        Evidence::Inferred,
-        "turn_ended with status error, from the bundle's code; not reproduced",
-        "probe-cursor turn_error (bundle 2986/7777.index.js)",
+        Evidence::Observed,
+        "turn_ended with status error, the transcript rewritten whole as it was before the turn with the error after",
+        "gaps cursor fail run (interactive) and -p runs on a model the plan does not include",
+    ),
+    Declared::new(
+        Signal::TurnFailed,
+        Channel::Hook,
+        Evidence::Observed,
+        "stop with status error, for a bound chat whose transcript ends in turn_ended error: a failure after one the same rewrites the same bytes; after an interrupt the transcript ends aborted, so it says nothing",
+        "gaps cursor fail run, turns 1 and 2; gaps int-run turn 1; bundle 2986.index.js, the catch path",
     ),
     Declared::new(
         Signal::Interrupted,
         Channel::Hook,
-        Evidence::Inferred,
-        "stop with status aborted, for a chat bound to its process; Cursor runs it on every interrupt, from the bundle's code",
-        "probe-cursor run B, turn 3 (no write); bundle 2986.index.js, the abort path",
+        Evidence::Observed,
+        "stop with status aborted, for a chat bound to its process; that it runs on an interrupt that writes nothing is from the bundle's code",
+        "gaps int-run turn 1 (err-hooks.log); probe-cursor run B, turn 3 (no write); bundle 2986.index.js, the abort path",
     ),
     Declared::new(
         Signal::Interrupted,
@@ -512,18 +519,37 @@ impl Cursor {
         out
     }
 
-    /// An interrupt of a bound chat. One before the turn's first checkpoint
+    /// The end of a bound chat's turn, with how it ended, after catching up
+    /// on its transcript. An interrupt before the turn's first checkpoint
     /// rewrites the transcript to end the previous turn as aborted, which
-    /// says nothing new when it already ended so.
-    fn interrupt(&mut self, id: &str) -> Vec<Observation> {
+    /// says nothing new when it already ended so. A failure rewrites it to
+    /// end in turn_ended error, the same bytes when the turn before failed
+    /// the same way, so the hook says it when the transcript ends so. Cursor
+    /// runs the hook with status error after every interrupt too, once the
+    /// transcript ends aborted, which says nothing.
+    fn stop(&mut self, id: &str, status: &str) -> Vec<Observation> {
         let mut out = Vec::new();
         if !self.sessions.contains_key(id) {
             return out;
         }
         let _ = self.read(id, &mut out);
         let session = self.sessions.get_mut(id).expect("bound");
-        let signals = BTreeSet::from([Signal::Interrupted]);
-        tell(id, session, Channel::Hook, signals, &mut out);
+        let failed = session
+            .level
+            .as_ref()
+            .is_some_and(|level| level.last == Some(Last::Ended("error".to_owned())));
+        let signal = match status {
+            "aborted" => Signal::Interrupted,
+            "error" if failed => Signal::TurnFailed,
+            _ => return out,
+        };
+        tell(
+            id,
+            session,
+            Channel::Hook,
+            BTreeSet::from([signal]),
+            &mut out,
+        );
         out
     }
 }
@@ -646,18 +672,16 @@ impl Source for Cursor {
         out
     }
 
-    /// A prompt or an interrupt, each after catching up on the chat's
+    /// A prompt or a turn's end, each after catching up on the chat's
     /// transcript.
     fn hook(&mut self, _k: &dyn Kernel, hook: &Hook) -> Vec<Observation> {
         let Ok(payload) = Payload::deserialize(&hook.payload) else {
             return Vec::new();
         };
-        match payload.hook_event_name.as_str() {
-            "beforeSubmitPrompt" => self.prompt(payload, &hook.ancestry),
-            // A turn that completes or fails says so in its transcript.
-            "stop" if payload.status.as_deref() == Some("aborted") => {
-                self.interrupt(&payload.conversation_id)
-            }
+        match (payload.hook_event_name.as_str(), payload.status.as_deref()) {
+            ("beforeSubmitPrompt", _) => self.prompt(payload, &hook.ancestry),
+            // A turn that completes says so in its transcript.
+            ("stop", Some(status)) => self.stop(&payload.conversation_id, status),
             _ => Vec::new(),
         }
     }
@@ -829,12 +853,36 @@ mod tests {
 
     #[test]
     fn an_interrupt_that_writes_nothing_is_told_by_the_stop_hook() {
-        let replay = replay("interrupted.hook");
+        let replay = replay("an_interrupt_that_writes_nothing_is_told_by_the_stop_hook");
         assert_eq!(
             phases(&replay),
             [(
                 "b6f5f883-1823-4bc2-a601-1cc761c083a1".to_owned(),
                 Phase::Idle
+            )]
+        );
+    }
+
+    #[test]
+    fn the_stop_hook_s_error_after_an_interrupt_says_nothing() {
+        let replay = replay("interrupted.hook");
+        assert_eq!(
+            phases(&replay),
+            [(
+                "ec732734-8c9d-4cc5-bc25-474e3015b279".to_owned(),
+                Phase::Idle
+            )]
+        );
+    }
+
+    #[test]
+    fn a_second_failure_like_the_first_is_told_by_the_stop_hook() {
+        let replay = replay("turn_failed.hook");
+        assert_eq!(
+            phases(&replay),
+            [(
+                "0903e018-043a-45e2-a954-1dd888361027".to_owned(),
+                Phase::Failed
             )]
         );
     }

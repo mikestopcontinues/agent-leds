@@ -1,12 +1,12 @@
-{"cite":"probe-cursor turn_error (bundle 2986/7777.index.js)","evidence":"inferred"}
-{"alive":88985,"started_us":1794693292417000}
-{"write":".local/share/cursor-agent/versions/2026.11.13-eacade1/.running/88985","text":"cursor-agent|Sat Nov 14 21:54:52 2026"}
-{"alive":89038,"started_us":1794693292952000}
-{"write":".local/share/cursor-agent/versions/2026.11.13-eacade1/.running/89038","text":"node|Sat Nov 14 21:54:52 2026"}
+{"cite":"gaps cursor fail run, turn 1: the first prompt of an interactive chat on a model the plan does not include; the transcript is the error alone, then stop runs with status error","evidence":"observed"}
+{"alive":74822,"started_us":1794755877722000}
+{"write":".local/share/cursor-agent/versions/2026.11.13-eacade1/.running/74822","text":"cursor-agent|Sun Nov 15 15:17:57 2026"}
+{"alive":74949,"started_us":1794755879405000}
+{"write":".local/share/cursor-agent/versions/2026.11.13-eacade1/.running/74949","text":"node|Sun Nov 15 15:17:59 2026"}
 {"expect":[]}
-{"hook":{"conversation_id":"052e7079-8ae4-44f9-a205-4b80fb790165","generation_id":"0f6c1c2b-3a44-4e21-8d2b-5d2f4c0e9a11","model":"default","prompt":"the user's prompt","attachments":[],"session_id":"052e7079-8ae4-44f9-a205-4b80fb790165","hook_event_name":"beforeSubmitPrompt","cursor_version":"2026.11.13-eacade1","workspace_roots":["/Users/me/Code/app"],"user_email":null,"transcript_path":null},"ancestry":[{"pid":89385,"started_us":1794693322417000},{"pid":88985,"started_us":1794693292417000},{"pid":755,"started_us":1794680000000000}]}
+{"hook":{"conversation_id":"0903e018-043a-45e2-a954-1dd888361027","generation_id":"5b0d8f6e-2f43-4b8e-9a51-7c2a3d9e4f10","model":"grok-4.7-high","prompt":"Reply with the single word: hi","attachments":[],"session_id":"0903e018-043a-45e2-a954-1dd888361027","hook_event_name":"beforeSubmitPrompt","cursor_version":"2026.11.13-eacade1","workspace_roots":["/Users/me/Code/app"],"user_email":null,"transcript_path":null},"ancestry":[{"pid":75211,"started_us":1794755882800000},{"pid":74822,"started_us":1794755877722000},{"pid":755,"started_us":1794680000000000}]}
 {"expect":[["started","hook"],["prompted","hook"]]}
-{"append":".cursor/projects/Users-me-Code-app/agent-transcripts/052e7079-8ae4-44f9-a205-4b80fb790165/052e7079-8ae4-44f9-a205-4b80fb790165.jsonl","line":{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Saturday, Nov 14, 2026, 3:54 PM (UTC-6)</timestamp>\n<user_query>\nRun a shell command.\n</user_query>"}]}}}
-{"expect":[["prompted","file"]]}
-{"append":".cursor/projects/Users-me-Code-app/agent-transcripts/052e7079-8ae4-44f9-a205-4b80fb790165/052e7079-8ae4-44f9-a205-4b80fb790165.jsonl","line":{"type":"turn_ended","status":"error","error":"Request failed."}}
+{"write":".cursor/projects/Users-me-Code-app/agent-transcripts/0903e018-043a-45e2-a954-1dd888361027/0903e018-043a-45e2-a954-1dd888361027.jsonl","text":"{\"type\":\"turn_ended\",\"status\":\"error\",\"error\":\"Model unavailable on Free Free includes Grok 4.7, Grok 4.6, and Auto with fixed settings. Switch to an included model to continue.\"}\n"}
 {"expect":[[["turn_ended","turn_failed"],"file"]]}
+{"hook":{"conversation_id":"0903e018-043a-45e2-a954-1dd888361027","generation_id":"5b0d8f6e-2f43-4b8e-9a51-7c2a3d9e4f10","model":"grok-4.7-high","session_id":"0903e018-043a-45e2-a954-1dd888361027","hook_event_name":"stop","cursor_version":"2026.11.13-eacade1","workspace_roots":["/Users/me/Code/app"],"user_email":null,"transcript_path":null,"status":"error","loop_count":0},"ancestry":[{"pid":75295,"started_us":1794755883150000},{"pid":74822,"started_us":1794755877722000},{"pid":755,"started_us":1794680000000000}]}
+{"expect":[["turn_failed","hook"]]}
