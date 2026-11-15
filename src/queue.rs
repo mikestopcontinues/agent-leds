@@ -49,9 +49,10 @@ pub struct Session {
     pub liveness: Liveness,
     /// The channel that started it, which a sweep's `Ended` comes through.
     pub bound: Channel,
-    /// The phase a hook moved it from, when a hook made its last move. Its
-    /// files, which no hook writes to, may show it there still.
-    pub hooked: Option<Phase>,
+    /// The channel and the phase its last move took it from, when a hook
+    /// or the daemon made that move. Its files, which neither writes to,
+    /// may show it there still.
+    pub moved: Option<(Channel, Phase)>,
     /// While it is blocked, the phase it was blocked from, which a released
     /// wait goes back to.
     pub held: Option<Phase>,
@@ -165,7 +166,7 @@ impl Queue {
             return Change::None;
         }
         let light = to.state() != from.state();
-        let hooked = (o.channel == Channel::Hook).then_some(from);
+        let moved = (o.channel != Channel::File).then_some((o.channel, from));
         match (position, &o.event) {
             (None, Event::Started(start)) => self.sessions.push(Session {
                 key: o.key.clone(),
@@ -177,7 +178,7 @@ impl Queue {
                 seen: now,
                 liveness: start.liveness.clone(),
                 bound: o.channel,
-                hooked,
+                moved,
                 held: None,
             }),
             (None, Event::Signals(_)) => unreachable!("only Started leaves Gone"),
@@ -187,7 +188,7 @@ impl Queue {
             (Some(index), _) => {
                 let session = &mut self.sessions[index];
                 session.phase = to;
-                session.hooked = hooked;
+                session.moved = moved;
                 session.held = match to {
                     Phase::Blocked => held.or(Some(from)),
                     _ => None,
@@ -311,15 +312,16 @@ impl Queue {
 
     /// The queue at startup: what the harnesses' files show now (`fresh`),
     /// keeping a saved session's phase when it is about the same turn and
-    /// either the daemon alone could have taken it there, as with a read
-    /// mark or a dismissal, or a hook took it there from where the daemon
-    /// alone could take what the files still show, as with a dialog open,
-    /// a failure only a hook tells, or a prompt after a dismissal.
-    /// A turn that ended while the daemon was down shows unread, a wait that
-    /// began then shows, and a session whose process is gone is not in
-    /// `fresh` at all. A session
-    /// only its hooks told of, which no file can contradict, is kept as it
-    /// was saved.
+    /// either the daemon alone could have taken it there, from where its
+    /// last move by the daemon found it, as with a read mark or a
+    /// dismissal, or a hook took it there from where the daemon alone could
+    /// take what the files still show, as with a dialog open, a failure only
+    /// a hook tells, or a prompt after a dismissal. A turn that ended while
+    /// the daemon was down shows unread, a dismissed working session's too;
+    /// a wait that began then shows, while a wait that was dismissed stays
+    /// so; and a session whose process is gone is not in `fresh` at all. A
+    /// session only its hooks told of, which no file can contradict, is kept
+    /// as it was saved.
     pub fn restore(saved: Queue, fresh: Queue) -> Queue {
         let daemon: Vec<Signal> = Signal::ALL.into_iter().filter(|s| s.daemon()).collect();
         let mut sessions = fresh.sessions;
@@ -339,22 +341,32 @@ impl Queue {
             if old.turn.is_none() {
                 continue;
             }
+            // Whether the saved phase still stands where the files show the
+            // session at `phase`: the daemon could have taken it from there
+            // to where its own last move found it, or a hook's, or to the
+            // saved phase itself when neither made that move.
+            let stands = |phase: Phase| {
+                let reached = fsm::reachable(phase, &daemon);
+                match old.moved {
+                    Some((Channel::Daemon, from)) => reached.contains(&from),
+                    Some((_, from)) => reached.contains(&old.phase) || reached.contains(&from),
+                    None => reached.contains(&old.phase),
+                }
+            };
             // A wait that began while the daemon was down shows, and lets go
             // back to where the daemon left the session, a read mark or a
-            // dismissal included, if it could have gone there from where the
-            // wait found it.
-            if session.phase == Phase::Blocked && old.phase != Phase::Blocked {
+            // dismissal included, if that still stands where the wait found
+            // it. A wait the user dismissed is not one.
+            let dismissed = old.moved == Some((Channel::Daemon, Phase::Blocked));
+            if session.phase == Phase::Blocked && old.phase != Phase::Blocked && !dismissed {
                 if let Some(held) = session.held
-                    && fsm::reachable(held, &daemon).contains(&old.phase)
+                    && stands(held)
                 {
                     session.held = Some(old.phase);
                 }
                 continue;
             }
-            let reached = fsm::reachable(session.phase, &daemon);
-            let kept = reached.contains(&old.phase)
-                || old.hooked.is_some_and(|from| reached.contains(&from));
-            if kept {
+            if stands(session.phase) {
                 session.phase = old.phase;
                 session.held = old.held;
                 session.since = old.since;
@@ -950,6 +962,39 @@ mod tests {
         let mut restored = Queue::restore(saved, seeded(&[TurnEnded, PermissionAsked], "t1"));
         restored.apply(&signal("a", Released, Some("t1")), 200);
         assert_eq!(phase(&restored, "a"), StoppedRead);
+    }
+
+    /// A dismissal or an abandon while the session worked covers only that
+    /// work: a turn that ended while the daemon was down shows unread.
+    #[test]
+    fn a_turn_that_ended_after_a_dismissal_of_its_work_shows_unread() {
+        // `agent-leds dismiss a` clears a working session too.
+        let mut saved = one(&[Prompted], false, false);
+        apply_all(&mut saved, |queue| queue.dismissed(Some("a")), 3);
+        assert_eq!(phase(&saved, "a"), Idle);
+        let restored = Queue::restore(saved.clone(), seeded(&[TurnEnded], "t1"));
+        assert_eq!(phase(&restored, "a"), Stopped);
+        assert_eq!(restored.unread_since(), Some(100));
+        // While the turn still runs, the dismissal stands.
+        let restored = Queue::restore(saved, seeded(&[Prompted], "t1"));
+        assert_eq!(phase(&restored, "a"), Idle);
+        // A dismissal, then a read mark's expiry, of a stopped turn stands.
+        let read = one(&[TurnEnded], true, false);
+        let mut expired = read.clone();
+        apply_all(&mut expired, |queue| queue.due(10, keep(0)), 10);
+        assert_eq!(phase(&expired, "a"), Idle);
+        let restored = Queue::restore(expired, seeded(&[TurnEnded], "t1"));
+        assert_eq!(phase(&restored, "a"), Idle);
+    }
+
+    /// A wait the user dismissed stays dismissed while it is still open.
+    #[test]
+    fn a_dismissed_wait_still_open_at_a_restart_stays_dismissed() {
+        let saved = one(&[TurnEnded, PermissionAsked], false, true);
+        assert_eq!(phase(&saved, "a"), Idle);
+        let restored = Queue::restore(saved, seeded(&[TurnEnded, PermissionAsked], "t1"));
+        assert_eq!(phase(&restored, "a"), Idle);
+        assert!(restored.items().is_empty());
     }
 
     /// Only a session the daemon can tell is read keeps it looking.
