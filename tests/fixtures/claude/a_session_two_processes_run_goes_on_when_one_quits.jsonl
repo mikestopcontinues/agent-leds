@@ -1,0 +1,13 @@
+{"cite": "probe-claude cc6, cc10", "evidence": "observed"}
+{"alive": 90859, "started_us": 1794693357250000}
+{"write": ".claude/sessions/90859.json", "text": {"pid": 90859, "sessionId": "e8f843a7-1f54-44e3-b14d-99f53e9cec7a", "cwd": "/Users/me/Code/app", "startedAt": 1794693357235, "procStart": "Sat Nov 14 21:55:57 2026", "version": "2.1.325", "kind": "interactive", "entrypoint": "cli", "status": "idle"}}
+{"expect": [["started", "file"]]}
+{"alive": 7082, "started_us": 1794693947250000}
+{"write": ".claude/sessions/7082.json", "text": {"pid": 7082, "sessionId": "e8f843a7-1f54-44e3-b14d-99f53e9cec7a", "cwd": "/Users/me/Code/app", "startedAt": 1794693947986, "procStart": "Sat Nov 14 22:05:47 2026", "version": "2.1.325", "kind": "interactive", "entrypoint": "cli", "status": "idle"}}
+{"expect": [["started", "file"]]}
+{"delete": ".claude/sessions/7082.json"}
+{"expect": [["started", "file"]]}
+{"exit": 7082}
+{"expect": []}
+{"write": ".claude/sessions/90859.json", "text": {"pid": 90859, "sessionId": "e8f843a7-1f54-44e3-b14d-99f53e9cec7a", "cwd": "/Users/me/Code/app", "startedAt": 1794693357235, "procStart": "Sat Nov 14 21:55:57 2026", "version": "2.1.325", "kind": "interactive", "entrypoint": "cli", "status": "busy"}}
+{"expect": []}

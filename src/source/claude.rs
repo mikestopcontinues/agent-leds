@@ -242,6 +242,10 @@ struct Proc {
 
 /// What the files have said of one session.
 struct Session {
+    /// The session file of the process that runs it. A file another process
+    /// left naming the same session, as a killed one does before a resume,
+    /// says nothing of it.
+    owner: PathBuf,
     status: Status,
     transcript: Option<(PathBuf, Tail)>,
     /// Whether a turn started and has not ended.
@@ -362,17 +366,24 @@ impl Claude {
             && known.pid == process.pid
             && known.start == *start
         {
-            let status = process.status();
-            let session = self.sessions.get_mut(&known.session).expect("tracked");
-            if session.status != status {
-                edges.push((known.session.clone(), session.status, status));
-                session.status = status;
+            match self.sessions.get_mut(&known.session) {
+                Some(session) if session.owner != path => return,
+                Some(session) => {
+                    let status = process.status();
+                    if session.status != status {
+                        edges.push((known.session.clone(), session.status, status));
+                        session.status = status;
+                    }
+                    return;
+                }
+                // Ended with the file of another process that ran it, while
+                // this one still does: started again below.
+                None => {}
             }
-            return;
         }
         // Gone, or another session in the process (/clear), or another process.
         if let Some(gone) = self.procs.remove(path) {
-            self.end(&gone.session, out);
+            self.end(k, &gone.session, path, out);
         }
         let Some((process, start)) = read else {
             return;
@@ -410,6 +421,7 @@ impl Claude {
         self.sessions.insert(
             id.clone(),
             Session {
+                owner: path.to_owned(),
                 status: Status::Starting,
                 transcript,
                 open: false,
@@ -425,10 +437,44 @@ impl Claude {
         }
     }
 
-    fn end(&mut self, id: &str, out: &mut Vec<Observation>) {
-        if self.sessions.remove(id).is_some() {
-            out.push(observation(id, Event::Signal(Signal::Ended), None));
+    /// Ends the session the file at `path` named, if that file's process
+    /// ran it and no other running process does.
+    fn end(&mut self, k: &dyn Kernel, id: &str, path: &Path, out: &mut Vec<Observation>) {
+        if !self
+            .sessions
+            .get(id)
+            .is_some_and(|session| session.owner == path)
+        {
+            return;
         }
+        let other = self.procs.iter().find_map(|(other, proc)| {
+            let liveness = Liveness::Process {
+                pid: proc.pid,
+                start: StartCheck::Second(proc.start),
+            };
+            (proc.session == id && liveness::alive(k, &liveness)).then(|| (other.clone(), liveness))
+        });
+        let Some((other, liveness)) = other else {
+            self.sessions.remove(id);
+            out.push(observation(id, Event::Signal(Signal::Ended), None));
+            return;
+        };
+        // The same session resumed in another process, which goes on with it.
+        let status = Claude::process(&other)
+            .ok()
+            .flatten()
+            .map_or(Status::Starting, |(process, _)| process.status());
+        let session = self.sessions.get_mut(id).expect("owned");
+        session.owner = other;
+        session.status = status;
+        out.push(observation(
+            id,
+            Event::Started(Start {
+                cwd: String::new(),
+                liveness,
+            }),
+            None,
+        ));
     }
 
     /// Reads what was appended to a session's transcript.
@@ -814,6 +860,27 @@ mod tests {
         assert_eq!(
             phase(&replay("a_denied_permission_is_an_interrupt")),
             Phase::Idle
+        );
+    }
+
+    #[test]
+    fn a_killed_process_s_file_never_speaks_for_the_session_resumed_after_it() {
+        let replay =
+            replay("a_killed_process_s_file_never_speaks_for_the_session_resumed_after_it");
+        assert_eq!(phase(&replay), Phase::Working);
+    }
+
+    #[test]
+    fn a_session_two_processes_run_goes_on_when_one_quits() {
+        let replay = replay("a_session_two_processes_run_goes_on_when_one_quits");
+        assert_eq!(phase(&replay), Phase::Idle);
+        let session = &replay.queue.sessions()[0];
+        assert_eq!(
+            session.liveness,
+            Liveness::Process {
+                pid: 90859,
+                start: StartCheck::Second(1_794_693_357)
+            }
         );
     }
 
