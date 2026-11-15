@@ -73,7 +73,7 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::TurnEndedAsking,
-        "task_complete whose last_agent_message's last line ends in a question mark, or that holds a <proposed_plan> block, which no rollout has shown yet; or while an item of a request_user_input_async call has no answer since the last prompt the user typed, or the thread's goal in goals_1.sqlite is blocked, usage_limited or budget_limited",
+        "task_complete whose last_agent_message's last line ends in a question mark, or that holds a <proposed_plan> block, which no rollout has shown yet; or while an item of a request_user_input_async call has no answer since the last prompt the user typed, or the thread's goal in goals_1.sqlite went blocked, usage_limited or budget_limited at or after the turn's started_at",
         "probe-codex runA PROMPT6; desktop rollouts 0.162 and goals_1.sqlite, 2026-10-14 and 2026-10-15",
     ),
     file(
@@ -170,6 +170,8 @@ struct Payload {
     /// What started a turn, which the desktop app and Codex 0.163 write.
     turn_attribution: Option<Attribution>,
     last_agent_message: Option<String>,
+    /// The Unix second a turn started, which its task_complete also says.
+    started_at: Option<i64>,
     /// Why a turn was aborted: `interrupted`, or `replaced` by a new turn.
     reason: Option<String>,
     error: Option<IgnoredAny>,
@@ -388,8 +390,10 @@ enum Goal {
     Quiet,
     /// Active with no deferral: Codex starts the goal's next turn itself.
     Active,
-    /// Blocked, or stopped at the usage or the token budget limit: it waits
-    /// on the user.
+    /// Blocked, or stopped at the usage or the token budget limit, since the
+    /// turn began: it waits on the user. Codex leaves a goal so while the
+    /// user goes on in the thread, and a goal that stopped before the turn
+    /// is no news at its end.
     Waiting,
 }
 
@@ -399,7 +403,7 @@ struct Databases {
     queue: PathBuf,
 }
 
-const GOAL: &str = "select status, exists(select 1 from thread_goal_continuation_deferrals \
+const GOAL: &str = "select status, updated_at_ms, exists(select 1 from thread_goal_continuation_deferrals \
      where thread_goal_continuation_deferrals.thread_id = thread_goals.thread_id) \
      from thread_goals where thread_id = ?1";
 const QUEUED: &str = "select exists(select 1 from queued_items where thread_id = ?1)";
@@ -418,16 +422,22 @@ impl Databases {
         path == self.goals || path == wal
     }
 
-    /// The goal of `thread`; Quiet when the database cannot be read, which
-    /// is said.
-    fn goal(&self, thread: &str) -> Goal {
+    /// The goal of `thread` for a turn that began at the Unix second
+    /// `since`; Quiet when the database cannot be read, which is said.
+    fn goal(&self, thread: &str, since: Option<i64>) -> Goal {
         let read = query(&self.goals, GOAL, thread, |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, bool>(2)?,
+            ))
         });
+        // The second a turn began holds its start, so a change in it counts.
+        let lately = |updated: i64| since.is_some_and(|since| updated >= since * 1000);
         match read {
-            Ok(Some((status, deferred))) => match status.as_str() {
+            Ok(Some((status, updated, deferred))) => match status.as_str() {
                 "active" if !deferred => Goal::Active,
-                "blocked" | "usage_limited" | "budget_limited" => Goal::Waiting,
+                "blocked" | "usage_limited" | "budget_limited" if lately(updated) => Goal::Waiting,
                 _ => Goal::Quiet,
             },
             Ok(None) => Goal::Quiet,
@@ -499,6 +509,8 @@ fn query<T>(
 struct Rest {
     /// What the rollout says: TurnEnded, and TurnEndedAsking or TurnFailed.
     told: BTreeSet<Signal>,
+    /// The Unix second the turn began, as its task_complete says.
+    started: Option<i64>,
     /// The goal, which changes after the turn ended.
     goal: Goal,
 }
@@ -800,7 +812,7 @@ impl Codex {
             let Some(rest) = &thread.rest else {
                 continue;
             };
-            let goal = self.databases.goal(id);
+            let goal = self.databases.goal(id, rest.started);
             if goal != rest.goal {
                 retell(id, thread, out, |thread| {
                     thread.rest.as_mut().expect("rested").goal = goal;
@@ -929,7 +941,8 @@ fn says(
         }
         thread.rest = Some(Rest {
             told,
-            goal: databases.goal(id),
+            started: payload.started_at,
+            goal: databases.goal(id, payload.started_at),
         });
         let end = thread.end().expect("rested");
         tell(id, thread, Channel::File, end, out);
@@ -1398,6 +1411,12 @@ mod tests {
     }
 
     #[test]
+    fn a_goal_blocked_before_a_turn_does_not_ask_at_its_end() {
+        let replay = replay("a_goal_blocked_before_a_turn_does_not_ask_at_its_end");
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
     fn a_goal_that_moves_after_its_turn_ended_moves_the_light() {
         let replay = replay("a_goal_that_moves_after_its_turn_ended_moves_the_light");
         assert_eq!(phase(&replay), Phase::Stopped);
@@ -1447,12 +1466,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let writer = goals(dir.path(), "active");
         let databases = Databases::new(dir.path());
-        assert_eq!(databases.goal("t"), Goal::Active);
+        assert_eq!(databases.goal("t", Some(0)), Goal::Active);
         writer
             .execute("update thread_goals set status = 'blocked'", [])
             .unwrap();
         assert!(fs::metadata(wal(&databases.goals)).unwrap().len() > 0);
-        assert_eq!(databases.goal("t"), Goal::Waiting);
+        assert_eq!(databases.goal("t", Some(0)), Goal::Waiting);
         // A reader takes no lock the writer waits on.
         writer
             .execute(
@@ -1460,7 +1479,7 @@ mod tests {
                 [],
             )
             .unwrap();
-        assert_eq!(databases.goal("u"), Goal::Quiet);
+        assert_eq!(databases.goal("u", Some(0)), Goal::Quiet);
     }
 
     #[test]
@@ -1472,9 +1491,31 @@ mod tests {
         for file in [wal(&databases.goals), dir.path().join("goals_1.sqlite-shm")] {
             let _ = fs::remove_file(file);
         }
-        assert_eq!(databases.goal("t"), Goal::Waiting);
+        assert_eq!(databases.goal("t", Some(0)), Goal::Waiting);
         assert!(!wal(&databases.goals).exists());
         assert!(!databases.queued("t"));
+    }
+
+    #[test]
+    fn a_goal_that_stopped_before_the_turn_began_does_not_wait_on_its_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = goals(dir.path(), "blocked");
+        writer
+            .execute("update thread_goals set updated_at_ms = 41999", [])
+            .unwrap();
+        let databases = Databases::new(dir.path());
+        assert_eq!(databases.goal("t", Some(42)), Goal::Quiet);
+        assert_eq!(databases.goal("t", None), Goal::Quiet);
+        // Within the second the turn began, or after it.
+        writer
+            .execute("update thread_goals set updated_at_ms = 42000", [])
+            .unwrap();
+        assert_eq!(databases.goal("t", Some(42)), Goal::Waiting);
+        // An active goal goes on whenever it was set so.
+        writer
+            .execute("update thread_goals set status = 'active'", [])
+            .unwrap();
+        assert_eq!(databases.goal("t", Some(43)), Goal::Active);
     }
 
     #[test]
@@ -1487,7 +1528,7 @@ mod tests {
                 [],
             )
             .unwrap();
-        assert_eq!(Databases::new(dir.path()).goal("t"), Goal::Quiet);
+        assert_eq!(Databases::new(dir.path()).goal("t", Some(0)), Goal::Quiet);
     }
 
     #[test]
