@@ -41,8 +41,8 @@ const fn file(signal: Signal, record: &'static str, cite: &'static str) -> Decla
 pub const SIGNALS: &[Declared] = &[
     file(
         Signal::Started,
-        "a session file naming a new pid or session, whose process started at its procStart; not a spare or a bg session",
-        "probe-claude cc0–cc11",
+        "a session file naming a new pid or session, whose process started at its procStart; not a spare, a bg session, or a run of claude -p or the Agent SDK (entrypoint sdk-*)",
+        "probe-claude cc0–cc11; gaps/h1",
     ),
     file(
         Signal::Prompted,
@@ -126,6 +126,9 @@ struct Process {
     proc_start: Option<String>,
     /// `interactive`, or `bg` for the desktop app's own sessions.
     kind: Option<String>,
+    /// What started the process: `cli` for a terminal, `claude-desktop`, or
+    /// `sdk-cli`, `sdk-ts` or `sdk-py` for `claude -p` and the Agent SDK.
+    entrypoint: Option<String>,
     /// A process the desktop app keeps warm for a session not begun yet.
     #[serde(default)]
     spare: bool,
@@ -395,7 +398,13 @@ impl Claude {
         };
         // A write caught half done is read again at the event that finishes it.
         let process: Process = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-        if process.spare || process.kind.as_deref() == Some("bg") {
+        // A run nobody watches, `claude -p` or a program on the Agent SDK,
+        // is not shown.
+        let unwatched = process
+            .entrypoint
+            .as_deref()
+            .is_some_and(|entrypoint| entrypoint.starts_with("sdk-"));
+        if process.spare || process.kind.as_deref() == Some("bg") || unwatched {
             return Ok(None);
         }
         // A start it cannot read is a format it does not know.
@@ -1009,6 +1018,21 @@ mod tests {
         let replay = replay("a_spare_is_never_started");
         let ids: Vec<String> = replay.phases().into_keys().map(|key| key.id).collect();
         assert_eq!(ids, ["0d9a0d3c-5b1e-4e0b-9a51-6f1f2f3e4d5c"]);
+    }
+
+    #[test]
+    fn a_print_or_sdk_run_is_never_started() {
+        assert!(
+            replay("a_print_or_sdk_run_is_never_started")
+                .phases()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_desktop_permission_prompt_shows_a_question() {
+        let replay = replay("a_desktop_permission_prompt_shows_a_question");
+        assert_eq!(phase(&replay), Phase::Stopped);
     }
 
     #[test]
