@@ -220,9 +220,10 @@ pub fn tail_back(
     }
 }
 
-/// A whole small file, only if (ino, size, mtime_ns) agree before and after
-/// the read; None when the file changed while it was read. For the files a
-/// harness rewrites in place, such as Cursor's transcripts.
+/// A whole file, only if (ino, size, mtime_ns) agree before and after the
+/// read; None when the file changed while it was read. For the files a
+/// harness rewrites in place, such as Cursor's transcripts, which must be
+/// read whole at each change since any byte of them may have changed.
 pub fn stable(path: &Path) -> io::Result<Option<Vec<u8>>> {
     stable_read(path, |path| fs::read(path))
 }

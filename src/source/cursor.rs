@@ -18,8 +18,9 @@
 //! The files are undocumented. What they say at each moment of a session
 //! was taken from Cursor 2026.11.13.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::mem;
 use std::path::{Path, PathBuf};
 
@@ -203,9 +204,11 @@ struct Level {
 const KINDS: &[&str] = &["assistant", "metadata", "turn_ended", "user"];
 
 impl Level {
-    /// What a whole transcript says, counting in `strange` each line that
-    /// is not a record and each record of a kind Cursor was not seen to write.
-    fn read(bytes: &[u8], strange: &mut Strange) -> Level {
+    /// What a whole transcript says, counting in `strange` each record of a
+    /// kind Cursor was not seen to write, and each line that is not a record
+    /// and is not among those `counted` already: every rewrite of the
+    /// transcript writes its history again.
+    fn read(bytes: &[u8], strange: &mut Strange, counted: &mut HashSet<u64>) -> Level {
         let mut level = Level {
             users: 0,
             last: None,
@@ -215,7 +218,12 @@ impl Level {
             .split(|&byte| byte == b'\n')
             .filter(|line| !line.is_empty());
         for line in lines {
-            let Some(record) = strange.parsed(serde_json::from_slice::<Record>(line).ok()) else {
+            let Ok(record) = serde_json::from_slice::<Record>(line) else {
+                let mut hasher = DefaultHasher::new();
+                line.hash(&mut hasher);
+                if counted.insert(hasher.finish()) {
+                    strange.unparsed += 1;
+                }
                 continue;
             };
             strange.kind(
@@ -283,15 +291,45 @@ impl Level {
     }
 }
 
-/// Whether a whole read of a transcript is one to take: finished, and not
-/// a part of the read taken last. A rewrite truncates the file in place and
+/// Where each line of a read of a transcript ends, with a hash of the read
+/// up to there: enough to tell a later read that is the start of this one,
+/// or the whole of it, without keeping its bytes.
+#[derive(Debug, PartialEq)]
+struct Taken(Vec<(usize, u64)>);
+
+impl Taken {
+    fn of(bytes: &[u8]) -> Taken {
+        let mut hasher = DefaultHasher::new();
+        let mut end = 0;
+        let mut ends = Vec::new();
+        for line in bytes.split_inclusive(|&byte| byte == b'\n') {
+            hasher.write(line);
+            end += line.len();
+            ends.push((end, hasher.clone().finish()));
+        }
+        Taken(ends)
+    }
+
+    /// Whether `read` is the start of this read, or the whole of it.
+    fn starts_with(&self, read: &Taken) -> bool {
+        read.0.last().is_some_and(|last| {
+            let at = self.0.binary_search_by_key(&last.0, |&(end, _)| end);
+            at.is_ok_and(|at| self.0[at] == *last)
+        })
+    }
+}
+
+/// A whole read of a transcript, if it is one to take: finished, and not a
+/// part of the read taken last. A rewrite truncates the file in place and
 /// writes it again from the start, so a read caught in the middle is the
 /// start of the new file and, since every rewrite keeps the history, of the
 /// last one taken too.
-fn finished(bytes: &[u8], taken: Option<&[u8]>) -> bool {
-    !bytes.is_empty()
-        && bytes.ends_with(b"\n")
-        && !taken.is_some_and(|taken| taken.starts_with(bytes))
+fn take(bytes: &[u8], taken: Option<&Taken>) -> Option<Taken> {
+    if bytes.is_empty() || !bytes.ends_with(b"\n") {
+        return None;
+    }
+    let read = Taken::of(bytes);
+    (!taken.is_some_and(|taken| taken.starts_with(&read))).then_some(read)
 }
 
 /// The second the process started, as the marker at `path` says:
@@ -313,8 +351,10 @@ struct Session {
     /// The process's `.running` marker.
     marker: PathBuf,
     /// The last read of the transcript taken, whole.
-    taken: Option<Vec<u8>>,
+    taken: Option<Taken>,
     level: Option<Level>,
+    /// The lines of the transcript that are not records, counted already.
+    unparsed: HashSet<u64>,
     told: Told,
     /// Whether the process has held the chat's store open: seen so, or made
     /// before the daemon started.
@@ -329,6 +369,7 @@ impl Session {
             marker,
             taken: None,
             level: None,
+            unparsed: HashSet::new(),
             told: Told::default(),
             held: false,
         }
@@ -513,12 +554,12 @@ impl Cursor {
             Err(error) => return Err(Unread::new(&path, error)),
         };
         let session = self.sessions.get_mut(id).expect("bound");
-        if !finished(&bytes, session.taken.as_deref()) {
+        let Some(taken) = take(&bytes, session.taken.as_ref()) else {
             return Ok(());
-        }
-        let level = Level::read(&bytes, &mut self.strange);
+        };
+        let level = Level::read(&bytes, &mut self.strange, &mut session.unparsed);
         let signals = level.since(session.level.as_ref());
-        session.taken = Some(bytes);
+        session.taken = Some(taken);
         session.level = Some(level);
         if !signals.is_empty() {
             tell(id, session, Channel::File, signals, out);
@@ -870,7 +911,8 @@ mod tests {
                 transcripts += 1;
                 match tail::stable(&path) {
                     Ok(Some(bytes)) => {
-                        let level = Level::read(&bytes, &mut Strange::default());
+                        let mut counted = HashSet::new();
+                        let level = Level::read(&bytes, &mut Strange::default(), &mut counted);
                         println!(
                             "chat {id}  {:>3} user records  {:?}  asks {}",
                             level.users,
@@ -1102,14 +1144,27 @@ mod tests {
 
     #[test]
     fn only_a_finished_read_that_is_not_part_of_the_last_one_is_taken() {
-        let taken = b"{\"role\":\"user\"}\n{\"type\":\"turn_ended\"}\n";
-        assert!(finished(taken, None));
-        assert!(!finished(b"", None));
-        assert!(!finished(b"{\"role\":\"us", None));
-        assert!(!finished(b"{\"role\":\"user\"}\n", Some(taken)));
-        assert!(!finished(taken, Some(taken)));
-        let appended = [&taken[..], b"{\"role\":\"user\"}\n"].concat();
-        assert!(finished(&appended, Some(taken)));
+        let bytes = b"{\"role\":\"user\"}\n{\"type\":\"turn_ended\"}\n";
+        let taken = take(bytes, None).unwrap();
+        assert_eq!(taken, Taken::of(bytes));
+        assert!(take(b"", None).is_none());
+        assert!(take(b"{\"role\":\"us", None).is_none());
+        assert!(take(b"{\"role\":\"user\"}\n", Some(&taken)).is_none());
+        assert!(take(bytes, Some(&taken)).is_none());
+        let appended = [&bytes[..], b"{\"role\":\"user\"}\n"].concat();
+        assert!(take(&appended, Some(&taken)).is_some());
+        // A read as long as a start of the last one, but other bytes.
+        assert!(take(b"{\"role\":\"asst\"}\n", Some(&taken)).is_some());
+    }
+
+    #[test]
+    fn a_line_that_is_not_a_record_is_counted_once_however_often_it_is_read() {
+        let bytes = b"{\"role\":\"user\"}\n{\"role\n{\"type\":\"turn_ended\"}\n";
+        let (mut strange, mut counted) = (Strange::default(), HashSet::new());
+        let level = Level::read(bytes, &mut strange, &mut counted);
+        assert_eq!(level.users, 1);
+        Level::read(bytes, &mut strange, &mut counted);
+        assert_eq!(strange.unparsed, 1);
     }
 
     #[test]
