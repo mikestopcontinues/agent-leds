@@ -6,6 +6,6 @@
 {"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "TaskStartedEvent", "taskId": "task-260825-151015-1bxv", "timestampMs": 1787663415261}}
 {"expect": [["prompted", "file"], ["prompted", "file"]]}
 {"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "SessionA2uxEvent", "event": {"state": "FAILED", "agentEvent": {"kind": "AgentFailureEvent", "agent": {"kind": "MainAgent", "id": "main", "name": "main", "type": "LINEAR"}, "message": "Junie: model unavailable", "errorCode": "ModelUnavailable"}}, "taskId": "task-260825-151015-1bxv", "timestampMs": 1787663425930}}
-{"expect": []}
-{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "TaskState", "state": "COMPLETED", "timestampMs": 1787663425935}}
 {"expect": [[["turn_ended", "turn_failed"], "file"]]}
+{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "TaskState", "state": "COMPLETED", "timestampMs": 1787663425935}}
+{"expect": []}

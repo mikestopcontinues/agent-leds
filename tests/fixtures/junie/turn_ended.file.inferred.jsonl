@@ -1,0 +1,15 @@
+{"cite": "probe-junie 4020.10 s1 turns 7-8: each task names the prompts it takes in a UserMessagesCommittedToHistory; a running task that took its follow-up was never seen", "evidence": "inferred"}
+{"alive": 31877, "started_us": 1794763198000000}
+{"write": ".junie/processes/31877-session-261115-110000-k4mz-4b1e07c2d9a6.json", "text": {"pid": 31877, "sessionId": "session-261115-110000-k4mz", "projectPath": "/Users/me/Code/app", "startedAt": 1794763200112, "version": "4020.10"}}
+{"expect": [["started", "file"]]}
+{"append": ".junie/sessions/session-261115-110000-k4mz/events.jsonl", "line": {"kind": "UserPromptEvent", "requestId": "prompt-261115-110012-p2ve", "prompt": "PROBE prompt", "presentablePrompt": "PROBE prompt", "requiresConfirmation": true, "timestampMs": 1794763212981}}
+{"expect": [["prompted", "file"]]}
+{"append": ".junie/sessions/session-261115-110000-k4mz/events.jsonl", "line": {"kind": "TaskStartedEvent", "taskId": "task-261115-110012-w8dn", "timestampMs": 1794763212982}}
+{"expect": [["prompted", "file"]]}
+{"append": ".junie/sessions/session-261115-110000-k4mz/events.jsonl", "line": {"kind": "UserMessagesCommittedToHistory", "userMessageIds": ["prompt-261115-110012-p2ve"], "timestampMs": 1794763213810}}
+{"append": ".junie/sessions/session-261115-110000-k4mz/events.jsonl", "line": {"kind": "UserPromptEvent", "requestId": "prompt-261115-110020-c6qh", "prompt": "PROBE follow-up", "presentablePrompt": "PROBE follow-up", "customAttachments": [{"kind": "RealtimeFollowUpAttachment"}], "requiresConfirmation": true, "timestampMs": 1794763220431}}
+{"expect": [["prompted", "file"]]}
+{"append": ".junie/sessions/session-261115-110000-k4mz/events.jsonl", "line": {"kind": "UserMessagesCommittedToHistory", "userMessageIds": ["prompt-261115-110012-p2ve", "prompt-261115-110020-c6qh"], "timestampMs": 1794763221524}}
+{"append": ".junie/sessions/session-261115-110000-k4mz/events.jsonl", "line": {"kind": "SessionA2uxEvent", "event": {"state": "COMPLETED", "agentEvent": {"kind": "ResultBlockUpdatedEvent", "agent": {"kind": "MainAgent", "id": "main", "name": "main", "type": "LINEAR"}, "stepId": "0d6e2f4a-91b3-4c58-a7e0-3f1c9b8d2e57", "cancelled": false, "result": "done", "title": "Done"}}, "taskId": "task-261115-110012-w8dn", "timestampMs": 1794763224662}}
+{"append": ".junie/sessions/session-261115-110000-k4mz/events.jsonl", "line": {"kind": "TaskState", "state": "COMPLETED", "timestampMs": 1794763224667}}
+{"expect": [["turn_ended", "file"]]}

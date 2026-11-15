@@ -1,0 +1,11 @@
+{"cite": "Irrlicht parser.go parseInputRequest, which reads a ChoiceRequestUpdatedEvent as it does an AskAsyncRequestUpdatedEvent; 4020.10 never wrote one", "evidence": "inferred"}
+{"alive": 47990, "started_us": 1787663400000000}
+{"write": ".junie/processes/47990-session-260825-151015-19jp-c95cdd197f46.json", "text": {"pid": 47990, "sessionId": "session-260825-151015-19jp", "projectPath": "/Users/me/Code/app", "startedAt": 1787663400000}}
+{"expect": [["started", "file"]]}
+{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "UserPromptEvent", "requestId": "prompt-260825-151015-k2qd", "prompt": "PROBE prompt", "presentablePrompt": "PROBE prompt", "requiresConfirmation": true, "timestampMs": 1787663415250}}
+{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "TaskStartedEvent", "taskId": "task-260825-151015-1bxv", "timestampMs": 1787663415261}}
+{"expect": [["prompted", "file"], ["prompted", "file"]]}
+{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "SessionA2uxEvent", "event": {"state": "INPUT_REQUIRED", "agentEvent": {"kind": "ChoiceRequestUpdatedEvent", "agent": {"kind": "MainAgent", "id": "main", "name": "main", "type": "LINEAR"}, "stepId": "5b1f0c7e-2d1a-4e8b-9c3f-7a6d2e4b8f10", "status": "IN_PROGRESS"}}, "taskId": "task-260825-151015-1bxv", "timestampMs": 1787663420000}}
+{"expect": [["question_asked", "file"]]}
+{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "SessionA2uxEvent", "event": {"state": "INPUT_REQUIRED", "agentEvent": {"kind": "ChoiceRequestUpdatedEvent", "agent": {"kind": "MainAgent", "id": "main", "name": "main", "type": "LINEAR"}, "stepId": "5b1f0c7e-2d1a-4e8b-9c3f-7a6d2e4b8f10", "status": "IN_PROGRESS"}}, "taskId": "task-260825-151015-1bxv", "timestampMs": 1787663420001}}
+{"expect": []}
