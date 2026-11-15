@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde::Deserialize;
+use serde::de::IgnoredAny;
+use serde_json::Value;
 
 use super::tail::{self, Lines, Tail};
 use super::{Event, Hook, Observation, Source, Start, Told};
@@ -43,8 +45,8 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Prompted,
-        "a transcript user record with a promptSource (typed, sdk or a task notification), keyed by its promptId",
-        "probe-claude cc1, cc3",
+        "a transcript user record, not a tool result, with a promptSource (typed, sdk or a task notification) or an origin (a skill's slash command), keyed by its promptId; or the model writing again after its turn closed, as after a Stop hook that blocks or a compaction",
+        "probe-claude cc1, cc3; desktop transcripts 2.1.317, 2.1.321",
     ),
     file(
         Signal::PermissionAsked,
@@ -63,8 +65,8 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::TurnEnded,
-        "an end_turn record with text while the session file is idle; or waiting to idle after the turn closed while waiting",
-        "probe-claude cc1, cc4",
+        "an end_turn record with text, or a tool result marked claude/endTurn, while the session file is idle; or waiting to idle after the turn closed while waiting",
+        "probe-claude cc1, cc4; desktop transcripts 2.1.299–2.1.321",
     ),
     file(
         Signal::TurnEndedAsking,
@@ -150,6 +152,8 @@ struct Record {
     kind: String,
     /// Set on a prompt: typed, sdk, or system for a task notification.
     prompt_source: Option<String>,
+    /// Set on what the user sent, a slash command that runs a skill too.
+    origin: Option<IgnoredAny>,
     prompt_id: Option<String>,
     #[serde(default)]
     is_api_error_message: bool,
@@ -157,10 +161,15 @@ struct Record {
     #[serde(default)]
     is_sidechain: bool,
     message: Option<Message>,
+    /// What the desktop app's tool said of its result: `claude/endTurn` in
+    /// its `_meta` when the tool ends the turn.
+    mcp_meta: Option<Value>,
 }
 
 #[derive(Deserialize)]
 struct Message {
+    /// `<synthetic>` for a message Claude Code wrote itself.
+    model: Option<String>,
     stop_reason: Option<String>,
     content: Content,
 }
@@ -177,6 +186,15 @@ struct Block {
     #[serde(rename = "type")]
     kind: String,
     text: Option<String>,
+}
+
+impl Content {
+    fn blocks(&self) -> &[Block] {
+        match self {
+            Content::Text(_) => &[],
+            Content::Blocks(blocks) => blocks,
+        }
+    }
 }
 
 impl Record {
@@ -198,13 +216,25 @@ impl Record {
         }
     }
 
+    fn is_tool_result(&self) -> bool {
+        self.message.as_ref().is_some_and(|message| {
+            let blocks = message.content.blocks();
+            blocks.iter().any(|block| block.kind == "tool_result")
+        })
+    }
+
+    /// What starts a turn: a prompt, a task notification, or a slash command
+    /// that runs a skill. A command Claude Code runs itself, such as
+    /// `/model`, is recorded with neither field.
     fn is_prompt(&self) -> bool {
-        self.kind == "user" && self.prompt_source.is_some()
+        self.kind == "user"
+            && (self.prompt_source.is_some() || self.origin.is_some())
+            && !self.is_tool_result()
     }
 
     fn is_interrupt(&self) -> bool {
         self.kind == "user"
-            && self.prompt_source.is_none()
+            && !self.is_prompt()
             && self
                 .texts()
                 .first()
@@ -213,13 +243,28 @@ impl Record {
 
     /// The final message of a turn that ended, if this record ends one.
     /// One message is written as a record per block, and only the text
-    /// block's record ends the turn.
+    /// block's record ends the turn. In the desktop app a tool can end the
+    /// turn instead, with no message after it.
     fn end(&self) -> Option<&str> {
         let message = self.message.as_ref()?;
+        let ends =
+            |meta: &Value| meta.pointer("/_meta/claude~1endTurn") == Some(&Value::Bool(true));
+        if self.kind == "user" && self.mcp_meta.as_ref().is_some_and(ends) {
+            return Some("");
+        }
         if self.kind != "assistant" || message.stop_reason.as_deref() != Some("end_turn") {
             return None;
         }
         self.texts().last().copied()
+    }
+
+    /// Whether the model wrote the record, which only a running turn does.
+    fn is_model(&self) -> bool {
+        self.kind == "assistant"
+            && self
+                .message
+                .as_ref()
+                .is_some_and(|message| message.model.as_deref() != Some("<synthetic>"))
     }
 
     fn is_error(&self) -> bool {
@@ -525,9 +570,15 @@ impl Claude {
             return;
         };
         let session = self.sessions.get_mut(id).expect("tracked");
-        if record.is_prompt() {
+        // The model writing after its turn closed goes on with that turn, as
+        // after a Stop hook that blocks or a compaction: what ends it is
+        // still to come.
+        let goes_on = !session.open && record.is_model();
+        if record.is_prompt() || goes_on {
             session.open = true;
-            session.turn = record.prompt_id.clone().map(TurnKey);
+            if record.is_prompt() {
+                session.turn = record.prompt_id.clone().map(TurnKey);
+            }
             session.closed_waiting = None;
             session.background = false;
             // A prompt written after the session file said it waits, as a
@@ -537,7 +588,8 @@ impl Claude {
                 _ => Signal::Prompted,
             };
             tell(id, session, signal, out);
-        } else if record.is_interrupt() {
+        }
+        if record.is_interrupt() {
             if session.open {
                 session.open = false;
                 tell(id, session, Signal::Interrupted, out);
@@ -881,6 +933,38 @@ mod tests {
                 pid: 90859,
                 start: StartCheck::Second(1_794_693_357)
             }
+        );
+    }
+
+    #[test]
+    fn a_slash_command_starts_a_turn() {
+        assert_eq!(
+            phase(&replay("a_slash_command_starts_a_turn")),
+            Phase::Stopped
+        );
+    }
+
+    #[test]
+    fn a_stop_hook_that_blocks_keeps_the_turn_going() {
+        assert_eq!(
+            phase(&replay("a_stop_hook_that_blocks_keeps_the_turn_going")),
+            Phase::Asked
+        );
+    }
+
+    #[test]
+    fn a_turn_compacted_after_an_error_goes_on() {
+        assert_eq!(
+            phase(&replay("a_turn_compacted_after_an_error_goes_on")),
+            Phase::Stopped
+        );
+    }
+
+    #[test]
+    fn the_desktop_s_end_turn_tool_ends_the_turn() {
+        assert_eq!(
+            phase(&replay("the_desktop_s_end_turn_tool_ends_the_turn")),
+            Phase::Stopped
         );
     }
 

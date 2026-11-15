@@ -52,7 +52,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### Prompted
 
-- Claude Code, file, observed: a transcript user record with a promptSource (typed, sdk or a task notification), keyed by its promptId (probe-claude cc1, cc3)
+- Claude Code, file, observed: a transcript user record, not a tool result, with a promptSource (typed, sdk or a task notification) or an origin (a skill's slash command), keyed by its promptId; or the model writing again after its turn closed, as after a Stop hook that blocks or a compaction (probe-claude cc1, cc3; desktop transcripts 2.1.317, 2.1.321)
 - Codex, hook, observed: UserPromptSubmit, PreToolUse or PostToolUse (0.5.0 hooks, probe-codex runA)
 - Grok, hook, observed: user_prompt_submit, pre_tool_use, post_tool_use or post_tool_use_failure (0.5.0 hooks, probe-grok runs a–l)
 - Cursor, hook, observed: beforeSubmitPrompt, postToolUse or postToolUseFailure (0.5.0 hooks, probe-cursor runs A–I)
@@ -81,7 +81,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### TurnEnded
 
-- Claude Code, file, observed: an end_turn record with text while the session file is idle; or waiting to idle after the turn closed while waiting (probe-claude cc1, cc4)
+- Claude Code, file, observed: an end_turn record with text, or a tool result marked claude/endTurn, while the session file is idle; or waiting to idle after the turn closed while waiting (probe-claude cc1, cc4; desktop transcripts 2.1.299–2.1.321)
 - Codex, hook, observed: Stop (0.5.0 hooks, probe-codex runA)
 - Grok, hook, observed: stop with reason end_turn, or stop_cancelled that Grok gave up on itself (0.5.0 hooks, probe-grok runs a–l)
 - Cursor, hook, observed: stop with status completed (0.5.0 hooks, probe-cursor runs A–I)
