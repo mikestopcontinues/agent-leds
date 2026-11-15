@@ -10,12 +10,12 @@ use anyhow::{Context, Result, bail};
 use crate::config::home;
 use crate::daemon;
 use crate::device;
-use crate::fsm::{self, Signal};
+use crate::fsm::Signal;
 use crate::harness;
 use crate::ipc::{self, Request, Status};
 use crate::launchd;
 use crate::liveness::{Kernel, Liveness, System};
-use crate::queue::{Key, Queue};
+use crate::queue::{Key, Problem, Queue};
 use crate::source::{self, Observation, Source};
 
 pub fn run() -> Result<()> {
@@ -165,20 +165,22 @@ fn sessions(seeded: &[Observation]) -> Result<String> {
     let mut queue = Queue::default();
     let mut problems = BTreeSet::new();
     for o in seeded {
-        let undeclared = o.undeclared();
-        if !undeclared.is_empty() {
-            problems.insert(format!(
-                "its files told {} through {:?}, which it does not declare",
-                names(undeclared),
-                o.channel
-            ));
-            continue;
+        match queue.admit(o, 0).1 {
+            None => {}
+            Some(Problem::Undeclared(undeclared)) => {
+                problems.insert(format!(
+                    "its files told {} through {:?}, which it does not declare",
+                    names(undeclared),
+                    o.channel
+                ));
+            }
+            Some(Problem::Overlap { .. }) => {
+                problems.insert(format!(
+                    "its files told {} together",
+                    names(o.event.signals())
+                ));
+            }
         }
-        let signals = o.event.signals();
-        if fsm::overlaps(queue.phase(&o.key), &signals) {
-            problems.insert(format!("its files told {} together", names(signals)));
-        }
-        queue.apply(o, 0);
     }
     if !problems.is_empty() {
         let problems: Vec<String> = problems.into_iter().collect();

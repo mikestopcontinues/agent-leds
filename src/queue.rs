@@ -74,6 +74,17 @@ pub enum Change {
     Announce(State),
 }
 
+/// What was wrong with an observation `Queue::admit` was given.
+#[derive(Debug, PartialEq)]
+pub enum Problem {
+    /// Signals its harness does not declare through its channel. Nothing
+    /// was applied.
+    Undeclared(Vec<Signal>),
+    /// Signals that overlap from `from`. The table's order chose `winner`,
+    /// and that was applied.
+    Overlap { from: Phase, winner: Signal },
+}
+
 /// How long sessions keep their light.
 #[derive(Clone, Copy)]
 pub struct Expiry {
@@ -85,6 +96,28 @@ pub struct Expiry {
 }
 
 impl Queue {
+    /// Applies an observation from a source, if its harness declares every
+    /// signal in it, and says what was wrong with it. One that is not
+    /// declared is dropped: a source produced something its harness does
+    /// not claim. One whose signals overlap is applied as the table's order
+    /// says: a source told what it should not together, as when a
+    /// harness's format changes.
+    pub fn admit(&mut self, o: &Observation, now: u64) -> (Change, Option<Problem>) {
+        let undeclared = o.undeclared();
+        if !undeclared.is_empty() {
+            return (Change::None, Some(Problem::Undeclared(undeclared)));
+        }
+        let from = self.phase(&o.key);
+        let signals = o.event.signals();
+        let overlap = fsm::overlaps(from, &signals).then(|| Problem::Overlap {
+            from,
+            winner: fsm::next(from, &signals)
+                .expect("an overlap has a winner")
+                .on,
+        });
+        (self.apply(o, now), overlap)
+    }
+
     /// Moves a session by the table. The only place phases change.
     pub fn apply(&mut self, o: &Observation, now: u64) -> Change {
         let position = self.sessions.iter().position(|s| s.key == o.key);
@@ -451,6 +484,33 @@ mod tests {
         );
         assert_eq!(queue.apply(&signal("a", Ended, None), 5), Change::Settle);
         assert!(!queue.tracked());
+    }
+
+    #[test]
+    fn admitting_drops_what_is_undeclared_and_applies_an_overlap_by_the_table() {
+        let mut queue = Queue::default();
+        tell(&mut queue, "a", &[Prompted], 1);
+        // Claude Code declares no hooks.
+        let mut hooked = signal("a", TurnEnded, None);
+        hooked.channel = Channel::Hook;
+        assert_eq!(
+            queue.admit(&hooked, 2),
+            (Change::None, Some(Problem::Undeclared(vec![TurnEnded])))
+        );
+        assert_eq!(phase(&queue, "a"), Working);
+        let mut both = signal("a", TurnEnded, None);
+        both.event = Event::Signals([TurnEnded, PermissionAsked].into());
+        let (change, problem) = queue.admit(&both, 3);
+        assert_eq!(change, Change::Announce(State::Question));
+        assert_eq!(
+            problem,
+            Some(Problem::Overlap {
+                from: Working,
+                winner: PermissionAsked
+            })
+        );
+        assert_eq!(phase(&queue, "a"), Blocked);
+        assert_eq!(queue.admit(&signal("a", Answered, None), 4).1, None);
     }
 
     #[test]

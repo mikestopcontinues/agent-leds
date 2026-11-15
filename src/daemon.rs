@@ -20,12 +20,12 @@ use crate::desktop::Desktop;
 use crate::device;
 use crate::eject;
 use crate::files;
-use crate::fsm::{self, Channel, Signal};
+use crate::fsm::{Channel, Signal};
 use crate::harness::Harness;
 use crate::ipc::{self, Overlap, Request, Status, View};
 use crate::liveness::{self, Liveness};
 use crate::player::Player;
-use crate::queue::{Change, Expiry, Queue};
+use crate::queue::{Change, Expiry, Problem, Queue};
 use crate::render::{self, Step};
 use crate::source::{self, Observation, Read, Sources};
 use crate::state::State;
@@ -419,43 +419,39 @@ impl<W: World> Daemon<W> {
         }
     }
 
-    /// Applies one observation, if its harness declares every signal in
-    /// it. One that is not declared is dropped, counted, and logged once per
-    /// kind: a source produced something its harness does not claim. One
-    /// whose signals overlap is applied as the table's order says, counted,
-    /// and logged once per set: a source told what it should not together,
-    /// as when a harness's format changes.
+    /// Admits one observation to the queue. One its harness does not
+    /// declare is counted and logged once per kind, and one whose signals
+    /// overlap is counted and logged once per set.
     fn apply(&mut self, o: &Observation) -> Change {
         let harness = o.key.harness;
-        let signals = o.event.signals();
-        let undeclared = o.undeclared();
-        if !undeclared.is_empty() {
-            self.undeclared += 1;
-            for signal in undeclared {
-                if self.logged.insert((harness, signal, o.channel)) {
-                    eprintln!(
-                        "agent-leds: {} produced {signal:?} through {:?}, which it does not declare",
-                        harness.title(),
-                        o.channel
-                    );
+        let (change, problem) = self.queue.admit(o, self.world.now_ms());
+        match problem {
+            None => {}
+            Some(Problem::Undeclared(undeclared)) => {
+                self.undeclared += 1;
+                for signal in undeclared {
+                    if self.logged.insert((harness, signal, o.channel)) {
+                        eprintln!(
+                            "agent-leds: {} produced {signal:?} through {:?}, which it does not declare",
+                            harness.title(),
+                            o.channel
+                        );
+                    }
                 }
             }
-            return Change::None;
-        }
-        let from = self.queue.phase(&o.key);
-        if fsm::overlaps(from, &signals) {
-            let count = self.overlaps.entry((harness, signals.clone())).or_default();
-            if *count == 0 {
-                let winner = fsm::next(from, &signals).expect("an overlap has a winner");
-                eprintln!(
-                    "agent-leds: {} told {signals:?} together, which overlap; from {from:?}, {:?} wins",
-                    harness.title(),
-                    winner.on
-                );
+            Some(Problem::Overlap { from, winner }) => {
+                let signals = o.event.signals();
+                let count = self.overlaps.entry((harness, signals.clone())).or_default();
+                if *count == 0 {
+                    eprintln!(
+                        "agent-leds: {} told {signals:?} together, which overlap; from {from:?}, {winner:?} wins",
+                        harness.title(),
+                    );
+                }
+                *count += 1;
             }
-            *count += 1;
         }
-        self.queue.apply(o, self.world.now_ms())
+        change
     }
 
     /// Applies a batch of observations, then saves and shows the result
