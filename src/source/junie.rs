@@ -178,6 +178,20 @@ struct Record {
     /// When it was written, in Unix milliseconds. A block's goes backwards,
     /// but a prompt's or a task start's is the time of its writing.
     timestamp_ms: Option<u64>,
+    /// A prompt's id.
+    request_id: Option<String>,
+    /// A prompt's attachments: a RealtimeFollowUpAttachment for one typed
+    /// while a task runs.
+    #[serde(default)]
+    custom_attachments: Vec<Attachment>,
+    /// The prompts a UserMessagesCommittedToHistory says the agent took.
+    #[serde(default)]
+    user_message_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct Attachment {
+    kind: String,
 }
 
 #[derive(Deserialize)]
@@ -238,6 +252,14 @@ impl Record {
         serde_json::from_slice(line).ok()
     }
 
+    /// Whether a prompt was typed while a task ran, for it to take or to
+    /// run next.
+    fn follows_up(&self) -> bool {
+        self.custom_attachments
+            .iter()
+            .any(|attachment| attachment.kind == "RealtimeFollowUpAttachment")
+    }
+
     fn starts_turn(&self) -> bool {
         matches!(self.kind.as_str(), "UserPromptEvent" | "TaskStartedEvent")
     }
@@ -271,14 +293,16 @@ impl Record {
     }
 }
 
-/// The kinds of record Junie was seen to write, in others' captures of
-/// 26.8.24 and in the parsers of Irrlicht and agentsview.
+/// The kinds of record Junie was seen to write, in real sessions of 4020.10,
+/// in others' captures of 26.8.24 and in the parsers of Irrlicht and
+/// agentsview.
 const KINDS: &[&str] = &[
     "AgentTaskFailedEvent",
     "CancelAgentEvent",
     "SessionA2uxEvent",
     "SessionCostTrajectorySnapshotEvent",
     "SessionTitleSetEvent",
+    "SkillsStatusEvent",
     "SystemMessageEvent",
     "TaskStartedEvent",
     "TaskState",
@@ -292,18 +316,25 @@ const KINDS: &[&str] = &[
 
 /// The kinds of block a SessionA2uxEvent was seen to wrap, from the same.
 const BLOCKS: &[&str] = &[
+    "AgentCurrentStatusUpdatedEvent",
     "AgentFailureEvent",
+    "AgentPatchCreatedEvent",
+    "AgentTaskNameUpdatedEvent",
     "AgentThoughtBlockUpdatedEvent",
     "AskAsyncRequestUpdatedEvent",
     "AvailablePullRequestsEvent",
     "ChoiceRequestUpdatedEvent",
     "ContextWindowReportEvent",
     "CurrentDirectoryUpdatedEvent",
+    "CustomAgentBlockUpdatedEvent",
+    "EnvironmentVariablesUpdatedEvent",
     "FileChangesBlockUpdatedEvent",
     "LlmResponseMetadataEvent",
     "MarkdownBlockUpdatedEvent",
     "McpBlockUpdatedEvent",
+    "NextPromptSuggestionEvent",
     "ResultBlockUpdatedEvent",
+    "SubagentSpawnedEvent",
     "TerminalBlockUpdatedEvent",
     "TipSuggestionCreatedEvent",
     "ToolBlockUpdatedEvent",
@@ -316,6 +347,9 @@ struct Task {
     failed: bool,
     cancelled: bool,
     result: String,
+    /// A prompt typed while it ran that it has not taken, which Junie runs
+    /// as the next task once this one completes.
+    follow_up: Option<String>,
 }
 
 /// What the files have said of one session a process runs.
@@ -400,7 +434,8 @@ impl Junie {
     fn read_sidecar(&mut self, path: &Path) -> Result<(), Unread> {
         match fs::read(path) {
             Ok(bytes) => {
-                let sidecar = serde_json::from_slice(&bytes).map_err(|e| Unread::new(path, e))?;
+                let sidecar: Sidecar =
+                    serde_json::from_slice(&bytes).map_err(|e| Unread::new(path, e))?;
                 self.sidecars.insert(path.to_owned(), sidecar);
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -634,22 +669,41 @@ impl Junie {
         }
     }
 
-    /// What one line of the log says. A task's failure, cancel and result
-    /// are told with its end, which Junie writes after each of them.
+    /// What one line of the log says. A task's cancel and result are told
+    /// with its end, which Junie writes after each of them.
     fn record(&mut self, id: &str, record: &Record, out: &mut Vec<Observation>) {
         let session = self.sessions.get_mut(id).expect("tracked");
         match record.kind.as_str() {
+            // A prompt typed while a task runs steers it, or starts the next
+            // task once it ends.
+            "UserPromptEvent" if record.follows_up() => {
+                let task = session.task.get_or_insert_with(Task::default);
+                task.follow_up = record.request_id.clone();
+                tell(id, session, [Signal::Prompted], out);
+            }
             "UserPromptEvent" => {
                 session.task = Some(Task::default());
                 session.turn = None;
                 session.waiting.clear();
                 tell(id, session, [Signal::Prompted], out);
             }
-            // After its prompt, or alone when a task is resumed.
+            // After its prompt, or alone when a task is resumed or runs a
+            // follow-up.
             "TaskStartedEvent" => {
                 session.task.get_or_insert_with(Task::default);
                 session.turn = record.task_id.clone().map(TurnKey);
                 tell(id, session, [Signal::Prompted], out);
+            }
+            // The task took the follow-up.
+            "UserMessagesCommittedToHistory" => {
+                if let Some(task) = &mut session.task
+                    && task
+                        .follow_up
+                        .as_ref()
+                        .is_some_and(|prompt| record.user_message_ids.contains(prompt))
+                {
+                    task.follow_up = None;
+                }
             }
             "AgentTaskFailedEvent" => {
                 if let Some(task) = &mut session.task {
@@ -673,29 +727,44 @@ impl Junie {
                     tell(id, session, [Signal::Answered], out);
                 }
             }
-            // Junie writes one TaskState for each task, whatever its state.
+            // Junie writes one TaskState for each task, whatever its state:
+            // CANCELED when a process resuming the session finds it left
+            // under way by one that was killed.
             "TaskState" => {
                 // Only a task that started ends.
-                let Some(task) = session.task.take() else {
+                let Some(mut task) = session.task.take() else {
                     return;
                 };
-                session.waiting.clear();
-                let mut end = BTreeSet::from([Signal::TurnEnded]);
-                if record.state.as_deref() == Some("FAILED") || task.failed {
-                    end.insert(Signal::TurnFailed);
+                task.failed |= record.state.as_deref() == Some("FAILED");
+                task.cancelled |= record.state.as_deref() == Some("CANCELED");
+                // Junie starts a follow-up the task did not take as soon as
+                // the task completes.
+                if task.follow_up.is_some() && !task.failed && !task.cancelled {
+                    session.waiting.clear();
+                    return;
                 }
-                if task.cancelled {
-                    end.insert(Signal::Interrupted);
-                }
-                if ends_on_question(&task.result) {
-                    end.insert(Signal::TurnEndedAsking);
-                }
-                tell(id, session, end, out);
+                end(id, session, task, out);
             }
             "SessionA2uxEvent" => update(id, session, record, out),
             _ => {}
         }
     }
+}
+
+/// Tells the end of a task, from what it said of itself.
+fn end(id: &str, session: &mut Session, task: Task, out: &mut Vec<Observation>) {
+    session.waiting.clear();
+    let mut end = BTreeSet::from([Signal::TurnEnded]);
+    if task.failed {
+        end.insert(Signal::TurnFailed);
+    }
+    if task.cancelled {
+        end.insert(Signal::Interrupted);
+    }
+    if ends_on_question(&task.result) {
+        end.insert(Signal::TurnEndedAsking);
+    }
+    tell(id, session, end, out);
 }
 
 /// What one block update in a SessionA2uxEvent says.
@@ -706,6 +775,16 @@ fn update(id: &str, session: &mut Session, record: &Record, out: &mut Vec<Observ
     // A task whose start was not read is named by its other records.
     if session.task.is_some() && session.turn.is_none() {
         session.turn = record.task_id.clone().map(TurnKey);
+    }
+    // A task that failed is over there: a run of `junie <task>` writes no
+    // TaskState after it, and the one an interactive run writes says
+    // COMPLETED, as it goes on to retry.
+    if state == Some("FAILED")
+        && let Some(mut task) = session.task.take()
+    {
+        task.failed = true;
+        end(id, session, task, out);
+        return;
     }
     match block.kind.as_str() {
         "AgentFailureEvent" => {
