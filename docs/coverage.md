@@ -168,7 +168,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### Ended
 
-- Claude Code, file, observed: the session file deleted or naming another session (/clear), or its process gone (probe-claude cc1, cc2, cc10)
+- Claude Code, file, observed: the session file deleted or naming another session (/clear), or its process gone, while no other process runs the session (probe-claude cc1, cc2, cc6, cc10)
 - Codex, file, observed: the thread's lock deleted, or taken again by another process; or left unlocked, as a killed process leaves it (probe-codex runA, runB (kill -9), runC)
 - Grok, file, observed: the session's row gone from active_sessions.json, as /quit leaves it even mid-turn, or its process gone (probe-grok quit/crash, runs a, b, c)
 - Cursor, file, observed: the .running marker of the process the chat is bound to deleted, as a quit does; or the chat's store.db-wal, once seen or once the daemon starts to find store.db made, gone while the process runs on, as /new and resuming another chat leave it (probe-cursor runs A, C, D, G, I; gaps cursor pty and /new runs)

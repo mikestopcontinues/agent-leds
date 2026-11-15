@@ -107,8 +107,8 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Ended,
-        "the session file deleted or naming another session (/clear), or its process gone",
-        "probe-claude cc1, cc2, cc10",
+        "the session file deleted or naming another session (/clear), or its process gone, while no other process runs the session",
+        "probe-claude cc1, cc2, cc6, cc10",
     ),
     // Told by the daemon, which reads the desktop app's files in `desktop`.
     Declared::new(
