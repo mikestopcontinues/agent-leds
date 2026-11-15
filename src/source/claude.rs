@@ -66,13 +66,27 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::QuestionAsked,
-        "the session file going to status waiting for input needed, or the desktop app's log emitting a tool permission request for AskUserQuestion while the session file does not wait; or a prompt read while either says so",
-        "probe-claude cc2, cc9; the desktop app's main.log (a_question_both_the_session_file_and_the_log_tell_blocks_once)",
+        "the session file going to status waiting for input needed; or a prompt read while the session file says so",
+        "probe-claude cc2, cc9",
+    ),
+    Declared::new(
+        Signal::QuestionAsked,
+        Channel::File,
+        Evidence::Inferred,
+        "the desktop app's log emitting a tool permission request for AskUserQuestion while the session file does not wait; or a prompt read while the log holds it",
+        "the desktop app's main.log, 2026-11-14 (AskUserQuestion's requests); which of it and the session file tells the wait first was not seen",
     ),
     file(
         Signal::Answered,
-        "the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt; the wait over only once neither the session file nor the desktop app's log holds one: the log closes a request with a permission response or an abort, and closes every request when the app starts again",
-        "probe-claude cc1, cc2; the desktop app's main.log (a_desktop_dialog_the_session_file_does_not_show_blocks_until_it_closes)",
+        "the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt; or the desktop app's log closing a request it holds while the session file does not wait, with a permission response or an abort",
+        "probe-claude cc1, cc2; the desktop app's main.log, 2026-09-30 to 2026-11-15 (a_desktop_dialog_the_session_file_does_not_show_blocks_until_it_closes)",
+    ),
+    Declared::new(
+        Signal::Answered,
+        Channel::File,
+        Evidence::Inferred,
+        "the last of the session file and the desktop app's log to let go of a wait both hold; or the app starting again, which closes every request its log holds, while the session runs on",
+        "the desktop app's main.log, 2026-11-10 to 2026-11-14 (its starts, and AskUserQuestion's requests); which of the log and the session file lets go first, and a session running on across the app's start, were not seen",
     ),
     Declared::new(
         Signal::Released,
@@ -1570,7 +1584,7 @@ mod tests {
     /// let it go, whichever closes first.
     #[test]
     fn a_question_both_the_session_file_and_the_log_tell_blocks_once() {
-        let replay = replay("a_question_both_the_session_file_and_the_log_tell_blocks_once");
+        let replay = replay("question_asked.file.inferred");
         assert_eq!(told(&replay, Signal::QuestionAsked), 2);
         assert_eq!(told(&replay, Signal::Answered), 2);
         assert_eq!(phase(&replay), Phase::Stopped);
@@ -1578,7 +1592,7 @@ mod tests {
 
     #[test]
     fn a_dialog_aborted_or_left_by_an_earlier_launch_of_the_app_is_closed() {
-        let replay = replay("a_dialog_aborted_or_left_by_an_earlier_launch_of_the_app_is_closed");
+        let replay = replay("answered.file.inferred");
         assert_eq!(told(&replay, Signal::Answered), 2);
         assert_eq!(phase(&replay), Phase::Working);
     }
