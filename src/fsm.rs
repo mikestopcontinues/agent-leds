@@ -26,6 +26,10 @@ pub enum Phase {
     Idle,
     /// A turn is running.
     Working,
+    /// A turn nobody typed is running, such as a heartbeat or a message
+    /// another agent sent. It shows as working, and keeps the phase it was
+    /// entered from, which a quiet end goes back to.
+    Unattended,
     /// The turn ended but work it started goes on, such as a background
     /// subagent. It shows as working.
     Background,
@@ -47,10 +51,11 @@ pub enum Phase {
 
 impl Phase {
     /// Every phase, in declaration order.
-    pub const ALL: [Phase; 10] = [
+    pub const ALL: [Phase; 11] = [
         Gone,
         Idle,
         Working,
+        Unattended,
         Background,
         Blocked,
         Asked,
@@ -69,13 +74,14 @@ impl Phase {
             Gone => 0,
             Idle => 1,
             Working => 2,
-            Background => 3,
-            Blocked => 4,
-            Asked => 5,
-            AskedRead => 6,
-            Stopped => 7,
-            StoppedRead => 8,
-            Failed => 9,
+            Unattended => 3,
+            Background => 4,
+            Blocked => 5,
+            Asked => 6,
+            AskedRead => 7,
+            Stopped => 8,
+            StoppedRead => 9,
+            Failed => 10,
         }
     }
 
@@ -83,7 +89,7 @@ impl Phase {
     pub fn state(self) -> Option<State> {
         match self {
             Gone | Idle => None,
-            Working | Background => Some(State::Working),
+            Working | Unattended | Background => Some(State::Working),
             Blocked | Asked | AskedRead => Some(State::Question),
             Stopped | StoppedRead => Some(State::Stopped),
             Failed => Some(State::Error),
@@ -111,6 +117,9 @@ pub enum Signal {
     Started,
     /// A turn started, by the user or by the harness waking itself.
     Prompted,
+    /// A turn started that nobody typed, and that ends quietly unless it
+    /// wants the user, such as a heartbeat.
+    Woke,
     /// A tool waits for the user's approval.
     PermissionAsked,
     /// The agent waits for an answer to its question, or a dialog is open.
@@ -125,6 +134,9 @@ pub enum Signal {
     TurnEnded,
     /// The turn completed on a message ending in '?' or on a plan proposal.
     TurnEndedAsking,
+    /// The turn completed with nothing for the user: a turn nobody typed
+    /// goes back, unannounced, to where it found the session.
+    TurnEndedQuietly,
     /// The turn ended on an error.
     TurnFailed,
     /// The user stopped the turn.
@@ -147,15 +159,17 @@ pub enum Signal {
 
 impl Signal {
     /// Every signal, in declaration order.
-    pub const ALL: [Signal; 17] = [
+    pub const ALL: [Signal; 19] = [
         Started,
         Prompted,
+        Woke,
         PermissionAsked,
         QuestionAsked,
         Answered,
         Released,
         TurnEnded,
         TurnEndedAsking,
+        TurnEndedQuietly,
         TurnFailed,
         Interrupted,
         Backgrounded,
@@ -173,21 +187,23 @@ impl Signal {
         match self {
             Started => 0,
             Prompted => 1,
-            PermissionAsked => 2,
-            QuestionAsked => 3,
-            Answered => 4,
-            Released => 5,
-            TurnEnded => 6,
-            TurnEndedAsking => 7,
-            TurnFailed => 8,
-            Interrupted => 9,
-            Backgrounded => 10,
-            BackgroundDone => 11,
-            Ended => 12,
-            Looked => 13,
-            ReadExpired => 14,
-            Abandoned => 15,
-            Dismissed => 16,
+            Woke => 2,
+            PermissionAsked => 3,
+            QuestionAsked => 4,
+            Answered => 5,
+            Released => 6,
+            TurnEnded => 7,
+            TurnEndedAsking => 8,
+            TurnEndedQuietly => 9,
+            TurnFailed => 10,
+            Interrupted => 11,
+            Backgrounded => 12,
+            BackgroundDone => 13,
+            Ended => 14,
+            Looked => 15,
+            ReadExpired => 16,
+            Abandoned => 17,
+            Dismissed => 18,
         }
     }
 
@@ -206,6 +222,9 @@ impl Signal {
             Prompted => {
                 "a new turn never shows as working, and keeps the light it had until the turn waits or ends"
             }
+            Woke => {
+                "a turn nobody typed shows as one the user typed, and ends with a light whatever it says"
+            }
             PermissionAsked => "an approval wait shows as the light it interrupts",
             QuestionAsked => "a question the agent waits on shows as the light it interrupts",
             Answered => "an answered approval or question shows as a question until the turn ends",
@@ -216,6 +235,9 @@ impl Signal {
                 "a finished turn keeps its light, usually working, until the session moves on"
             }
             TurnEndedAsking => "a turn that ends on a question shows as stopped, not as a question",
+            TurnEndedQuietly => {
+                "a turn nobody typed that has nothing for the user ends with a light all the same"
+            }
             TurnFailed => "a turn that ends on an error never shows the error light",
             Interrupted => {
                 "an interrupted turn keeps its light until the next turn or the process ends"
@@ -280,6 +302,7 @@ pub struct Rule {
 const TRACKED: &[Phase] = &[
     Idle,
     Working,
+    Unattended,
     Background,
     Blocked,
     Asked,
@@ -292,6 +315,7 @@ const TRACKED: &[Phase] = &[
 /// Every phase with a light.
 const SHOWN: &[Phase] = &[
     Working,
+    Unattended,
     Background,
     Blocked,
     Asked,
@@ -352,7 +376,7 @@ pub const TABLE: &[Rule] = &[
         to: Go(Asked),
     },
     Rule {
-        from: &[Idle, Working, Background, Stopped, StoppedRead],
+        from: &[Idle, Working, Unattended, Background, Stopped, StoppedRead],
         on: Backgrounded,
         to: Go(Background),
     },
@@ -383,6 +407,14 @@ pub const TABLE: &[Rule] = &[
         on: BackgroundDone,
         to: Go(Stopped),
     },
+    // Only a turn nobody typed ends quietly. One the user had a hand in, by
+    // answering its wait, ends as a typed turn does, and so does any turn
+    // the session was not seen to start unattended.
+    Rule {
+        from: &[Unattended],
+        on: TurnEndedQuietly,
+        to: Back,
+    },
     Rule {
         from: TRACKED,
         on: TurnEnded,
@@ -391,6 +423,7 @@ pub const TABLE: &[Rule] = &[
     Rule {
         from: &[
             Idle,
+            Unattended,
             Background,
             Blocked,
             Asked,
@@ -400,6 +433,26 @@ pub const TABLE: &[Rule] = &[
             Failed,
         ],
         on: Prompted,
+        to: Go(Working),
+    },
+    // A turn nobody typed holds the light it found, unread or read, to go
+    // back to. One that starts over a wait cannot hold it, and is work.
+    Rule {
+        from: &[
+            Idle,
+            Background,
+            Asked,
+            AskedRead,
+            Stopped,
+            StoppedRead,
+            Failed,
+        ],
+        on: Woke,
+        to: Go(Unattended),
+    },
+    Rule {
+        from: &[Blocked],
+        on: Woke,
         to: Go(Working),
     },
     Rule {
@@ -442,9 +495,11 @@ pub const TABLE: &[Rule] = &[
 pub const FAMILIES: &[&[Signal]] = &[
     // How a turn ended: on a question, with work running on, on an error,
     // or cut short by the user, all of them an end.
+    // A quiet end is one only while nothing else in it wants the user.
     &[
         TurnEnded,
         TurnEndedAsking,
+        TurnEndedQuietly,
         Backgrounded,
         TurnFailed,
         Interrupted,
@@ -452,8 +507,9 @@ pub const FAMILIES: &[&[Signal]] = &[
     // A turn held up on the user. Prompted belongs here because a turn can
     // start already held up: Claude Code writes a prompt after its session
     // file says it waits when a permission is asked at once, and a hook
-    // that runs a tool that asks says that the turn runs too.
-    &[Prompted, PermissionAsked, QuestionAsked],
+    // that runs a tool that asks says that the turn runs too. A turn nobody
+    // typed can start so as well.
+    &[Prompted, Woke, PermissionAsked, QuestionAsked],
 ];
 
 /// The move the signals, told together, make from `from`: the first row of
@@ -503,9 +559,26 @@ pub fn priority() -> Vec<Signal> {
 
 /// Whether the move is news the user should see. A turn that ends again is
 /// news, even to a session that had already stopped; a wait or a failure
-/// told again is not, and neither is going back to where a wait found it.
+/// told again is not, and neither is going back to where a wait or a turn
+/// nobody typed found the session.
 pub fn announces(from: Phase, on: Signal, to: Phase) -> bool {
-    to.wants_user() && on != Released && (to != from || matches!(on, TurnEnded | TurnEndedAsking))
+    to.wants_user()
+        && !matches!(on, Released | TurnEndedQuietly)
+        && (to != from || matches!(on, TurnEnded | TurnEndedAsking))
+}
+
+/// What a session that moves from `from`, holding `held` there, holds once
+/// in `to`, for a move back. A wait and a turn nobody typed hold the phase
+/// they were entered from; a wait entered from a turn nobody typed holds
+/// work, since the user it waits on has a hand in the turn from then on, so
+/// no held phase ever holds one of its own. Any other phase holds nothing.
+pub fn held(from: Phase, held: Option<Phase>, to: Phase) -> Option<Phase> {
+    match to {
+        Blocked | Unattended if to == from => held,
+        Blocked if from == Unattended => Some(Working),
+        Blocked | Unattended => Some(from),
+        _ => None,
+    }
 }
 
 /// Whether applying the signal twice is the same as applying it once, in
@@ -607,8 +680,10 @@ mod tests {
                 TurnEndedAsking,
                 Backgrounded,
                 BackgroundDone,
+                TurnEndedQuietly,
                 TurnEnded,
                 Prompted,
+                Woke,
                 Started,
                 Dismissed,
                 Abandoned,
@@ -778,6 +853,63 @@ mod tests {
         // Only a wait is released.
         for from in Phase::ALL.into_iter().filter(|&from| from != Blocked) {
             assert_eq!(step(from, Released), None, "{from:?}");
+        }
+    }
+
+    #[test]
+    fn a_turn_nobody_typed_goes_back_where_it_found_the_session_unannounced() {
+        let to = |from, held, signals: &[Signal]| {
+            next(from, &told(signals)).map(|rule| rule.to.phase(held))
+        };
+        for from in [
+            Idle,
+            Background,
+            Asked,
+            AskedRead,
+            Stopped,
+            StoppedRead,
+            Failed,
+        ] {
+            assert_eq!(step(from, Woke), Some(Go(Unattended)), "{from:?}");
+            assert_eq!(held(from, None, Unattended), Some(from), "{from:?}");
+            let quiet = &[TurnEnded, TurnEndedQuietly];
+            assert_eq!(to(Unattended, from, quiet), Some(from), "{from:?}");
+            assert!(!announces(Unattended, TurnEndedQuietly, from), "{from:?}");
+        }
+        // Whatever else the end says that wants the user wins.
+        let with = |signal| to(Unattended, Stopped, &[TurnEnded, TurnEndedQuietly, signal]);
+        assert_eq!(with(TurnFailed), Some(Failed));
+        assert_eq!(with(TurnEndedAsking), Some(Asked));
+        assert_eq!(with(Interrupted), Some(Idle));
+        assert_eq!(with(Backgrounded), Some(Background));
+        // A turn not seen to start unattended ends as a typed one does.
+        assert_eq!(
+            to(Working, Idle, &[TurnEnded, TurnEndedQuietly]),
+            Some(Stopped)
+        );
+        assert!(!overlaps(Unattended, &told(&[TurnEnded, TurnEndedQuietly])));
+    }
+
+    #[test]
+    fn a_wait_in_a_turn_nobody_typed_makes_the_turn_the_users() {
+        assert_eq!(step(Unattended, PermissionAsked), Some(Go(Blocked)));
+        assert_eq!(held(Unattended, Some(Stopped), Blocked), Some(Working));
+        assert_eq!(step(Blocked, Answered), Some(Go(Working)));
+        assert_eq!(step(Working, TurnEndedQuietly), None);
+        // A turn nobody typed that starts over a wait is work.
+        assert_eq!(step(Blocked, Woke), Some(Go(Working)));
+    }
+
+    #[test]
+    fn no_held_phase_holds_one_of_its_own() {
+        let holds = |phase| matches!(phase, Blocked | Unattended);
+        for rule in TABLE {
+            let Go(to) = rule.to else { continue };
+            for &from in rule.from.iter().filter(|&&from| from != to) {
+                if let Some(kept) = held(from, None, to) {
+                    assert!(!holds(kept), "{:?} from {from:?} holds {kept:?}", rule.on);
+                }
+            }
         }
     }
 

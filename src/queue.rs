@@ -54,8 +54,8 @@ pub struct Session {
     /// or the daemon made that move. Its files, which neither writes to,
     /// may show it there still.
     pub moved: Option<(Channel, Phase)>,
-    /// While it is blocked, the phase it was blocked from, which a released
-    /// wait goes back to.
+    /// While it is blocked or unattended, the phase it entered that from,
+    /// which a released wait or a quiet end goes back to.
     pub held: Option<Phase>,
 }
 
@@ -190,10 +190,7 @@ impl Queue {
                 let session = &mut self.sessions[index];
                 session.phase = to;
                 session.moved = moved;
-                session.held = match to {
-                    Phase::Blocked => held.or(Some(from)),
-                    _ => None,
-                };
+                session.held = fsm::held(from, held, to);
                 session.entered = now;
                 if light || announce {
                     session.since = now;
@@ -363,7 +360,7 @@ impl Queue {
                 if let Some(held) = session.held
                     && stands(held)
                 {
-                    session.held = Some(old.phase);
+                    session.held = fsm::held(old.phase, None, Phase::Blocked);
                 }
                 continue;
             }

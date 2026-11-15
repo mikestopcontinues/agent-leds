@@ -257,7 +257,7 @@ pub struct Told {
     phase: Phase,
     /// The wait it last told, which Blocked came from.
     wait: Signal,
-    /// While blocked, the phase it was blocked from.
+    /// While blocked or unattended, the phase it entered that from.
     held: Phase,
 }
 
@@ -278,9 +278,7 @@ impl Told {
             return;
         };
         let to = rule.to.phase(self.held);
-        if to == Phase::Blocked && self.phase != Phase::Blocked {
-            self.held = self.phase;
-        }
+        self.held = fsm::held(self.phase, Some(self.held), to).unwrap_or(Phase::Idle);
         self.phase = to;
         if matches!(rule.on, Signal::PermissionAsked | Signal::QuestionAsked) {
             self.wait = rule.on;
@@ -327,21 +325,24 @@ impl Told {
     }
 
     /// The shortest signals from Idle to the same phase, each told on its
-    /// own: for Blocked, by way of the phase it was blocked from.
+    /// own: for Blocked and Unattended, by way of the phase it entered them
+    /// from, which never holds one of its own.
     pub fn current(&self) -> Vec<Signal> {
+        let by = |last: Signal| {
+            let held = Told {
+                phase: self.held,
+                ..*self
+            };
+            let mut path = held.current();
+            path.push(last);
+            path
+        };
         match self.phase {
             Phase::Gone | Phase::Idle => Vec::new(),
             Phase::Working => vec![Signal::Prompted],
+            Phase::Unattended => by(Signal::Woke),
             Phase::Background => vec![Signal::Backgrounded],
-            Phase::Blocked => {
-                let held = Told {
-                    phase: self.held,
-                    ..*self
-                };
-                let mut path = held.current();
-                path.push(self.wait);
-                path
-            }
+            Phase::Blocked => by(self.wait),
             Phase::Asked | Phase::AskedRead => vec![Signal::TurnEndedAsking],
             Phase::Stopped | Phase::StoppedRead => vec![Signal::TurnEnded],
             Phase::Failed => vec![Signal::TurnFailed],

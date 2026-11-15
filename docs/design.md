@@ -41,7 +41,7 @@ The lights have to mean something, so every one of them has a way out:
 
 | Light | Clears |
 | --- | --- |
-| Working | When the turn ends with no subagent or workflow left running, when it is interrupted, or when it waits on the user; and, like every light, after `abandon_days` without a word from the session. |
+| Working | When the turn ends with no subagent or workflow left running, when it is interrupted, or when it waits on the user; for a turn nobody typed, such as a Codex heartbeat, that ends with nothing for the user, by going back, unannounced, to the light the turn found; and, like every light, after `abandon_days` without a word from the session. |
 | Stopped | At the next prompt, or `keep_read_minutes` after you have looked at the session. |
 | Question, weak: the turn ended on a question | The same as stopped. You may read it and leave it unanswered. |
 | Question, strong: a permission request, `AskUserQuestion` or an elicitation | When it is answered. The agent is blocked on it. One that work running after its turn made goes back, once answered, to the light it covered, as you left it: read, dismissed or not. |

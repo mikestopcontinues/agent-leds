@@ -10,13 +10,13 @@
 {"append":".codex/sessions/2026/10/10/rollout-2026-10-10T06-27-35-01a12591-804f-7ff3-a4ce-c746b8a77fd6.jsonl","line":{"timestamp":"2026-10-14T12:51:48.208Z","ordinal":94020,"type":"event_msg","payload":{"type":"task_complete","turn_id":"01a13a6d-1520-74f2-b42e-d829512f4374","last_agent_message":"PROBE the builds are ready."}}}
 {"expect":[[["turn_ended","turn_ended_asking"],"file"]]}
 {"append":".codex/sessions/2026/10/10/rollout-2026-10-10T06-27-35-01a12591-804f-7ff3-a4ce-c746b8a77fd6.jsonl","line":{"timestamp":"2026-10-14T12:51:55.649Z","ordinal":94022,"type":"event_msg","payload":{"type":"task_started","turn_attribution":{"turn_id":"01a13a78-2877-71d0-afa4-dd472708feae","turn_trigger":"automation_heartbeat_scheduled","parent_turn_id":null,"initiating_agent_path":null,"root_turn_id":"01a13a78-2877-71d0-afa4-dd472708feae"},"turn_id":"01a13a78-2877-71d0-afa4-dd472708feae"}}}
-{"expect":[["prompted","file"]]}
+{"expect":[["woke","file"]]}
 {"append":".codex/sessions/2026/10/10/rollout-2026-10-10T06-27-35-01a12591-804f-7ff3-a4ce-c746b8a77fd6.jsonl","line":{"timestamp":"2026-10-14T12:52:38.122Z","ordinal":94040,"type":"event_msg","payload":{"type":"task_complete","turn_id":"01a13a78-2877-71d0-afa4-dd472708feae","last_agent_message":"PROBE heartbeat: nothing changed.\n"}}}
-{"expect":[[["turn_ended","turn_ended_asking"],"file"]]}
+{"expect":[[["turn_ended","turn_ended_asking","turn_ended_quietly"],"file"]]}
 {"append":".codex/sessions/2026/10/10/rollout-2026-10-10T06-27-35-01a12591-804f-7ff3-a4ce-c746b8a77fd6.jsonl","line":{"timestamp":"2026-10-14T12:54:33.667Z","ordinal":94050,"type":"event_msg","payload":{"type":"task_started","turn_attribution":{"turn_id":"01a13a7a-9196-7e93-94b3-8d06677f519e","turn_trigger":"app_tool_send_message","parent_turn_id":null,"initiating_agent_path":null,"root_turn_id":"01a13a7a-9196-7e93-94b3-8d06677f519e"},"turn_id":"01a13a7a-9196-7e93-94b3-8d06677f519e"}}}
-{"expect":[["prompted","file"]]}
+{"expect":[["woke","file"]]}
 {"append":".codex/sessions/2026/10/10/rollout-2026-10-10T06-27-35-01a12591-804f-7ff3-a4ce-c746b8a77fd6.jsonl","line":{"timestamp":"2026-10-14T12:54:47.948Z","ordinal":94060,"type":"event_msg","payload":{"type":"task_complete","turn_id":"01a13a7a-9196-7e93-94b3-8d06677f519e","last_agent_message":"PROBE relayed the update."}}}
-{"expect":[[["turn_ended","turn_ended_asking"],"file"]]}
+{"expect":[[["turn_ended","turn_ended_asking","turn_ended_quietly"],"file"]]}
 {"append":".codex/sessions/2026/10/10/rollout-2026-10-10T06-27-35-01a12591-804f-7ff3-a4ce-c746b8a77fd6.jsonl","line":{"timestamp":"2026-10-14T13:31:25.595Z","ordinal":94100,"type":"event_msg","payload":{"type":"task_started","turn_attribution":{"turn_id":"01a13a9c-520d-7410-9358-4db00589cd77","turn_trigger":"composer","parent_turn_id":null,"initiating_agent_path":null,"root_turn_id":"01a13a9c-520d-7410-9358-4db00589cd77"},"turn_id":"01a13a9c-520d-7410-9358-4db00589cd77"}}}
 {"expect":[["prompted","file"]]}
 {"append":".codex/sessions/2026/10/10/rollout-2026-10-10T06-27-35-01a12591-804f-7ff3-a4ce-c746b8a77fd6.jsonl","line":{"timestamp":"2026-10-14T13:31:34.602Z","ordinal":94110,"type":"event_msg","payload":{"type":"task_complete","turn_id":"01a13a9c-520d-7410-9358-4db00589cd77","last_agent_message":"PROBE done."}}}

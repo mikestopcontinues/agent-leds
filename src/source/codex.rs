@@ -7,7 +7,9 @@
 //! `PermissionRequest` hook says that. Two of its databases say what a turn
 //! end leads to: `goals_1.sqlite`, whether Codex goes on with the thread's
 //! goal by itself or the goal waits on the user, and `queue_1.sqlite`,
-//! whether a prompt the user queued starts next.
+//! whether a prompt the user queued starts next. A turn nobody typed, an
+//! automation's heartbeat or a message from another thread, ends quietly
+//! unless it has something for the user.
 //!
 //! The files are undocumented. What they say at each moment of a session
 //! was taken from Codex 0.153.2, and the desktop app's rollouts and
@@ -56,8 +58,13 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Prompted,
-        "event_msg task_started, keyed by its turn_id",
+        "event_msg task_started, keyed by its turn_id, of any turn but those that tell Woke",
         "probe-codex runA, runB, runC",
+    ),
+    file(
+        Signal::Woke,
+        "task_started whose turn_trigger is automation_heartbeat_scheduled or app_tool_send_message, or capacity_retry_automatic after such a turn the user wrote nothing in",
+        "desktop rollouts 0.162, 2026-10-12 to 2026-10-19: 211 heartbeat, 394 message and 5 retry turns",
     ),
     Declared::new(
         Signal::Prompted,
@@ -87,6 +94,11 @@ pub const SIGNALS: &[Declared] = &[
         "probe-codex runA PROMPT6; desktop rollouts 0.162 and goals_1.sqlite, 2026-10-14 and 2026-10-15",
     ),
     file(
+        Signal::TurnEndedQuietly,
+        "task_complete of a turn that started with Woke and holds no user message but what Codex wraps around a turn, whose last_agent_message's last <heartbeat> block does not decide NOTIFY, and, for a message, whose goal in goals_1.sqlite was not complete or paused at or after the turn's started_at",
+        "desktop rollouts 0.162, 2026-10-13: a heartbeat deciding DONT_NOTIFY",
+    ),
+    file(
         Signal::TurnFailed,
         "task_complete with an error",
         "probe-codex runC; 119 such records in earlier rollouts",
@@ -98,7 +110,7 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Backgrounded,
-        "task_complete while a subagent the turn started, or gave a followup_task, has not completed, or while the thread's goal in goals_1.sqlite is active with no continuation deferral, which Codex goes on with by itself",
+        "task_complete while a subagent the turn started, or gave a followup_task, has not completed, or while the thread's goal in goals_1.sqlite is active with no continuation deferral, which Codex goes on with by itself, unless the last_agent_message decides NOTIFY",
         "probe-codex runA PROMPT5; desktop rollouts 2026-10-13 and 2026-10-15",
     ),
     file(
@@ -178,6 +190,9 @@ struct Record {
     /// The async question items a user message answers.
     #[serde(skip)]
     answers: Vec<(String, usize)>,
+    /// Whether a user message holds text the user wrote.
+    #[serde(skip)]
+    own: bool,
 }
 
 #[derive(Default, Deserialize)]
@@ -216,6 +231,51 @@ struct Attribution {
 /// composer, queued while a turn ran, or from the phone.
 const TYPED: &[&str] = &["composer", "queue", "remote_android"];
 
+/// What started a turn, as far as how it ends goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Origin {
+    /// The user, or anything that is not one of the others: a typed prompt,
+    /// an answer to an async question, a goal, `codex exec`, or a turn
+    /// whose start names no trigger. It ends as a typed turn does.
+    #[default]
+    User,
+    /// An automation's heartbeat (`automation_heartbeat_scheduled`).
+    Heartbeat,
+    /// A message another thread sent with `send_message_to_thread`
+    /// (`app_tool_send_message`).
+    Message,
+}
+
+impl Origin {
+    /// The origin of a turn started by `trigger`, after a turn of `last`:
+    /// the desktop app's retry after a capacity error is the turn it
+    /// retries.
+    fn of(trigger: Option<&str>, last: Origin) -> Origin {
+        match trigger {
+            Some("automation_heartbeat_scheduled") => Origin::Heartbeat,
+            Some("app_tool_send_message") => Origin::Message,
+            Some("capacity_retry_automatic") => last,
+            _ => Origin::User,
+        }
+    }
+}
+
+/// What Codex writes as a user message around a turn, which the user did
+/// not write, by how its text begins: the project's instructions, its own
+/// context, the environment, a page the desktop app opened with it, a
+/// heartbeat's prompt, plugins it suggests, and the answers to an async
+/// question. These are every kind of user message the rollouts on the
+/// author's Mac hold; any other text is the user's own.
+const WRAPPERS: &[&str] = &[
+    "# AGENTS.md",
+    "<codex_internal_context",
+    "<environment_context",
+    "<external_codex_apps_open_page",
+    "<heartbeat",
+    "<recommended_plugins",
+    "<send_user_message_question_reply",
+];
+
 /// The desktop app's question, which does not stop the turn.
 const ASYNC_QUESTION: &str = "request_user_input_async";
 
@@ -223,11 +283,8 @@ const ASYNC_QUESTION: &str = "request_user_input_async";
 const ANSWER_OPEN: &str = "<send_user_message_question_reply>";
 const ANSWER_CLOSE: &str = "</send_user_message_question_reply>";
 
-/// The question items a user message answers, as the desktop app writes an
-/// answer to `request_user_input_async`: a block of JSON naming each item as
-/// a JSON array in a string, `[{"questionItemId":
-/// "[\"request_user_input_async\",\"call_…\",0]", "answer": …}]`.
-fn answers(line: &[u8]) -> Vec<(String, usize)> {
+/// The texts of a user message's content.
+fn texts(line: &[u8]) -> Vec<String> {
     #[derive(Deserialize)]
     struct Message {
         payload: Content,
@@ -240,21 +297,34 @@ fn answers(line: &[u8]) -> Vec<(String, usize)> {
     struct Text {
         text: Option<String>,
     }
+    let Ok(message) = serde_json::from_slice::<Message>(line) else {
+        return Vec::new();
+    };
+    let texts = message.payload.content.into_iter();
+    texts.filter_map(|text| text.text).collect()
+}
+
+/// Whether a user message's texts hold one the user wrote, not only what
+/// Codex wraps around a turn.
+fn own(texts: &[String]) -> bool {
+    texts
+        .iter()
+        .map(|text| text.trim_start())
+        .any(|text| !text.is_empty() && !WRAPPERS.iter().any(|wrapper| text.starts_with(wrapper)))
+}
+
+/// The question items a user message answers, as the desktop app writes an
+/// answer to `request_user_input_async`: a block of JSON naming each item as
+/// a JSON array in a string, `[{"questionItemId":
+/// "[\"request_user_input_async\",\"call_…\",0]", "answer": …}]`.
+fn answers(texts: &[String]) -> Vec<(String, usize)> {
     #[derive(Deserialize)]
     struct Answer {
         #[serde(rename = "questionItemId")]
         item: String,
     }
-    let Ok(message) = serde_json::from_slice::<Message>(line) else {
-        return Vec::new();
-    };
     let mut answered = Vec::new();
-    for text in message
-        .payload
-        .content
-        .iter()
-        .filter_map(|t| t.text.as_deref())
-    {
+    for text in texts {
         let block = text
             .split_once(ANSWER_OPEN)
             .and_then(|(_, rest)| rest.split_once(ANSWER_CLOSE));
@@ -352,7 +422,9 @@ impl Record {
     fn read(line: &[u8]) -> Option<Record> {
         let mut record: Record = serde_json::from_slice(line).ok()?;
         if record.is("response_item", "message") && record.payload.role.as_deref() == Some("user") {
-            record.answers = answers(line);
+            let texts = texts(line);
+            record.answers = answers(&texts);
+            record.own = own(&texts);
         }
         Some(record)
     }
@@ -371,11 +443,18 @@ impl Record {
         self.is("event_msg", "task_started")
     }
 
+    /// What started the turn, if the record starts one.
+    fn trigger(&self) -> Option<&str> {
+        let trigger = self.payload.turn_attribution.as_ref();
+        trigger.and_then(|attribution| attribution.turn_trigger.as_deref())
+    }
+
     /// Whether the record starts a turn the user typed the prompt of.
     fn starts_typed_turn(&self) -> bool {
-        let trigger = self.payload.turn_attribution.as_ref();
-        let trigger = trigger.and_then(|attribution| attribution.turn_trigger.as_deref());
-        self.starts_turn() && trigger.is_some_and(|trigger| TYPED.contains(&trigger))
+        self.starts_turn()
+            && self
+                .trigger()
+                .is_some_and(|trigger| TYPED.contains(&trigger))
     }
 
     fn ends_turn(&self) -> bool {
@@ -439,6 +518,43 @@ impl Record {
     }
 }
 
+/// Whether a final message decides that the user should be told of the
+/// turn, as the desktop app reads it: the `<decision>` of the last
+/// `<heartbeat>…</heartbeat>` block in it, ignoring case, is NOTIFY. The app
+/// also reads a heartbeat's message that is only `DONT_NOTIFY`, or that in
+/// a CDATA section, as not to, which is never NOTIFY either; and it takes a
+/// heartbeat that completed with no message, or with no decision, as it
+/// takes any turn without one.
+fn notifies(message: &str) -> bool {
+    let text = message.trim().to_ascii_lowercase();
+    let (open, close) = ("<heartbeat>", "</heartbeat>");
+    let mut last = None;
+    let mut from = 0;
+    while let Some(start) = text[from..].find(open).map(|at| from + at) {
+        let Some(end) = text[start + open.len()..].find(close) else {
+            break;
+        };
+        let end = start + open.len() + end + close.len();
+        last = Some(&text[start..end]);
+        from = end;
+    }
+    let Some(block) = last else {
+        return false;
+    };
+    // The first `<decision>` that holds one, with whitespace around it.
+    for (at, tag) in block.match_indices("<decision>") {
+        let rest = block[at + tag.len()..].trim_start();
+        for (decision, notify) in [("notify", true), ("dont_notify", false)] {
+            if let Some(rest) = rest.strip_prefix(decision)
+                && rest.trim_start().starts_with("</decision>")
+            {
+                return notify;
+            }
+        }
+    }
+    false
+}
+
 /// Whether a final message is a plan put to the user for review.
 fn proposes_plan(message: &str) -> bool {
     let mut lines = message.lines().map(str::trim);
@@ -459,6 +575,9 @@ enum Goal {
     /// user goes on in the thread, and a goal that stopped before the turn
     /// is no news at its end.
     Waiting,
+    /// Complete or paused since the turn began: nothing goes on by itself,
+    /// and a message's turn that saw it stop does not end quietly.
+    Left,
 }
 
 /// Codex's databases, each opened read-only for one read and closed again.
@@ -502,6 +621,7 @@ impl Databases {
             Ok(Some((status, updated, deferred))) => match status.as_str() {
                 "active" if !deferred => Goal::Active,
                 "blocked" | "usage_limited" | "budget_limited" if lately(updated) => Goal::Waiting,
+                "complete" | "paused" if lately(updated) => Goal::Left,
                 _ => Goal::Quiet,
             },
             Ok(None) => Goal::Quiet,
@@ -577,6 +697,24 @@ struct Rest {
     started: Option<i64>,
     /// The goal, which changes after the turn ended.
     goal: Goal,
+    /// What started the turn, the user if they wrote in it.
+    origin: Origin,
+    /// Whether its last message decides that the user is to be told.
+    notify: bool,
+}
+
+impl Rest {
+    /// Whether the turn has nothing for the user, as the author chose: a heartbeat
+    /// unless it decides to notify, whether it decides not to or decides
+    /// nothing; a message unless it decides to notify or its goal stopped.
+    /// A failure, a question or work going on is told with it, and wins.
+    fn quiet(&self) -> bool {
+        match self.origin {
+            Origin::User => false,
+            Origin::Heartbeat => !self.notify,
+            Origin::Message => !self.notify && self.goal != Goal::Left,
+        }
+    }
 }
 
 /// The phase a turn that ended on `signals` comes to.
@@ -613,6 +751,10 @@ struct Thread {
     asks: BTreeSet<(String, usize)>,
     /// How the last turn ended, while no other has started.
     rest: Option<Rest>,
+    /// What started the turn, and the last one once it ended.
+    origin: Origin,
+    /// Whether the user wrote a message of their own in the turn.
+    own: bool,
     told: Told,
 }
 
@@ -623,11 +765,15 @@ impl Thread {
     fn end(&self) -> Option<BTreeSet<Signal>> {
         let rest = self.rest.as_ref()?;
         let mut end = rest.told.clone();
-        if !self.children.is_empty() || rest.goal == Goal::Active {
+        // A turn that decides to notify ends, though its goal goes on.
+        if !self.children.is_empty() || (rest.goal == Goal::Active && !rest.notify) {
             end.insert(Signal::Backgrounded);
         }
         if rest.goal == Goal::Waiting {
             end.insert(Signal::TurnEndedAsking);
+        }
+        if rest.quiet() {
+            end.insert(Signal::TurnEndedQuietly);
         }
         Some(end)
     }
@@ -812,6 +958,8 @@ impl Codex {
                 followups: HashSet::new(),
                 asks: BTreeSet::new(),
                 rest: None,
+                origin: Origin::User,
+                own: false,
                 told: Told::default(),
             },
         );
@@ -964,6 +1112,10 @@ fn says(
     if thread.open && thread.turn.is_none() {
         thread.turn = payload.turn_id.clone().map(TurnKey);
     }
+    // A turn the user wrote in is theirs, whatever started it.
+    if record.own && thread.open {
+        thread.own = true;
+    }
     if record.starts_turn() {
         // Also after a crash left a turn open: the new one is what runs.
         thread.open = true;
@@ -978,7 +1130,13 @@ fn says(
         if record.starts_typed_turn() {
             thread.asks.clear();
         }
-        tell(id, thread, Channel::File, [Signal::Prompted], out);
+        thread.origin = Origin::of(record.trigger(), thread.origin);
+        thread.own = false;
+        let started = match thread.origin {
+            Origin::User => Signal::Prompted,
+            Origin::Heartbeat | Origin::Message => Signal::Woke,
+        };
+        tell(id, thread, Channel::File, [started], out);
     } else if record.is("event_msg", "task_complete") {
         // No approval outlasts its turn, which would otherwise hold the
         // wait against an end told with work running on.
@@ -1000,6 +1158,8 @@ fn says(
             told,
             started: payload.started_at,
             goal: databases.goal(id, payload.started_at),
+            origin: thread.origin,
+            notify: notifies(message),
         });
         // The prompt the user queued starts next, so the session works on;
         // whether Codex starts it after a failure is not known, and the
@@ -1062,6 +1222,9 @@ fn says(
 /// Closes the turn a record ends.
 fn close(thread: &mut Thread, payload: &Payload) {
     thread.open = false;
+    if thread.own {
+        thread.origin = Origin::User;
+    }
     if let Some(turn) = &payload.turn_id {
         thread.turn = Some(TurnKey(turn.clone()));
     }
@@ -1613,6 +1776,150 @@ mod tests {
         );
         assert_eq!(items(Some("{\"questions\":[{},{}]}")), 2);
         assert_eq!(items(Some("not json")), 1);
+    }
+
+    #[test]
+    fn a_turn_nobody_typed_that_decides_to_notify_stops() {
+        assert_eq!(phase(&replay("woke.file")), Phase::Stopped);
+    }
+
+    #[test]
+    fn turns_nobody_typed_that_have_nothing_for_the_user_leave_the_session_dark() {
+        let replay = replay("turn_ended_quietly.file");
+        assert_eq!(phase(&replay), Phase::Idle);
+        assert!(
+            replay
+                .yielded
+                .iter()
+                .all(|(o, _)| !o.event.signals().contains(&Signal::Prompted))
+        );
+    }
+
+    /// The typed turn's stop is announced, and so is the end of the message
+    /// the user wrote into; the quiet end goes back to that stop, unread.
+    #[test]
+    fn a_message_turn_the_user_wrote_in_ends_as_their_own_do() {
+        let replay = replay("a_message_turn_the_user_wrote_in_ends_as_their_own_do");
+        assert_eq!(phase(&replay), Phase::Stopped);
+        let mut queue = crate::queue::Queue::default();
+        let changes: Vec<crate::queue::Change> = replay
+            .yielded
+            .iter()
+            .map(|(o, step)| queue.apply(o, *step as u64))
+            .collect();
+        use crate::queue::Change::*;
+        use crate::state::State;
+        assert_eq!(
+            changes,
+            [
+                Saved,
+                Settle,
+                Announce(State::Stopped),
+                Settle,
+                Announce(State::Stopped),
+                Settle,
+                Settle,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_heartbeat_that_fails_shows_the_error() {
+        let replay = replay("a_heartbeat_that_fails_shows_the_error");
+        assert_eq!(phase(&replay), Phase::Failed);
+    }
+
+    #[test]
+    fn a_retry_after_a_capacity_error_is_the_turn_it_retries() {
+        let replay = replay("a_retry_after_a_capacity_error_is_the_turn_it_retries");
+        assert_eq!(phase(&replay), Phase::Failed);
+    }
+
+    #[test]
+    fn a_goal_turn_that_decides_to_notify_ends() {
+        let replay = replay("a_goal_turn_that_decides_to_notify_ends");
+        assert_eq!(phase(&replay), Phase::Background);
+    }
+
+    #[test]
+    fn the_last_heartbeat_block_decides_as_the_desktop_app_reads_it() {
+        let block = |decision: &str| {
+            format!(
+                "<heartbeat>\n  <automation_id>a</automation_id>\n  <decision>{decision}</decision>\n  <message>m</message>\n</heartbeat>"
+            )
+        };
+        assert!(notifies(&block("NOTIFY")));
+        assert!(notifies(&format!("Text before.\n\n{}", block("notify"))));
+        assert!(notifies(&block("\n NOTIFY \n")));
+        assert!(!notifies(&block("DONT_NOTIFY")));
+        assert!(!notifies(&format!(
+            "{}\n{}",
+            block("NOTIFY"),
+            block("DONT_NOTIFY")
+        )));
+        assert!(notifies(&format!(
+            "{}\n{}",
+            block("DONT_NOTIFY"),
+            block("NOTIFY")
+        )));
+        // A decision outside a block, or no block, decides nothing.
+        assert!(!notifies("<decision>NOTIFY</decision>"));
+        assert!(!notifies("<heartbeat><decision>NOTIFY</decision>"));
+        assert!(!notifies(
+            "<heartbeat><decision>MAYBE</decision></heartbeat>"
+        ));
+        // The forms only a heartbeat's message is read in say not to.
+        assert!(!notifies("DONT_NOTIFY"));
+        assert!(!notifies("<![CDATA[ DONT_NOTIFY ]]>"));
+        assert!(!notifies(""));
+    }
+
+    #[test]
+    fn only_text_the_user_wrote_makes_a_turn_theirs() {
+        let own = |texts: &[&str]| own(&texts.iter().map(|t| t.to_string()).collect::<Vec<_>>());
+        assert!(own(&["Is the deploy done?"]));
+        assert!(own(&[
+            "<external_codex_apps_open_page>p</external_codex_apps_open_page>",
+            "Why?"
+        ]));
+        for wrapper in WRAPPERS {
+            assert!(!own(&[&format!("  {wrapper} rest")]), "{wrapper}");
+        }
+        assert!(!own(&["", "  \n"]));
+    }
+
+    #[test]
+    fn a_message_turn_ends_quietly_unless_it_notifies_or_its_goal_stops() {
+        let rest = |origin, notify, goal| Rest {
+            told: BTreeSet::from([Signal::TurnEnded]),
+            started: Some(0),
+            goal,
+            origin,
+            notify,
+        };
+        assert!(rest(Origin::Message, false, Goal::Quiet).quiet());
+        assert!(rest(Origin::Message, false, Goal::Waiting).quiet());
+        assert!(!rest(Origin::Message, false, Goal::Left).quiet());
+        assert!(!rest(Origin::Message, true, Goal::Quiet).quiet());
+        assert!(rest(Origin::Heartbeat, false, Goal::Left).quiet());
+        assert!(!rest(Origin::Heartbeat, true, Goal::Quiet).quiet());
+        assert!(!rest(Origin::User, false, Goal::Quiet).quiet());
+    }
+
+    #[test]
+    fn a_goal_completed_or_paused_since_the_turn_began_has_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = goals(dir.path(), "complete");
+        writer
+            .execute("update thread_goals set updated_at_ms = 42000", [])
+            .unwrap();
+        let databases = Databases::new(dir.path());
+        assert_eq!(databases.goal("t", Some(42)), Goal::Left);
+        assert_eq!(databases.goal("t", Some(43)), Goal::Quiet);
+        writer
+            .execute("update thread_goals set status = 'paused'", [])
+            .unwrap();
+        assert_eq!(databases.goal("t", Some(42)), Goal::Left);
     }
 
     #[test]
