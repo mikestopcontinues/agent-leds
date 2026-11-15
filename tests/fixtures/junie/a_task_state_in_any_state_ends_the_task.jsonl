@@ -1,0 +1,11 @@
+{"cite": "Irrlicht parser.go parseTaskState: any TaskState ends the task", "evidence": "inferred"}
+{"alive": 47990, "started_us": 1787663400000000}
+{"write": ".junie/processes/47990-session-260825-151015-19jp-c95cdd197f46.json", "text": {"pid": 47990, "sessionId": "session-260825-151015-19jp", "projectPath": "/Users/me/Code/app", "startedAt": 1787663400500}}
+{"expect": [["started", "file"]]}
+{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "UserPromptEvent", "requestId": "prompt-260825-151015-v7cf", "prompt": "PROBE prompt", "presentablePrompt": "PROBE prompt", "requiresConfirmation": true, "timestampMs": 1787663415250}}
+{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "TaskStartedEvent", "taskId": "task-260825-151015-1bxv", "timestampMs": 1787663415261}}
+{"expect": [["prompted", "file"], ["prompted", "file"]]}
+{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "CancelAgentEvent", "timestampMs": 1787663426026}}
+{"expect": []}
+{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "TaskState", "state": "CANCELLED", "timestampMs": 1787663426031}}
+{"expect": [[["turn_ended", "interrupted"], "file"]]}

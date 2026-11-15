@@ -1,7 +1,0 @@
-{"cite": "0.5.0 hooks; Junie was not installed for the probe", "evidence": "inferred"}
-{"alive": 71001, "started_us": 1794693357000000}
-{"expect": []}
-{"hook": {"hook_event_name": "UserPromptSubmit", "session_id": "j1", "cwd": "/Users/me/Code/app", "project_path": "/Users/me/Code/app", "prompt": "fix it"}, "ancestry": [{"pid": 71050, "started_us": 1794693362000000, "name": "sh"}, {"pid": 71001, "started_us": 1794693357000000, "name": "junie"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
-{"expect": [["started", "hook"], ["prompted", "hook"]]}
-{"hook": {"hook_event_name": "SessionEnd"}, "ancestry": [{"pid": 71050, "started_us": 1794693362000000, "name": "sh"}, {"pid": 71001, "started_us": 1794693357000000, "name": "junie"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
-{"expect": [["ended", "hook"]]}

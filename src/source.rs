@@ -13,6 +13,7 @@ pub mod cursor;
 pub mod fixture;
 pub mod grok;
 pub mod interim;
+pub mod junie;
 pub mod tail;
 
 use std::collections::BTreeSet;
@@ -150,22 +151,22 @@ impl Told {
     }
 }
 
-/// Every harness's source, reading the harnesses' files in `home`. The
-/// hooks of the harnesses whose files are not read yet keep what they need
-/// between events in `state`.
-pub fn all(home: &Path, state: &Path) -> Vec<Box<dyn Source>> {
+/// Every harness's source, reading the harnesses' files in `home`, and
+/// Junie's in its own folder, `junie`, which need not be in `home`.
+pub fn all(home: &Path, junie: &Path) -> Vec<Box<dyn Source>> {
     let mut sources: Vec<Box<dyn Source>> = vec![
         Box::new(claude::Claude::new(home)),
         Box::new(codex::Codex::new(home)),
         Box::new(grok::Grok::new(home)),
         Box::new(cursor::Cursor::new(home)),
+        Box::new(junie::Junie::new(junie)),
     ];
     for harness in Harness::ALL {
         if !matches!(
             harness,
-            Harness::Claude | Harness::Codex | Harness::Grok | Harness::Cursor
+            Harness::Claude | Harness::Codex | Harness::Grok | Harness::Cursor | Harness::Junie
         ) {
-            sources.push(Box::new(interim::Interim::new(harness, state)));
+            sources.push(Box::new(interim::Interim::new(harness)));
         }
     }
     sources

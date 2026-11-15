@@ -1,0 +1,3 @@
+{"cite": "probe-junie session_start notes; Irrlicht pid.go", "evidence": "inferred"}
+{"write": ".junie/processes/47990-session-260825-151015-19jp-c95cdd197f46.json", "text": {"pid": 47990, "sessionId": "session-260825-151015-19jp", "projectPath": "/Users/me/Code/app", "startedAt": 1787663400500}}
+{"expect": []}

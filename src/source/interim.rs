@@ -3,7 +3,7 @@
 //! led, and the hook process's ancestors say which process runs the session,
 //! so a session whose process ends leaves even when no hook says so.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Result;
 
@@ -16,32 +16,25 @@ use crate::queue::{Key, TurnKey};
 /// One harness read from its hooks alone.
 pub struct Interim {
     harness: Harness,
-    /// Where Junie's hook keeps the session its last prompt named.
-    state: PathBuf,
 }
 
 impl Interim {
-    pub fn new(harness: Harness, state: &Path) -> Interim {
-        Interim {
-            harness,
-            state: state.to_owned(),
-        }
+    pub fn new(harness: Harness) -> Interim {
+        Interim { harness }
     }
 }
 
 /// Which of the hook's ancestors runs the session, until the harness's own
 /// files name it: the parent for OpenCode and Pi, whose plugins run the hook
-/// themselves, and for Junie the ancestor with the harness's process name.
+/// themselves.
 fn process(harness: Harness, ancestry: &[Proc]) -> Option<Liveness> {
     let exact = |proc: &Proc| Liveness::Process {
         pid: proc.pid,
         start: StartCheck::ExactUs(proc.started_us),
     };
-    let named = |name: &str| ancestry.iter().find(|proc| proc.name == name).map(exact);
     match harness {
         Harness::OpenCode | Harness::Pi => ancestry.first().map(exact),
-        Harness::Junie => named("junie"),
-        Harness::Claude | Harness::Codex | Harness::Grok | Harness::Cursor => None,
+        Harness::Claude | Harness::Codex | Harness::Grok | Harness::Cursor | Harness::Junie => None,
     }
 }
 
@@ -81,8 +74,7 @@ impl Source for Interim {
     }
 
     fn hook(&mut self, _k: &dyn Kernel, hook: &Hook) -> Vec<Observation> {
-        let Some((id, cwd, signals)) = harness::interim(self.harness, &hook.payload, &self.state)
-        else {
+        let Some((id, cwd, signals)) = harness::interim(self.harness, &hook.payload) else {
             return Vec::new();
         };
         let key = Key {
@@ -129,8 +121,7 @@ mod tests {
 
     #[test]
     fn a_daemon_starting_again_starts_each_hook_bound_session_still_running() {
-        let home = tempfile::tempdir().unwrap();
-        let mut source = Interim::new(Harness::Junie, home.path());
+        let mut source = Interim::new(Harness::Pi);
         let pid = std::process::id() as i32;
         let running = Liveness::Process {
             pid,

@@ -1,0 +1,11 @@
+{"cite": "probe-junie turn_error; Irrlicht real-failed-session, parser.go parseAgentTaskFailed", "evidence": "inferred"}
+{"alive": 47990, "started_us": 1787663400000000}
+{"write": ".junie/processes/47990-session-260825-151015-19jp-c95cdd197f46.json", "text": {"pid": 47990, "sessionId": "session-260825-151015-19jp", "projectPath": "/Users/me/Code/app", "startedAt": 1787663400500}}
+{"expect": [["started", "file"]]}
+{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "UserPromptEvent", "requestId": "prompt-260825-151015-v7cf", "prompt": "PROBE prompt", "presentablePrompt": "PROBE prompt", "requiresConfirmation": true, "timestampMs": 1787663415250}}
+{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "TaskStartedEvent", "taskId": "task-260825-151015-1bxv", "timestampMs": 1787663415261}}
+{"expect": [["prompted", "file"], ["prompted", "file"]]}
+{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "AgentTaskFailedEvent", "timestampMs": 1787663425934}}
+{"expect": []}
+{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "TaskState", "state": "COMPLETED", "timestampMs": 1787663425935}}
+{"expect": [[["turn_ended", "turn_failed"], "file"]]}

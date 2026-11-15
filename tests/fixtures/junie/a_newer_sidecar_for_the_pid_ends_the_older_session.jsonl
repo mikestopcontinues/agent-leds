@@ -1,0 +1,13 @@
+{"cite": "probe-junie session_start notes (pid 82188 after the trust screen); Irrlicht pid_test.go TestCurrentSessionOnPID", "evidence": "inferred"}
+{"alive": 82188, "started_us": 1788118805000000}
+{"write": ".junie/sessions/session-260830-194006-s23k/transcript.md", "text": ""}
+{"write": ".junie/processes/82188-session-260830-194006-s23k-c95cdd197f46.json", "text": {"pid": 82188, "sessionId": "session-260830-194006-s23k", "projectPath": "/Users/me/Code/app", "startedAt": 1788118806000}}
+{"expect": [["started", "file"]]}
+{"write": ".junie/sessions/session-260830-194120-17p0/transcript.md", "text": ""}
+{"write": ".junie/processes/82188-session-260830-194120-17p0-1a81776c70f7.json", "text": {"pid": 82188, "sessionId": "session-260830-194120-17p0", "projectPath": "/Users/me/Code/app", "startedAt": 1788118880000}}
+{"expect": [["ended", "file"], ["started", "file"]]}
+{"append": ".junie/sessions/session-260830-194120-17p0/events.jsonl", "line": {"kind": "UserPromptEvent", "requestId": "prompt-260830-194125-sm5c", "prompt": "PROBE prompt", "presentablePrompt": "PROBE prompt", "requiresConfirmation": true, "timestampMs": 1788118885000}}
+{"append": ".junie/sessions/session-260830-194120-17p0/events.jsonl", "line": {"kind": "TaskStartedEvent", "taskId": "task-260830-194125-3ua6", "timestampMs": 1788118885008}}
+{"expect": [["prompted", "file"], ["prompted", "file"]]}
+{"write": ".junie/processes/82188-session-260830-194006-s23k-c95cdd197f46.json", "text": {"pid": 82188, "sessionId": "session-260830-194006-s23k", "projectPath": "/Users/me/Code/app", "startedAt": 1788118806000}}
+{"expect": []}
