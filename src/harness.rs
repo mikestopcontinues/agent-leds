@@ -150,7 +150,7 @@ impl Harness {
     /// own software beside them.
     fn check(self, home: &Path, exe: &Path) -> Result<()> {
         match self {
-            Harness::OpenCode => return opencode::PLUGIN.check(home, exe),
+            Harness::OpenCode => return opencode::check(home, exe),
             Harness::Pi => return pi::PLUGIN.check(home, exe),
             _ => {}
         }

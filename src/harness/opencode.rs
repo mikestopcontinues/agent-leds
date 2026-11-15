@@ -4,12 +4,88 @@
 //! holds the `server` that OpenCode 1.x runs and the `setup` that 2.x runs.
 //! 2.x loads it again when the file changes, a background service included.
 
+use std::fs;
+use std::io::ErrorKind;
+use std::path::Path;
+use std::time::UNIX_EPOCH;
+
+use anyhow::{Context, Result, bail};
+
 use super::Plugin;
+use crate::liveness;
 
 pub const PLUGIN: Plugin = Plugin {
     path: ".config/opencode/plugins/agent-leds.js",
     source: include_str!("opencode.js"),
 };
+
+/// The log OpenCode 2.x writes, which says when it loads a plugin and when
+/// it could not; 1.x logs elsewhere, and neither.
+const LOG: &str = ".local/share/opencode/log/opencode.log";
+
+/// Whether the plugin is the one an install from `exe` writes, and, if 2.x
+/// tried to load it since it was written, whether it could: 2.x goes on
+/// without a plugin it cannot load, and only its log says so.
+pub fn check(home: &Path, exe: &Path) -> Result<()> {
+    PLUGIN.check(home, exe)?;
+    let log = home.join(LOG);
+    let text = match fs::read(&log) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", log.display())),
+    };
+    let plugin = home.join(PLUGIN.path);
+    let written = fs::metadata(&plugin)?
+        .modified()?
+        .duration_since(UNIX_EPOCH)?
+        .as_secs();
+    if let Some((time, cause)) = failure(&text, &plugin.to_string_lossy())
+        && liveness::iso_second(&time).is_some_and(|second| second >= written as i64)
+    {
+        bail!(
+            "OpenCode could not load ~/{} at {time}: {cause}",
+            PLUGIN.path
+        );
+    }
+    Ok(())
+}
+
+/// When and why the log's last load of the plugin at `path` failed, if it
+/// did. 2.x logs `loading plugin` as it starts to load one, and `failed to
+/// load plugin` after, as logfmt lines.
+fn failure(log: &str, path: &str) -> Option<(String, String)> {
+    let named = |key: &str, line: &str| {
+        line.contains(&format!(" {key}={path} ")) || line.contains(&format!(" {key}={path:?} "))
+    };
+    let line = log.lines().rev().find(|line| {
+        (line.contains(" msg=\"loading plugin\" ") && named("id", line))
+            || (line.contains(" message=\"failed to load plugin\" ") && named("target", line))
+    })?;
+    if !line.contains(" message=\"failed to load plugin\" ") {
+        return None;
+    }
+    let time = line.strip_prefix("timestamp=")?.split(' ').next()?;
+    Some((time.to_owned(), quoted(line, "cause").unwrap_or_default()))
+}
+
+/// A logfmt line's quoted value for `key`, unescaped, its whitespace
+/// collapsed.
+fn quoted(line: &str, key: &str) -> Option<String> {
+    let start = line.find(&format!(" {key}=\""))? + key.len() + 3;
+    let mut value = String::new();
+    let mut chars = line[start..].chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(value.split_whitespace().collect::<Vec<_>>().join(" ")),
+            '\\' => match chars.next()? {
+                'n' | 't' => value.push(' '),
+                escaped => value.push(escaped),
+            },
+            c => value.push(c),
+        }
+    }
+    None
+}
 
 /// The events the plugin passes on, by the name it gives each: `busy` as a
 /// session goes busy (1.x) or starts a run (2.x), with the pid of the
@@ -239,6 +315,56 @@ mod tests {
                 "permission.replied"
             ])
         );
+    }
+
+    /// OpenCode 2.3.0's log as it loads a plugin and fails to (gaps oc2, a
+    /// plugin with no default export), for the plugin at `plugin`.
+    fn logged(plugin: &Path) -> (String, String) {
+        let plugin = plugin.display();
+        let loading = format!(
+            "timestamp=2026-11-15T14:25:51.600Z level=INFO run=3a0bf765 msg=\"loading plugin\" id={plugin} entrypoint=file://{plugin} http.span=23 role=server"
+        );
+        let failed = format!(
+            "timestamp=2026-11-15T14:25:51.602Z level=WARN run=3a0bf765 message=\"failed to load plugin\" target={plugin} ref=err_cfe571ca cause=\"Cause([Fail(PluginModule.LoadError: Plugin must export a default definition with an id and an effect or setup function. (cause: SchemaError(Missing key\\n  at [\\\"default\\\"])))])\" http.span=25 role=server"
+        );
+        (loading, failed)
+    }
+
+    #[test]
+    fn doctor_says_when_opencode_could_not_load_the_plugin_since_it_was_written() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let exe = Path::new("/usr/local/bin/agent-leds");
+        let plugin = home.join(PLUGIN.path);
+        let log = home.join(LOG);
+        fs::create_dir_all(log.parent().unwrap()).unwrap();
+        PLUGIN.install(home, exe).unwrap();
+        let at = |time: &str| {
+            let second = liveness::iso_second(time).unwrap() as u64;
+            let file = fs::File::options().write(true).open(&plugin).unwrap();
+            file.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(second))
+                .unwrap();
+        };
+        at("2026-11-15T14:00:00Z");
+        // No log: no 2.x has run.
+        check(home, exe).unwrap();
+        let (loading, failed) = logged(&plugin);
+        let (other, _) = logged(&home.join(".config/opencode/plugins/other.js"));
+        fs::write(&log, format!("{loading}\n{failed}\n{other}\n")).unwrap();
+        let error = format!("{:#}", check(home, exe).unwrap_err());
+        assert_eq!(
+            error,
+            "OpenCode could not load ~/.config/opencode/plugins/agent-leds.js at 2026-11-15T14:25:51.602Z: \
+             Cause([Fail(PluginModule.LoadError: Plugin must export a default definition with an id and an effect or setup function. \
+             (cause: SchemaError(Missing key at [\"default\"])))])"
+        );
+        // Loaded again since.
+        fs::write(&log, format!("{failed}\n{loading}\n")).unwrap();
+        check(home, exe).unwrap();
+        // A failure before the plugin was written again is not this one's.
+        fs::write(&log, format!("{loading}\n{failed}\n")).unwrap();
+        at("2026-11-15T15:00:00Z");
+        check(home, exe).unwrap();
     }
 
     #[test]
