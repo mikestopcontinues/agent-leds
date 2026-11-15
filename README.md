@@ -3,7 +3,7 @@
 `agent-leds` replaces the SidePulse Pro's own software with a status light for every coding agent session: Claude Code, Codex, Grok, Cursor, Junie, OpenCode and Pi. All sessions share one queue on the card's eight lights, most urgent at the front: red for an error, orange for a question, blue for a finished turn you have not read, green for working.
 
 - Every agent and every session on one strip, sorted by what needs you most.
-- Lights clear themselves: a finished Claude Code session goes dark once you have looked at it in the desktop app.
+- Lights clear themselves: a finished Claude Code session goes dark once you have looked at it in the desktop app, and any session goes dark when its process ends.
 - A change that needs you is announced by a snake; anything else settles in quietly.
 - Every color looks equally bright on the card.
 - The card stays mounted through sleep and locked-screen wakes.
@@ -26,7 +26,7 @@ brew install mikestopcontinues/tap/agent-leds
 agent-leds install
 ```
 
-`agent-leds install` starts the service at login and adds its hooks to each harness you use (`~/.claude`, `~/.codex`, `~/.grok`, `~/.cursor`, `~/.junie`, `~/.config/opencode`, `~/.pi`), leaving other hooks alone. OpenCode and Pi get a plugin of their own instead of hooks. Run it again after you start using another harness. `brew upgrade agent-leds` is the whole upgrade: the service restarts on the new version by itself.
+`agent-leds install` starts the service at login. The service reads Claude Code's own files, so Claude Code gets no hooks; the install adds hooks to each other harness you use (`~/.codex`, `~/.grok`, `~/.cursor`, `~/.junie`, `~/.config/opencode`, `~/.pi`), leaving other hooks alone and removing any of its own that this version no longer uses. OpenCode and Pi get a plugin of their own instead of hooks. Run it again after you start using another harness. `brew upgrade agent-leds` is the whole upgrade: the service restarts on the new version by itself.
 
 If the lights don't follow your sessions, `agent-leds doctor` checks the service, the card and each harness's hooks, and says what to fix.
 
@@ -55,7 +55,7 @@ Every command takes `-h`; `agent-leds config -h` lists the settings with their r
 | <img src="docs/previews/palette-colorblind.webp" height="40" alt="colorblind"> | `colorblind` |
 | <img src="docs/previews/palette-soft.webp" height="40" alt="soft"> | `soft` |
 
-Each harness reports a little differently; [docs/harnesses.md](docs/harnesses.md) says what each one shows and where it falls short.
+Each harness reports a little differently; [docs/harnesses.md](docs/harnesses.md) says what each one shows and where it falls short, and [docs/coverage.md](docs/coverage.md) lists every signal each one gives.
 
 ## Development
 

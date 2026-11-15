@@ -1,4 +1,6 @@
-//! Claude Code: its hooks live in `~/.claude/settings.json`.
+//! Claude Code: its hooks live in `~/.claude/settings.json`. The daemon reads
+//! its files instead, so an install registers none there and removes any an
+//! older version registered.
 
 use std::path::Path;
 

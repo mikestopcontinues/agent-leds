@@ -4,7 +4,7 @@ How the service decides what the lights show and keeps them showing it. [harness
 
 ## How it works
 
-A small daemon owns the queue and the device. Each harness reports to it through a hook, and the CLI and the workshop talk to it over a Unix socket.
+A small daemon owns the queue and the device. It reads what Claude Code writes about its sessions in `~/.claude/sessions/` and `~/.claude/projects/`, as FSEvents reports each change; the other harnesses report to it through hooks, until their own files are read too. Each harness declares the signals it gives and how each is known, and [coverage.md](coverage.md), generated from those declarations and the session table in `src/fsm.rs`, lists what each one cannot show. The CLI and the workshop talk to the daemon over a Unix socket.
 
 The device runs whatever program is written to its `LEDS.LED` file, in SidePulse's own animation language, limited to 512 bytes and 20 lines. The daemon writes programs only when the queue changes, so a steady display costs nothing on the Mac:
 
@@ -33,16 +33,16 @@ The lights have to mean something, so every one of them has a way out:
 
 | Light | Clears |
 | --- | --- |
-| Working | When the turn ends with no subagent or workflow left running, when Claude Code's process says the turn was interrupted, or after 30 minutes of silence. |
+| Working | When the turn ends with no subagent or workflow left running, when it is interrupted, or when it waits on the user. No light clears on silence. |
 | Stopped | At the next prompt, or `keep_read_minutes` after you have looked at the session. |
 | Question, weak: the turn ended on a question | The same as stopped. You may read it and leave it unanswered. |
 | Question, strong: a permission request, `AskUserQuestion` or an elicitation | When it is answered. The agent is blocked on it. |
 | Error | At the next prompt. |
-| Any | When the session ends, or a Claude Code session's process does; at `agent-leds dismiss`; or after `abandon_days` without a word from the session. |
+| Any | When the session ends, or the process running it does, which the daemon checks every few seconds; at `agent-leds dismiss`; or after `abandon_days` without a word from the session. |
 
 A turn that ends again in a session that had already stopped counts as new: the light is unread again and the change is announced.
 
-No harness has a hook for a session being read. For Claude Code the daemon reads the desktop app's own session files, under `~/Library/Application Support/Claude/claude-code-sessions/`. Each records the session id the hooks report and when the session was last opened. A session counts as read when it was opened after its turn ended, or when you are using the app with that session open: it is the session opened last, the app is the frontmost one (the daemon asks `lsappinfo`), and you touched the keyboard, mouse or trackpad in the last five seconds. The app being in front is not enough, since you may be away from the screen. The daemon looks when a turn ends and every 3 seconds while a session is unread. `agent-leds status` shows when each was read.
+No harness has a hook for a session being read. For Claude Code the daemon reads the desktop app's own session files, under `~/Library/Application Support/Claude/claude-code-sessions/`. Each records the session id Claude Code's own files name and when the session was last opened. A session counts as read when it was opened after its turn ended, or when you are using the app with that session open: it is the session opened last, the app is the frontmost one (the daemon asks `lsappinfo`), and you touched the keyboard, mouse or trackpad in the last five seconds. The app being in front is not enough, since you may be away from the screen. The daemon looks when a turn ends and every 3 seconds while a session is unread. `agent-leds status` shows when each was read.
 
 The files are undocumented. If the app changes them, or a session runs in a terminal or in another harness, the session is never read: its light stays until its next prompt, until the session ends, or until `abandon_days` pass. If the daemon cannot tell which session is open, because the newest file is half written or is not a Claude Code session, it marks none.
 
@@ -59,12 +59,15 @@ Each module owns one concern; the ones that touch the system are thin.
 - `daemon.rs`: the service's loop. Everything it reads or changes outside itself goes through its `World` trait, which tests replace.
 - `player.rs`: what the lights play and when, given the time. No I/O.
 - `render.rs`: a queue or a change, as LEDS.LED programs. No I/O.
-- `state.rs`: the queue and how each session's light changes and clears. No I/O.
-- `harness.rs` and `harness/`: each harness's payloads, read into typed structs, and the plugins OpenCode and Pi load, and turned into a shared `Hook` vocabulary and a `Report`; installing, checking and removing hooks.
+- `fsm.rs`: the session table, every phase a session can be in and the signal that moves it to each other. No I/O.
+- `queue.rs`: the sessions followed, changed only by applying observations through the table, and the order their lights show in. No I/O. `state.rs` is what the daemon saves.
+- `coverage.rs`: renders `docs/coverage.md` from what each harness declares.
+- `source.rs` and `source/`: reading the harnesses. `claude.rs` reads Claude Code's session files and transcripts; `interim.rs` reads the other harnesses' hooks; `tail.rs` reads files as they grow; `fixture.rs` replays recorded sessions in the tests.
+- `liveness.rs`: whether the process running a session is still the one that started it, and the hook process's own ancestors.
+- `harness.rs` and `harness/`: what each harness declares it tells, its hook payloads until its files are read, and the plugins OpenCode and Pi load; installing, checking and removing hooks.
 - `ipc.rs`: the socket protocol between the command line, the hooks and the service.
 - `config.rs`, `settings.rs`: the settings, and reading and changing them by name.
 - `desktop.rs`: which sessions the user has looked at in the Claude desktop app.
-- `live.rs`: what running Claude Code processes say of their sessions, from `~/.claude/sessions/`.
 - `device.rs`, `eject.rs`, `launchd.rs`, `files.rs`: the card, keeping it mounted, the LaunchAgent, and writing shared files whole.
 
 ## Workshop

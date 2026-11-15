@@ -2,32 +2,27 @@
 
 What each agent harness reports to the service and where it falls short. [design.md](design.md) covers what the service does with the reports.
 
-`agent-leds install` registers `agent-leds hook <harness>` with each harness, for the events listed below; OpenCode and Pi load a plugin of ours that runs it. The hook reads one event, tells the daemon what it means, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked.
+The service reads Claude Code's own files, and registers no hooks with it. With each other harness, `agent-leds install` registers `agent-leds hook <harness>` for the events listed below; OpenCode and Pi load a plugin of ours that runs it. The hook passes the event to the daemon with the processes it runs under, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked. Whatever the hooks say, a session leaves when the process running it ends.
 
-The harnesses took their hook events from Claude Code, so most of the names agree. Each harness reads only its own spelling. Grok also runs the hooks in `~/.claude/settings.json`, with its own payloads: Grok 1.0.13 sends its own snake_case event names there, which Claude Code's mapping does not follow, so a Grok session is not reported twice.
+The harnesses took their hook events from Claude Code, so most of the names agree. Each harness reads only its own spelling. [coverage.md](coverage.md) lists every signal each harness gives, how each is known, and the moves each cannot make.
 
 ## Claude Code
 
-Hooks are groups in `~/.claude/settings.json`.
+Each running Claude Code process, in a terminal or the desktop app, keeps a file in `~/.claude/sessions/` with its session and whether it is busy, idle or waiting on the user, and each session writes its transcript to `~/.claude/projects/`. The daemon reads both as they change.
 
-| Hook event | Session becomes |
+| What Claude Code writes | Session becomes |
 | --- | --- |
-| `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `ElicitationResult` | working |
-| `PreToolUse` for `AskUserQuestion`, `PermissionRequest`, `Elicitation` | question |
-| `Stop` whose last line ends in a question mark | question, as a weak signal |
-| `Stop` with a subagent or a workflow still running | working |
-| `Stop` otherwise | stopped |
-| `StopFailure` | error |
-| `SessionEnd`, or a tool aborted by an interrupt | removed |
+| A prompt in the transcript | working |
+| The session file waiting on a permission | question |
+| The session file waiting for input needed | question |
+| The end of a turn whose last line ends in a question mark | question, as a weak signal |
+| The end of a turn while the session file stays busy | working, in the background |
+| The end of a turn otherwise, or a background turn going idle | stopped |
+| An API error in the transcript | error |
+| An interrupt in the transcript | removed |
+| The session file gone or naming another session, or its process gone | removed |
 
-A turn that ends with a subagent or a workflow running in the background is not the session's last word: Claude Code starts a new turn when one finishes, so the session stays green until a turn ends with none running. `Stop` lists monitors and background shell commands as running tasks too. Those do not hold the session as working, because one can run for as long as the session does, and the session would never show that it had stopped.
-
-Events from subagents never say what the session needs, but they do say that work is going on. A stopped session whose background subagent runs a tool goes back to working; a session with a question or an error stays as it is. Two gaps follow from what Claude Code reports:
-
-- A subagent's permission request does not turn the session orange, because nothing after it says which agent was answered.
-- An approved permission prompt stays orange until its tool finishes. Claude Code has no hook for an approval: after `PermissionRequest`, the next event is the tool's `PostToolUse`.
-- Claude Code fires no hook when you interrupt a turn between tool calls. Its process says so instead: each running Claude Code process, in a terminal or the desktop app, keeps a file in `~/.claude/sessions/` with its session and whether it is busy. While a Claude Code light is lit, the daemon reads those files every 3 seconds. A working session whose process has been idle for 5 seconds with no hook since was interrupted, and its light goes. A session whose turn ended with work running in the background is idle too, and stays. The files are undocumented; if they change, an interrupted session stays green until its next prompt, or for 30 minutes of silence.
-- A session whose process ends without a `SessionEnd`, as when its terminal is closed or it crashes, leaves once its file is gone or its process is. A session never seen running, such as one run with `claude -p`, is left to its hooks.
+A turn that ends with a subagent or a workflow running in the background is not the session's last word: Claude Code keeps the session file busy until that work is done, so the session stays green until it goes idle, and then it shows as stopped. The files are undocumented; the fixtures in `tests/fixtures/claude/`, recorded from real sessions, pin what the daemon expects of them. A session never seen running, such as one run with `claude -p`, is not shown.
 
 ## Codex
 
@@ -43,7 +38,7 @@ Hooks are `[[hooks.<Event>]]` groups in `~/.codex/config.toml`, after the groups
 
 A Codex subagent runs no hooks. The session that starts one reports its `spawn_agent` and `wait_agent` calls, so it shows as working while it waits; one it leaves running in the background after its turn ends goes unseen. Codex also runs agents of its own, such as the one that consolidates its memories, as sessions it keeps no transcript of. Those are ignored, as is any session Codex keeps no transcript of. The gaps:
 
-- Codex has no event for a turn that fails, so there is no error state. A session whose request fails stays green until its next prompt, or for 30 minutes of silence.
+- Codex has no event for a turn that fails, so there is no error state. A session whose request fails stays green until its next prompt, or until its process ends.
 - `request_user_input_async` does not stop the agent. The session is orange until the agent's next tool call, not until you answer.
 - A plan is recognized only when Codex passes it as the turn's last message.
 
@@ -63,7 +58,7 @@ Hooks are a file of their own, `~/.grok/hooks/agent-leds.json`.
 Grok fires `Stop` again when the session closes; only the one with reason `end_turn` counts. A subagent reports as a session of its own, with nothing that names the session that started it, so its events are ignored. The gaps:
 
 - Grok reports a cancelled turn off to the side, so the report can arrive after the next prompt and remove a session that is working again. Its next tool call brings it back.
-- A turn that reports nothing, such as one you rewind, stays green until the next prompt, or for 30 minutes of silence.
+- A turn that reports nothing, such as one you rewind, stays green until the next prompt, or until its process ends.
 
 ## Cursor
 
