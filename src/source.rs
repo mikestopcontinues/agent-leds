@@ -299,3 +299,162 @@ impl Sources {
         gained
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    use super::tail::{Lines, Tail};
+    use super::*;
+    use crate::files;
+
+    /// What the watched source was handed: each path it was told changed,
+    /// what each file held then, and every line read from the log.
+    #[derive(Default)]
+    struct Seen {
+        paths: Vec<PathBuf>,
+        texts: HashMap<PathBuf, String>,
+        lines: usize,
+    }
+
+    /// A source of one folder that reads whatever it is told changed.
+    struct Folder {
+        root: PathBuf,
+        seen: Arc<Mutex<Seen>>,
+        log: Option<Tail>,
+    }
+
+    impl Source for Folder {
+        fn harness(&self) -> Harness {
+            Harness::Claude
+        }
+
+        fn roots(&self) -> Vec<PathBuf> {
+            vec![self.root.clone()]
+        }
+
+        fn seed(
+            &mut self,
+            _k: &dyn Kernel,
+            _bound: &[(String, Liveness)],
+        ) -> Result<Vec<Observation>> {
+            Ok(Vec::new())
+        }
+
+        fn changed(&mut self, _k: &dyn Kernel, paths: Option<&[PathBuf]>) -> Vec<Observation> {
+            let mut seen = self.seen.lock().unwrap();
+            for path in paths.unwrap_or_default() {
+                seen.paths.push(path.clone());
+                if path
+                    .extension()
+                    .is_some_and(|extension| extension == "jsonl")
+                {
+                    if self.log.is_none() {
+                        self.log = Tail::at_start(path).ok();
+                    }
+                    if let Some(Ok(Lines::Read { lines, .. })) =
+                        self.log.as_mut().map(|log| log.read(path))
+                    {
+                        seen.lines += lines.len();
+                    }
+                } else if let Ok(text) = std::fs::read_to_string(path) {
+                    seen.texts.insert(path.clone(), text);
+                }
+            }
+            Vec::new()
+        }
+
+        fn hook(&mut self, _k: &dyn Kernel, _hook: &Hook) -> Vec<Observation> {
+            Vec::new()
+        }
+
+        fn current(&self, _id: &str) -> Vec<(Signal, Option<TurnKey>)> {
+            Vec::new()
+        }
+
+        fn behind(&self) -> bool {
+            false
+        }
+    }
+
+    /// Feeds the watcher's inputs to the sources until `done` holds of what
+    /// the source has seen, or ten seconds pass.
+    fn until(
+        sources: &mut Sources,
+        inputs: &mpsc::Receiver<Input>,
+        seen: &Mutex<Seen>,
+        done: impl Fn(&Seen) -> bool,
+    ) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if done(&seen.lock().unwrap()) {
+                return true;
+            }
+            match inputs.recv_timeout(Duration::from_millis(200)) {
+                Ok(Input::Files(paths)) => drop(sources.read(Read::Paths(&paths))),
+                Ok(Input::Rescan) => drop(sources.read(Read::All)),
+                _ => {}
+            }
+        }
+        done(&seen.lock().unwrap())
+    }
+
+    /// FSEvents itself, on a folder in the temporary directory, which macOS
+    /// spells `/var/folders/...` and FSEvents `/private/var/folders/...`.
+    #[test]
+    fn the_watcher_routes_real_file_system_events_to_the_source_that_reads_them() {
+        let folder = tempfile::tempdir().unwrap();
+        let root = folder.path().to_owned();
+        assert_ne!(
+            root,
+            root.canonicalize().unwrap(),
+            "a root FSEvents respells"
+        );
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        let source = Folder {
+            root: root.clone(),
+            seen: seen.clone(),
+            log: None,
+        };
+        let (sender, inputs) = mpsc::channel();
+        let mut sources = Sources::start(vec![Box::new(source)], sender).unwrap();
+        assert_eq!(sources.watched.len(), 1);
+
+        // Written whole, through a temporary file renamed onto it.
+        let status = root.join("1.json");
+        files::replace(&status, "idle").unwrap();
+        assert!(until(&mut sources, &inputs, &seen, |seen| {
+            seen.texts.get(&status).map(String::as_str) == Some("idle")
+        }));
+        files::replace(&status, "busy").unwrap();
+        assert!(until(&mut sources, &inputs, &seen, |seen| {
+            seen.texts.get(&status).map(String::as_str) == Some("busy")
+        }));
+        // Every path the source was handed is in its root as it spells it.
+        assert!(
+            seen.lock()
+                .unwrap()
+                .paths
+                .iter()
+                .all(|path| path.starts_with(&root))
+        );
+
+        // Created and appended to in one burst, faster than FSEvents reports.
+        let log = root.join("log.jsonl");
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+            .unwrap();
+        for line in 0..200 {
+            writeln!(file, "{{\"line\": {line}}}").unwrap();
+        }
+        drop(file);
+        assert!(until(&mut sources, &inputs, &seen, |seen| seen.lines == 200));
+    }
+}

@@ -707,6 +707,30 @@ mod tests {
         phases.into_values().next().unwrap()
     }
 
+    /// Seeds from the real home, reading it and changing nothing, and prints
+    /// the phase of each session Claude Code's files show running.
+    #[test]
+    #[ignore = "reads the real ~/.claude"]
+    fn seeds_from_the_real_home() {
+        let home = std::env::var_os("HOME").expect("a home");
+        let mut claude = Claude::new(Path::new(&home));
+        let mut queue = crate::queue::Queue::default();
+        for o in claude.seed(&liveness::System, &[]).unwrap() {
+            assert!(o.quiet);
+            queue.apply(&o, 0);
+        }
+        println!("{} running sessions", queue.sessions().len());
+        for session in queue.sessions() {
+            println!(
+                "{:<36}  {:<11}  {:<20}  turn {}",
+                session.key.id,
+                format!("{:?}", session.phase),
+                session.label,
+                session.turn.as_ref().map_or("-", |turn| turn.0.as_str())
+            );
+        }
+    }
+
     #[test]
     fn every_fixture_replays_as_it_expects() {
         for name in fixture::names(Harness::Claude) {
