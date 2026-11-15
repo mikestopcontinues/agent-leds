@@ -97,7 +97,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Codex, hook, observed: Stop (0.5.0 hooks, probe-codex runA)
 - Grok, hook, observed: stop with reason end_turn, or stop_cancelled (0.5.0 hooks, probe-grok runs a–l)
 - Cursor, hook, observed: stop, whatever its status (0.5.0 hooks, probe-cursor runs A–I)
-- Junie, file, inferred: TaskState COMPLETED after a task started, or TaskState FAILED, which only Irrlicht's parser reads (probe-junie turn_completed; Irrlicht real-lifecycle-session, parser.go)
+- Junie, file, inferred: TaskState, in any state, after a task started (probe-junie turn_completed; Irrlicht real-lifecycle-session, parser.go)
 - OpenCode, hook, observed: session.idle, however the run ended (0.5.0 plugin, probe-opencode T2–T17)
 - Pi, hook, observed: agent_settled (0.5.0 extension, probe-pi rpc1, tui1)
 
@@ -106,7 +106,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Claude Code, file, observed: an end_turn record whose text's last line ends in a question mark (probe-claude cc1, cc2)
 - Codex, hook, observed: Stop whose last message asks, or is a proposed plan (0.5.0 hooks, probe-codex runA)
 - Grok, hook, observed: stop with reason end_turn whose last message asks (0.5.0 hooks, probe-grok runs a–l)
-- Junie, file, inferred: TaskState for a task whose last ResultBlockUpdatedEvent result ends its last line in a question mark (probe-junie turn_completed; Irrlicht real-lifecycle-session)
+- Junie, file, inferred: TaskState after a task started whose last ResultBlockUpdatedEvent result ends its last line in a question mark (probe-junie turn_completed; Irrlicht real-lifecycle-session)
 - OpenCode, hook, observed: session.idle whose last assistant message asks (0.5.0 plugin, probe-opencode T2–T17)
 - Pi, hook, observed: agent_settled whose last assistant message asks (0.5.0 extension, probe-pi rpc1, tui1)
 
@@ -115,7 +115,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Claude Code, file, observed: an assistant record with isApiErrorMessage (probe-claude cc4, cc5)
 - Grok, hook, inferred: stop_failure; no terminal API error was produced in the probe (0.5.0 hooks, probe-grok runs a–l)
 - Cursor, hook, inferred: stop with status error; not reproduced in the probe (0.5.0 hooks, probe-cursor runs A–I)
-- Junie, file, inferred: TaskState for a task with an AgentFailureEvent or an AgentTaskFailedEvent, or TaskState FAILED (probe-junie turn_error; Irrlicht real-failed-session)
+- Junie, file, inferred: TaskState after a task started, when it is FAILED, which only Irrlicht's parser reads, or the task had an AgentFailureEvent or an AgentTaskFailedEvent (probe-junie turn_error; Irrlicht real-failed-session)
 - OpenCode, hook, observed: session.idle after an error (0.5.0 plugin, probe-opencode T2–T17)
 - Pi, hook, inferred: agent_settled with stop_reason error (0.5.0 extension, probe-pi rpc1, tui1)
 
@@ -125,7 +125,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Codex, hook, observed: Interrupt (0.5.0 hooks, probe-codex runA)
 - Grok, hook, observed: stop_cancelled by the user (0.5.0 hooks, probe-grok runs a–l)
 - Cursor, hook, observed: stop with status aborted, or postToolUseFailure cut short by an interrupt (0.5.0 hooks, probe-cursor runs A–I)
-- Junie, file, inferred: TaskState for a task with a CancelAgentEvent (probe-junie interrupted; Irrlicht parser_test.go)
+- Junie, file, inferred: TaskState after a task started that had a CancelAgentEvent (probe-junie interrupted; Irrlicht parser_test.go)
 - OpenCode, hook, observed: session.idle after MessageAbortedError (0.5.0 plugin, probe-opencode T2–T17)
 - Pi, hook, observed: agent_settled after an abort (0.5.0 extension, probe-pi rpc1, tui1)
 

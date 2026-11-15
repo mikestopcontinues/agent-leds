@@ -78,22 +78,22 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::TurnEnded,
-        "TaskState COMPLETED after a task started, or TaskState FAILED, which only Irrlicht's parser reads",
+        "TaskState, in any state, after a task started",
         "probe-junie turn_completed; Irrlicht real-lifecycle-session, parser.go",
     ),
     file(
         Signal::TurnEndedAsking,
-        "TaskState for a task whose last ResultBlockUpdatedEvent result ends its last line in a question mark",
+        "TaskState after a task started whose last ResultBlockUpdatedEvent result ends its last line in a question mark",
         "probe-junie turn_completed; Irrlicht real-lifecycle-session",
     ),
     file(
         Signal::TurnFailed,
-        "TaskState for a task with an AgentFailureEvent or an AgentTaskFailedEvent, or TaskState FAILED",
+        "TaskState after a task started, when it is FAILED, which only Irrlicht's parser reads, or the task had an AgentFailureEvent or an AgentTaskFailedEvent",
         "probe-junie turn_error; Irrlicht real-failed-session",
     ),
     file(
         Signal::Interrupted,
-        "TaskState for a task with a CancelAgentEvent",
+        "TaskState after a task started that had a CancelAgentEvent",
         "probe-junie interrupted; Irrlicht parser_test.go",
     ),
     file(
@@ -600,18 +600,15 @@ impl Junie {
                     tell(id, session, [Signal::Answered], out);
                 }
             }
+            // Junie writes one TaskState for each task, whatever its state.
             "TaskState" => {
-                let failed = record.state.as_deref() == Some("FAILED");
-                if !failed && record.state.as_deref() != Some("COMPLETED") {
-                    return;
-                }
                 // Only a task that started ends.
                 let Some(task) = session.task.take() else {
                     return;
                 };
                 session.waiting.clear();
                 let mut end = BTreeSet::from([Signal::TurnEnded]);
-                if failed || task.failed {
+                if record.state.as_deref() == Some("FAILED") || task.failed {
                     end.insert(Signal::TurnFailed);
                 }
                 if task.cancelled {
