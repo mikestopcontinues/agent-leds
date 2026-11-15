@@ -6,7 +6,9 @@
 //! and each line after is one step:
 //!
 //! - `{"append": "<path under home>", "line": ...}` adds a line to a file,
-//!   `"times": <n>` times over if it says so;
+//!   `"times": <n>` times over if it says so, and `"lines": [...]` in place
+//!   of `"line"` adds several in one write, as a burst the watcher reports
+//!   once;
 //! - `{"write": "<path>", "text": ...}` rewrites a file in place;
 //! - `{"delete": "<path>"}`;
 //! - `{"hook": <payload>, "ancestry": [<proc>, ...]}` delivers a hook;
@@ -76,7 +78,9 @@ struct Header {
 enum Step {
     Append {
         append: String,
-        line: Value,
+        line: Option<Value>,
+        #[serde(default)]
+        lines: Vec<Value>,
         times: Option<usize>,
     },
     Write {
@@ -227,16 +231,21 @@ impl Replay {
         let path = self.home.path().join(step.file().expect("a file step"));
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         match step {
-            Step::Append { line, times, .. } => {
+            Step::Append {
+                line, lines, times, ..
+            } => {
                 let mut file = OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(&path)
                     .unwrap();
-                let line = text(line);
-                for _ in 0..times.unwrap_or(1) {
-                    writeln!(file, "{line}").unwrap();
+                let mut burst = String::new();
+                for line in line.iter().chain(lines) {
+                    burst.push_str(&text(line));
+                    burst.push('\n');
                 }
+                file.write_all(burst.repeat(times.unwrap_or(1)).as_bytes())
+                    .unwrap();
             }
             Step::Write { text: value, .. } => fs::write(&path, text(value)).unwrap(),
             Step::Delete { .. } => fs::remove_file(&path).unwrap(),
