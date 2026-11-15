@@ -410,6 +410,15 @@ struct Proc {
     start: i64,
 }
 
+impl Proc {
+    fn liveness(&self) -> Liveness {
+        Liveness::Process {
+            pid: self.pid,
+            start: StartCheck::Second(self.start),
+        }
+    }
+}
+
 /// What the files have said of one session.
 struct Session {
     /// When the process that runs it started, as a Unix second.
@@ -577,29 +586,45 @@ impl Claude {
     ) -> io::Result<()> {
         let read = Claude::process(path)?;
         let known = self.procs.get(path);
+        // The same process on the same session, which ended with the file
+        // of another process that ran it, while this one still does, if it
+        // is not tracked: started again below.
         if let (Some(known), Some((process, start))) = (known, &read)
             && known.session == process.session_id
             && known.pid == process.pid
             && known.start == *start
+            && let Some(session) = self.sessions.get(&known.session)
         {
-            match self.sessions.get_mut(&known.session) {
-                Some(session) if session.owner != path => return Ok(()),
-                Some(session) => {
-                    let status = process.status();
-                    session.dialog = status.is_none();
-                    session.request = process.requests();
-                    if let Some(status) = status
-                        && session.status != status
-                    {
-                        edges.push((known.session.clone(), session.status, status));
-                        session.status = status;
-                    }
+            let status = process.status();
+            let new = status.is_none() != session.dialog
+                || status.is_some_and(|status| status != session.status);
+            if session.owner != path {
+                // A file not its owner's says nothing of the session,
+                // unless the owner was killed and left its file, and
+                // this process, which runs on, says something new: it
+                // goes on with the session.
+                let alive = |proc: &Proc| liveness::alive(k, &proc.liveness());
+                let owned = self.procs.get(&session.owner).is_some_and(alive);
+                if owned || !new || !alive(known) {
                     return Ok(());
                 }
-                // Ended with the file of another process that ran it, while
-                // this one still does: started again below.
-                None => {}
+                let (id, start) = (known.session.clone(), known.start);
+                let session = self.sessions.get_mut(&id).expect("tracked");
+                session.owner = path.to_owned();
+                session.start = start;
+                out.push(self.started(k, &id, String::new()));
             }
+            let id = self.procs[path].session.clone();
+            let session = self.sessions.get_mut(&id).expect("tracked");
+            session.dialog = status.is_none();
+            session.request = process.requests();
+            if let Some(status) = status
+                && session.status != status
+            {
+                edges.push((id, session.status, status));
+                session.status = status;
+            }
+            return Ok(());
         }
         // Gone, or another session in the process (/clear), or another process.
         if let Some(gone) = self.procs.remove(path) {
@@ -608,35 +633,20 @@ impl Claude {
         let Some((process, start)) = read else {
             return Ok(());
         };
-        let liveness = Liveness::Process {
+        let proc = Proc {
+            session: process.session_id.clone(),
             pid: process.pid,
-            start: StartCheck::Second(start),
+            start,
         };
         // A file left behind by a process that was killed.
-        if !liveness::alive(k, &liveness) {
+        if !liveness::alive(k, &proc.liveness()) {
             return Ok(());
         }
         let status = process.status();
         let request = process.requests();
-        self.procs.insert(
-            path.to_owned(),
-            Proc {
-                session: process.session_id.clone(),
-                pid: process.pid,
-                start,
-            },
-        );
+        self.procs.insert(path.to_owned(), proc);
         let id = process.session_id;
-        out.push(Observation::new(
-            Harness::Claude,
-            &id,
-            Channel::File,
-            Event::Started(Start {
-                cwd: process.cwd,
-                liveness,
-            }),
-            None,
-        ));
+        out.push(self.started(k, &id, process.cwd));
         let transcript = self
             .find(&id)
             .and_then(|path| Some((path.clone(), open(&path, start).ok()?)));
@@ -678,14 +688,10 @@ impl Claude {
             return;
         }
         let other = self.procs.iter().find_map(|(other, proc)| {
-            let liveness = Liveness::Process {
-                pid: proc.pid,
-                start: StartCheck::Second(proc.start),
-            };
-            let alive = proc.session == id && liveness::alive(k, &liveness);
-            alive.then(|| (other.clone(), proc.start, liveness))
+            let alive = proc.session == id && liveness::alive(k, &proc.liveness());
+            alive.then(|| (other.clone(), proc.start))
         });
-        let Some((other, start, liveness)) = other else {
+        let Some((other, start)) = other else {
             self.sessions.remove(id);
             out.push(Observation::new(
                 Harness::Claude,
@@ -707,16 +713,30 @@ impl Claude {
         session.dialog = status.is_none();
         session.request = process.is_some_and(|(process, _)| process.requests());
         session.status = status.unwrap_or(Status::Starting);
-        out.push(Observation::new(
+        out.push(self.started(k, id, String::new()));
+    }
+
+    /// The session started, or handed to another process, with every
+    /// running process that runs it: it runs while any of them does.
+    fn started(&self, k: &dyn Kernel, id: &str, cwd: String) -> Observation {
+        let mut running: Vec<&Proc> = self
+            .procs
+            .values()
+            .filter(|proc| proc.session == id && liveness::alive(k, &proc.liveness()))
+            .collect();
+        running.sort_by_key(|proc| proc.pid);
+        let mut all: Vec<Liveness> = running.into_iter().map(Proc::liveness).collect();
+        let liveness = match all.len() {
+            1 => all.pop().expect("one"),
+            _ => Liveness::Any(all),
+        };
+        Observation::new(
             Harness::Claude,
             id,
             Channel::File,
-            Event::Started(Start {
-                cwd: String::new(),
-                liveness,
-            }),
+            Event::Started(Start { cwd, liveness }),
             None,
-        ));
+        )
     }
 
     /// Reads what was appended to a session's transcript.
@@ -1287,6 +1307,30 @@ mod tests {
         let session = &replay.queue.sessions()[0];
         assert_eq!(
             session.liveness,
+            Liveness::Process {
+                pid: 90859,
+                start: StartCheck::Second(1_794_693_357)
+            }
+        );
+    }
+
+    #[test]
+    fn a_session_whose_owner_is_killed_goes_on_in_the_process_left() {
+        let replay = replay("a_session_whose_owner_is_killed_goes_on_in_the_process_left");
+        assert_eq!(phase(&replay), Phase::Stopped);
+        // While both ran, the session ran while either did.
+        let (started, _) = replay
+            .yielded
+            .iter()
+            .filter(|(o, _)| matches!(o.event, Event::Started(_)))
+            .nth(1)
+            .unwrap();
+        let Event::Started(start) = &started.event else {
+            unreachable!()
+        };
+        assert!(matches!(&start.liveness, Liveness::Any(all) if all.len() == 2));
+        assert_eq!(
+            replay.queue.sessions()[0].liveness,
             Liveness::Process {
                 pid: 90859,
                 start: StartCheck::Second(1_794_693_357)

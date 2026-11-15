@@ -20,6 +20,9 @@ pub enum Liveness {
     Process { pid: i32, start: StartCheck },
     /// A file its process holds a lock on while it runs (Codex).
     Lock { path: PathBuf },
+    /// Several processes that run the same session, which runs while any
+    /// of them does (Claude Code resumed in a second process).
+    Any(Vec<Liveness>),
 }
 
 /// What a harness recorded of when its process started, and how closely the
@@ -89,6 +92,7 @@ pub fn alive(k: &dyn Kernel, liveness: &Liveness) -> bool {
         Liveness::Lock { path } => k
             .locked(path)
             .unwrap_or_else(|error| error.kind() != io::ErrorKind::NotFound),
+        Liveness::Any(all) => all.iter().any(|liveness| alive(k, liveness)),
     }
 }
 
