@@ -111,8 +111,8 @@ pub const SIGNALS: &[Declared] = &[
         Signal::Ended,
         Channel::Hook,
         Evidence::Observed,
-        "session_shutdown other than for a reload, as at quit and /new; another session's session_start or agent_start from the same Pi process, which runs one session at a time, as after a /new whose session_shutdown was lost; or the Pi process gone; no file records an exit",
-        "probe-pi ext084, ext152, extfork, tq1–tq6, rpc5–rpc7; gaps-pi sig084",
+        "session_shutdown other than for a reload, as at quit and /new, or the Pi process gone; no file records an exit; inferred: another session's session_start or agent_start from the same Pi process, which runs one session at a time, as after a /new whose session_shutdown was lost",
+        "probe-pi ext084, ext152, extfork, tq1–tq6, rpc5–rpc7; inferred from gaps-pi sig084 with its session_shutdown removed",
     ),
 ];
 
