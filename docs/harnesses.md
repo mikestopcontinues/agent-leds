@@ -15,7 +15,7 @@ Each running Claude Code process, in a terminal or the desktop app, keeps a file
 | A prompt in the transcript | working |
 | The session file waiting on a permission | question |
 | The session file waiting for input needed | question |
-| The end of a turn whose last line ends in a question mark | question, as a weak signal |
+| The end of a turn whose last line ends in a question mark, or, in the desktop app, whose last `wrap_up` call put a question in the next-step box | question, as a weak signal |
 | The end of a turn while the session file stays busy | working, in the background |
 | The end of a turn otherwise, or a background turn going idle | stopped |
 | An API error in the transcript | error |

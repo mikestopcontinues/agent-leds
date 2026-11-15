@@ -71,8 +71,8 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::TurnEndedAsking,
-        "an end_turn record whose text's last line ends in a question mark",
-        "probe-claude cc1, cc2",
+        "an end_turn record whose text's last line ends in a question mark; or the end of a desktop turn whose last wrap_up call put a question in the next-step box (its input's ask)",
+        "probe-claude cc1, cc2; desktop transcripts 2.1.299, 2.1.317",
     ),
     file(
         Signal::TurnFailed,
@@ -191,6 +191,9 @@ struct Block {
     #[serde(rename = "type")]
     kind: String,
     text: Option<String>,
+    /// A tool call's tool and what it was given.
+    name: Option<String>,
+    input: Option<Value>,
 }
 
 impl Content {
@@ -276,6 +279,28 @@ impl Record {
         self.kind == "assistant" && self.is_api_error_message
     }
 
+    /// Whether the record calls the desktop app's `wrap_up`, which fills the
+    /// next-step box at the end of a turn, and whether it asks there. The
+    /// question asked is in its `ask`, and rarely in the turn's last line.
+    fn wrap_up(&self) -> Option<bool> {
+        if self.kind != "assistant" {
+            return None;
+        }
+        let blocks = self.message.as_ref()?.content.blocks();
+        let call = blocks.iter().rev().find(|block| {
+            block.kind == "tool_use"
+                && block
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.ends_with("__wrap_up"))
+        })?;
+        let ask = call.input.as_ref().and_then(|input| input.get("ask"));
+        Some(
+            ask.and_then(Value::as_str)
+                .is_some_and(|ask| !ask.trim().is_empty()),
+        )
+    }
+
     /// Whether the record was written before a process that started at
     /// `start`: an earlier process wrote it, or it was copied.
     fn before(&self, start: i64) -> bool {
@@ -306,6 +331,8 @@ struct Session {
     /// Whether a turn started and has not ended.
     open: bool,
     turn: Option<TurnKey>,
+    /// Whether the open turn's last `wrap_up` asked the user something.
+    asking: bool,
     /// How a turn that closed while the process waited on the user ended,
     /// told once the wait is over.
     closed_waiting: Option<BTreeSet<Signal>>,
@@ -496,6 +523,7 @@ impl Claude {
                 behind: false,
                 open: false,
                 turn: None,
+                asking: false,
                 closed_waiting: None,
                 background: false,
                 told: Told::default(),
@@ -629,6 +657,7 @@ impl Claude {
             session.open = true;
             if record.is_prompt() {
                 session.turn = record.prompt_id.clone().map(TurnKey);
+                session.asking = false;
             }
             session.closed_waiting = None;
             session.background = false;
@@ -648,6 +677,9 @@ impl Claude {
         if !session.open {
             return;
         }
+        if let Some(asking) = record.wrap_up() {
+            session.asking = asking;
+        }
         let mut end = BTreeSet::new();
         if record.is_interrupt() {
             end.insert(Signal::Interrupted);
@@ -657,7 +689,7 @@ impl Claude {
         }
         if let Some(text) = record.end() {
             end.insert(Signal::TurnEnded);
-            if ends_on_question(text) {
+            if session.asking || ends_on_question(text) {
                 end.insert(Signal::TurnEndedAsking);
             }
             // Work the turn delegated runs on.
@@ -669,6 +701,7 @@ impl Claude {
             return;
         }
         session.open = false;
+        session.asking = false;
         session.background = end.contains(&Signal::Backgrounded);
         match session.status {
             // A subagent's request holds the session up after its turn: how
@@ -1109,6 +1142,18 @@ mod tests {
             phase(&replay("the_desktop_s_end_turn_tool_ends_the_turn")),
             Phase::Stopped
         );
+    }
+
+    #[test]
+    fn a_desktop_question_in_the_next_step_box_ends_the_turn_asking() {
+        let asked = replay("a_desktop_question_in_the_next_step_box_ends_the_turn_asking");
+        assert!(asked.yielded.iter().any(|(o, _)| {
+            o.event.signals() == BTreeSet::from([Signal::TurnEnded, Signal::TurnEndedAsking])
+        }));
+        // The next turn asked nothing.
+        assert_eq!(phase(&asked), Phase::Stopped);
+        let ended = replay("the_desktop_s_end_turn_tool_ends_the_turn_asking_when_its_box_asks");
+        assert_eq!(phase(&ended), Phase::Asked);
     }
 
     #[test]

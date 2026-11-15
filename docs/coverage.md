@@ -111,7 +111,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### TurnEndedAsking
 
-- Claude Code, file, observed: an end_turn record whose text's last line ends in a question mark (probe-claude cc1, cc2)
+- Claude Code, file, observed: an end_turn record whose text's last line ends in a question mark; or the end of a desktop turn whose last wrap_up call put a question in the next-step box (its input's ask) (probe-claude cc1, cc2; desktop transcripts 2.1.299, 2.1.317)
 - Codex, file, observed: task_complete whose last_agent_message's last line ends in a question mark, or that holds a <proposed_plan> block, which no rollout has shown yet (probe-codex runA PROMPT6)
 - Grok, file, observed: a completed turn_ended whose final text, the last agent_message_chunk in updates.jsonl after the latest user_message_chunk, has a last line ending in a question mark (probe-grok run a)
 - Cursor, file, observed: turn_ended after an assistant text whose last line ends in a question mark; a reasoning model's reasoning follows its reply in that text, so its last line is tested instead (probe-cursor runs A, B)
