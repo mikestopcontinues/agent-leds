@@ -48,8 +48,8 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Prompted,
-        "a transcript user record, not a tool result, with a promptSource (typed, sdk or a task notification) or an origin (a skill's slash command), keyed by its promptId; after the turn closed, a stop_hook_summary with hookErrors and preventedContinuation false (a Stop hook that blocks), or the model writing again, as after a compaction",
-        "probe-claude cc1, cc3; desktop transcripts 2.1.309, 2.1.317, 2.1.321",
+        "a transcript user record, not a tool result, with a promptSource (typed, sdk or a task notification) or an origin (a skill's slash command), keyed by its promptId; after the turn closed, the isMeta user record starting Stop hook feedback: that a Stop hook that blocks writes, or the model writing again, as after a compaction",
+        "probe-claude cc1, cc3; desktop transcripts 2.1.309, 2.1.317, 2.1.321; gaps/stophook-nb (a Stop hook that fails without blocking, 2.1.325)",
     ),
     file(
         Signal::PermissionAsked,
@@ -176,11 +176,10 @@ struct Record {
     /// What the desktop app's tool said of its result: `claude/endTurn` in
     /// its `_meta` when the tool ends the turn.
     mcp_meta: Option<Value>,
-    /// `stop_hook_summary` for what the Stop hooks said once they all ran.
-    subtype: Option<String>,
-    /// What the Stop hooks that blocked the stop gave the model.
-    hook_errors: Option<Vec<IgnoredAny>>,
-    prevented_continuation: Option<bool>,
+    /// Set on what Claude Code writes as the user's for the model to read,
+    /// such as what a Stop hook that blocked the stop said.
+    #[serde(default)]
+    is_meta: bool,
 }
 
 #[derive(Deserialize)]
@@ -291,16 +290,17 @@ impl Record {
         self.kind == "assistant" && self.is_api_error_message
     }
 
-    /// Whether a Stop hook blocked the stop: it gave the model a reason to
-    /// go on, and did not stop Claude Code itself.
+    /// Whether a Stop hook blocked the stop: what it said is given to the
+    /// model, which goes on. Only a blocking hook writes this record; one
+    /// that fails without blocking is listed in the stop_hook_summary's
+    /// hookErrors too, and the turn ends.
     fn hook_blocked(&self) -> bool {
-        self.kind == "system"
-            && self.subtype.as_deref() == Some("stop_hook_summary")
+        self.kind == "user"
+            && self.is_meta
             && self
-                .hook_errors
-                .as_ref()
-                .is_some_and(|errors| !errors.is_empty())
-            && self.prevented_continuation == Some(false)
+                .texts()
+                .first()
+                .is_some_and(|text| text.starts_with("Stop hook feedback:"))
     }
 
     /// Whether the record calls the desktop app's `wrap_up`, which fills the
@@ -1253,8 +1253,15 @@ mod tests {
     }
 
     #[test]
-    fn a_stop_hook_that_blocks_reopens_the_turn_when_its_summary_is_written() {
-        let replay = replay("a_stop_hook_that_blocks_reopens_the_turn_when_its_summary_is_written");
+    fn a_stop_hook_that_blocks_reopens_the_turn_when_its_feedback_is_written() {
+        let replay =
+            replay("a_stop_hook_that_blocks_reopens_the_turn_when_its_feedback_is_written");
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn a_stop_hook_that_fails_without_blocking_still_ends_the_turn() {
+        let replay = replay("a_stop_hook_that_fails_without_blocking_still_ends_the_turn");
         assert_eq!(phase(&replay), Phase::Stopped);
     }
 
