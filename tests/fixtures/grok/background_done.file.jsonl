@@ -1,4 +1,4 @@
-{"cite":"probe-grok subagent, run e, with will_wake false","evidence":"inferred"}
+{"cite":"probe-grok subagent, run e, with will_wake set false; no finish after a turn end was seen with it","evidence":"inferred"}
 {"alive":96746,"started_us":1794693590578662}
 {"expect":[]}
 {"write":".grok/active_sessions.json","text":"[\n  {\n    \"session_id\": \"01a1dc12-ef70-7af2-9d6c-b78c992d3ee4\",\n    \"pid\": 96746,\n    \"pid_start\": 1794693590578662,\n    \"cwd\": \"/Users/me/Code/app\",\n    \"opened_at\": \"2026-11-14T21:59:50.578Z\"\n  }\n]"}

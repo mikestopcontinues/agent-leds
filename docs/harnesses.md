@@ -64,7 +64,7 @@ Every tool, read-only ones too, writes a permission request, and Grok writes eac
 
 - A turn that fails is known only from the hook, so a daemon started after it shows what the files say: working, or stopped once the turn's end is written. A request that cannot connect retries without end and never ends the turn, so the session stays green.
 - A run with `grok -p` gets no row, so it is not shown.
-- A subagent that finishes without waking its parent should show the session as stopped; only subagents that wake their parent, which starts a turn, have been seen.
+- A subagent that finishes after its parent's turn without waking it should show the session as stopped. That was never seen: the one that finished after its turn woke its parent, which started a turn, and the ones that did not wake it finished inside the turn.
 - Plan approval, the leader process (`use_leader`) and several windows on one session have not been tried.
 
 ## Cursor

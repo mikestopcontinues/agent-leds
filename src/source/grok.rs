@@ -96,8 +96,8 @@ pub const SIGNALS: &[Declared] = &[
     file(
         Signal::BackgroundDone,
         Evidence::Inferred,
-        "updates.jsonl subagent_finished with will_wake false, leaving no subagent running after a backgrounded turn; only will_wake true was seen, whose wake starts a turn",
-        "probe-grok subagent, run e",
+        "updates.jsonl subagent_finished with will_wake false, leaving no subagent running; will_wake false was seen only for subagents that finished inside the turn, and the one that finished after its turn ended had will_wake true and started a turn, so this may never fire",
+        "probe-grok subagent, run e; session 01a1db59-934f",
     ),
     file(
         Signal::Interrupted,
@@ -295,8 +295,6 @@ struct Session {
     children: HashSet<String>,
     /// The last thing the agent wrote since the latest prompt.
     text: String,
-    /// Whether the last turn ended with a subagent running.
-    background: bool,
     told: Told,
 }
 
@@ -414,7 +412,6 @@ impl Grok {
                 failed: None,
                 children: HashSet::new(),
                 text: String::new(),
-                background: false,
                 told: Told::default(),
             },
         );
@@ -523,7 +520,6 @@ impl Grok {
                 session.question = false;
                 session.permission = Permission::None;
                 session.failed = None;
-                session.background = false;
                 tell(id, session, Channel::File, [Signal::Prompted], out);
             }
             _ if session.open.is_none() => {}
@@ -583,7 +579,6 @@ impl Grok {
         if !session.children.is_empty() {
             end.insert(Signal::Backgrounded);
         }
-        session.background = end.contains(&Signal::Backgrounded);
         tell(id, session, Channel::File, end, out);
     }
 
@@ -628,12 +623,7 @@ impl Grok {
                     session.children.remove(child);
                 }
                 // A subagent that wakes its parent starts a turn instead.
-                if session.children.is_empty()
-                    && session.open.is_none()
-                    && session.background
-                    && !change.will_wake
-                {
-                    session.background = false;
+                if session.children.is_empty() && !change.will_wake {
                     tell(id, session, Channel::File, [Signal::BackgroundDone], out);
                 }
             }
@@ -870,6 +860,24 @@ mod tests {
                 .all(|signals| !signals.contains(&Signal::PermissionAsked)),
             "{told:?}"
         );
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn a_subagent_finished_inside_its_turn_leaves_it_working() {
+        let replay = replay("a_subagent_finished_inside_its_turn_leaves_it_working");
+        let (finished, step) = replay
+            .yielded
+            .iter()
+            .find(|(o, _)| o.event.signals().contains(&Signal::BackgroundDone))
+            .expect("the finish is told");
+        let mut queue = crate::queue::Queue::default();
+        for (o, at) in &replay.yielded {
+            if at <= step {
+                queue.apply(o, 0);
+            }
+        }
+        assert_eq!(queue.phase(&finished.key), Phase::Working);
         assert_eq!(phase(&replay), Phase::Stopped);
     }
 

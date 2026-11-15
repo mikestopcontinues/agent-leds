@@ -136,7 +136,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 ### BackgroundDone
 
 - Claude Code, file, observed: the session file going from busy to idle after a backgrounded turn (probe-claude cc3)
-- Grok, file, inferred: updates.jsonl subagent_finished with will_wake false, leaving no subagent running after a backgrounded turn; only will_wake true was seen, whose wake starts a turn (probe-grok subagent, run e)
+- Grok, file, inferred: updates.jsonl subagent_finished with will_wake false, leaving no subagent running; will_wake false was seen only for subagents that finished inside the turn, and the one that finished after its turn ended had will_wake true and started a turn, so this may never fire (probe-grok subagent, run e; session 01a1db59-934f)
 
 ### Ended
 
