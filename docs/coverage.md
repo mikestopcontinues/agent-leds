@@ -165,7 +165,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Junie, file, inferred: a newer sidecar for the pid naming another session, the sidecar deleted, or its process gone (probe-junie session_start notes, quit/crash; Irrlicht pid.go)
 - OpenCode, file, observed: the session's row deleted or archived (probe-opencode T13)
 - OpenCode, hook, observed: the process the plugin's busy named gone (probe-opencode T14, T17)
-- Pi, hook, observed: session_shutdown other than for a reload, as at quit and /new, or the Pi process gone; no file records an exit (probe-pi ext084, ext152, extfork, tq1–tq6, rpc5–rpc7)
+- Pi, hook, observed: session_shutdown other than for a reload, as at quit and /new; another session's session_start or agent_start from the same Pi process, which runs one session at a time, as after a /new whose session_shutdown was lost; or the Pi process gone; no file records an exit (probe-pi ext084, ext152, extfork, tq1–tq6, rpc5–rpc7; gaps-pi sig084)
 
 ## Moves each harness cannot make
 

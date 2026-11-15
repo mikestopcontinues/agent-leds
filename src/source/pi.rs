@@ -111,8 +111,8 @@ pub const SIGNALS: &[Declared] = &[
         Signal::Ended,
         Channel::Hook,
         Evidence::Observed,
-        "session_shutdown other than for a reload, as at quit and /new, or the Pi process gone; no file records an exit",
-        "probe-pi ext084, ext152, extfork, tq1–tq6, rpc5–rpc7",
+        "session_shutdown other than for a reload, as at quit and /new; another session's session_start or agent_start from the same Pi process, which runs one session at a time, as after a /new whose session_shutdown was lost; or the Pi process gone; no file records an exit",
+        "probe-pi ext084, ext152, extfork, tq1–tq6, rpc5–rpc7; gaps-pi sig084",
     ),
 ];
 
@@ -520,6 +520,19 @@ impl Pi {
             session.liveness == liveness && session.file.as_ref() == Some(&file)
         });
         if !known {
+            // A Pi process runs one session at a time, so any other it ran
+            // has ended, though its session_shutdown never came.
+            let mut left: Vec<String> = self
+                .sessions
+                .iter()
+                .filter(|(other, session)| *other != id && session.liveness == liveness)
+                .map(|(other, _)| other.clone())
+                .collect();
+            left.sort();
+            for other in left {
+                let mut session = self.sessions.remove(&other).expect("tracked");
+                tell(&other, &mut session, Channel::Hook, [Signal::Ended], out);
+            }
             let mut session = Session::new(liveness.clone(), Some(file.clone()), cwd.clone());
             // What is already written, as a resumed, forked or cloned file
             // holds, is history: it says only which turn the session is on,
@@ -982,6 +995,18 @@ mod tests {
     fn a_stop_while_a_retry_waits_is_an_interrupt_on_1_5_2() {
         let replay = replay("a_stop_while_a_retry_waits_is_an_interrupt_on_1_5_2");
         assert_eq!(phases(&replay)[0].1, Phase::Idle);
+    }
+
+    #[test]
+    fn a_new_session_in_the_same_process_ends_the_last() {
+        let replay = replay("a_new_session_in_the_same_process_ends_the_last");
+        assert_eq!(
+            phases(&replay),
+            [(
+                "01a1dfd1-8dff-7a73-9986-e82c359e2eea".to_owned(),
+                Phase::Stopped
+            )]
+        );
     }
 
     #[test]

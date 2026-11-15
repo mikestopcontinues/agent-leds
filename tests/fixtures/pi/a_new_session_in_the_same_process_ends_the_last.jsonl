@@ -1,0 +1,37 @@
+{"cite":"constructed from gaps-pi sig084: a turn, /new and a turn there in one Pi 0.84.4 process, with the old session's session_shutdown lost, as when its hook times out","evidence":"inferred"}
+{"alive":84650,"started_us":1794756395979000}
+{"expect":[]}
+{"hook":{"event":"session_start","session":"01a1dfd1-4917-7d2e-af8c-8c1b422cb638","pid":84650,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-26-37-336Z_01a1dfd1-4917-7d2e-af8c-8c1b422cb638.jsonl"},"ancestry":[{"pid":84650,"started_us":1794756395979000},{"pid":500,"started_us":1794692357000000}]}
+{"expect":[["started","hook"]]}
+{"hook":{"event":"agent_start","session":"01a1dfd1-4917-7d2e-af8c-8c1b422cb638","pid":84650,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-26-37-336Z_01a1dfd1-4917-7d2e-af8c-8c1b422cb638.jsonl"},"ancestry":[{"pid":84650,"started_us":1794756395979000},{"pid":500,"started_us":1794692357000000}]}
+{"expect":[["started","hook"],["prompted","hook"]]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-26-37-336Z_01a1dfd1-4917-7d2e-af8c-8c1b422cb638.jsonl","line":{"type":"session","version":3,"id":"01a1dfd1-4917-7d2e-af8c-8c1b422cb638","timestamp":"2026-11-15T15:26:37.336Z","cwd":"/Users/me/Code/app"}}
+{"expect":[]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-26-37-336Z_01a1dfd1-4917-7d2e-af8c-8c1b422cb638.jsonl","line":{"type":"model_change","id":"683a410d","parentId":null,"timestamp":"2026-11-15T15:26:38.258Z","provider":"fake","modelId":"fake"}}
+{"expect":[]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-26-37-336Z_01a1dfd1-4917-7d2e-af8c-8c1b422cb638.jsonl","line":{"type":"thinking_level_change","id":"a608c718","parentId":"683a410d","timestamp":"2026-11-15T15:26:38.258Z","thinkingLevel":"off"}}
+{"expect":[]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-26-37-336Z_01a1dfd1-4917-7d2e-af8c-8c1b422cb638.jsonl","line":{"type":"message","id":"f69d4bfd","parentId":"a608c718","timestamp":"2026-11-15T15:26:38.670Z","message":{"role":"user","content":[{"type":"text","text":"Reply with just the word ready."}],"timestamp":1794756398462}}}
+{"expect":[["prompted","file"]]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-26-37-336Z_01a1dfd1-4917-7d2e-af8c-8c1b422cb638.jsonl","line":{"type":"message","id":"348cf842","parentId":"f69d4bfd","timestamp":"2026-11-15T15:26:38.889Z","message":{"role":"assistant","content":[{"type":"text","text":"ready"}],"api":"openai-completions","provider":"fake","model":"fake","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1794756398680,"responseId":"c1","rawStopReason":"stop"}}}
+{"expect":[["turn_ended","file"]]}
+{"hook":{"event":"agent_settled","session":"01a1dfd1-4917-7d2e-af8c-8c1b422cb638","aborted":false,"stop_reason":"stop"},"ancestry":[{"pid":84650,"started_us":1794756395979000},{"pid":500,"started_us":1794692357000000}]}
+{"expect":[]}
+{"hook":{"event":"session_start","session":"01a1dfd1-8dff-7a73-9986-e82c359e2eea","pid":84650,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-26-54-975Z_01a1dfd1-8dff-7a73-9986-e82c359e2eea.jsonl"},"ancestry":[{"pid":84650,"started_us":1794756395979000},{"pid":500,"started_us":1794692357000000}]}
+{"expect":[["ended","hook"],["started","hook"]]}
+{"hook":{"event":"session_start","session":"01a1dfd1-8dff-7a73-9986-e82c359e2eea","pid":84650,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-26-54-975Z_01a1dfd1-8dff-7a73-9986-e82c359e2eea.jsonl"},"ancestry":[{"pid":84650,"started_us":1794756395979000},{"pid":500,"started_us":1794692357000000}]}
+{"expect":[["started","hook"]]}
+{"hook":{"event":"agent_start","session":"01a1dfd1-8dff-7a73-9986-e82c359e2eea","pid":84650,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-26-54-975Z_01a1dfd1-8dff-7a73-9986-e82c359e2eea.jsonl"},"ancestry":[{"pid":84650,"started_us":1794756395979000},{"pid":500,"started_us":1794692357000000}]}
+{"expect":[["started","hook"],["prompted","hook"]]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-26-54-975Z_01a1dfd1-8dff-7a73-9986-e82c359e2eea.jsonl","line":{"type":"session","version":3,"id":"01a1dfd1-8dff-7a73-9986-e82c359e2eea","timestamp":"2026-11-15T15:26:54.975Z","cwd":"/Users/me/Code/app"}}
+{"expect":[]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-26-54-975Z_01a1dfd1-8dff-7a73-9986-e82c359e2eea.jsonl","line":{"type":"model_change","id":"cf60638a","parentId":null,"timestamp":"2026-11-15T15:26:55.057Z","provider":"fake","modelId":"fake"}}
+{"expect":[]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-26-54-975Z_01a1dfd1-8dff-7a73-9986-e82c359e2eea.jsonl","line":{"type":"thinking_level_change","id":"75c0a872","parentId":"cf60638a","timestamp":"2026-11-15T15:26:55.057Z","thinkingLevel":"off"}}
+{"expect":[]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-26-54-975Z_01a1dfd1-8dff-7a73-9986-e82c359e2eea.jsonl","line":{"type":"message","id":"244efb9b","parentId":"75c0a872","timestamp":"2026-11-15T15:26:55.997Z","message":{"role":"user","content":[{"type":"text","text":"Reply with just the word ready."}],"timestamp":1794756415954}}}
+{"expect":[["prompted","file"]]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T15-26-54-975Z_01a1dfd1-8dff-7a73-9986-e82c359e2eea.jsonl","line":{"type":"message","id":"821b5b85","parentId":"244efb9b","timestamp":"2026-11-15T15:26:56.002Z","message":{"role":"assistant","content":[{"type":"text","text":"ready"}],"api":"openai-completions","provider":"fake","model":"fake","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1794756415997,"responseId":"c1","rawStopReason":"stop"}}}
+{"expect":[["turn_ended","file"]]}
+{"hook":{"event":"agent_settled","session":"01a1dfd1-8dff-7a73-9986-e82c359e2eea","aborted":false,"stop_reason":"stop"},"ancestry":[{"pid":84650,"started_us":1794756395979000},{"pid":500,"started_us":1794692357000000}]}
+{"expect":[]}
