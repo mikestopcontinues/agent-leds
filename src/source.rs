@@ -17,7 +17,7 @@ pub mod opencode;
 pub mod pi;
 pub mod tail;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
@@ -174,25 +174,39 @@ impl Strange {
 
     /// What was counted, as `harness`'s source says it, if anything.
     pub fn said(&self, harness: Harness) -> Option<String> {
-        let mut said = Vec::new();
-        match self.unparsed {
-            0 => {}
-            1 => said.push("1 line is not a record it reads".to_owned()),
-            n => said.push(format!("{n} lines are not records it reads")),
-        }
-        if !self.kinds.is_empty() {
-            let kinds: Vec<String> = self
-                .kinds
-                .iter()
-                .map(|(kind, n)| format!("{kind} ({n})"))
-                .collect();
-            said.push(format!(
-                "records of kinds {} was not seen to write: {}",
-                harness.title(),
-                kinds.join(", ")
-            ));
-        }
+        let said: Vec<String> = self
+            .lines()
+            .into_iter()
+            .chain(self.unknown(harness))
+            .collect();
         (!said.is_empty()).then(|| said.join("; "))
+    }
+
+    /// The lines that are not records, if any. A crash or a rewrite leaves
+    /// a line cut short, so they are no sign of a new format by themselves.
+    pub fn lines(&self) -> Option<String> {
+        match self.unparsed {
+            0 => None,
+            1 => Some("1 line is not a record it reads".to_owned()),
+            n => Some(format!("{n} lines are not records it reads")),
+        }
+    }
+
+    /// The records of kinds `harness` was not seen to write, if any.
+    pub fn unknown(&self, harness: Harness) -> Option<String> {
+        if self.kinds.is_empty() {
+            return None;
+        }
+        let kinds: Vec<String> = self
+            .kinds
+            .iter()
+            .map(|(kind, n)| format!("{kind} ({n})"))
+            .collect();
+        Some(format!(
+            "records of kinds {} was not seen to write: {}",
+            harness.title(),
+            kinds.join(", ")
+        ))
     }
 }
 
@@ -360,6 +374,8 @@ pub struct Sources {
     watched: Vec<(PathBuf, PathBuf, usize)>,
     watcher: notify::RecommendedWatcher,
     kernel: System,
+    /// The record kinds of each harness already logged as unknown.
+    logged: HashSet<(Harness, String)>,
 }
 
 impl Sources {
@@ -378,12 +394,43 @@ impl Sources {
             watched: Vec::new(),
             watcher,
             kernel: System,
+            logged: HashSet::new(),
         };
         sources.watch();
         Ok(sources)
     }
 
+    /// What the sources say after `what`, and logs what they could not
+    /// make sense of.
     pub fn read(&mut self, what: Read) -> Vec<Observation> {
+        let read = self.gather(what);
+        for said in self.strange() {
+            eprintln!("agent-leds: {said}");
+        }
+        read
+    }
+
+    /// What each source's reads since it was last asked could not make
+    /// sense of, to log: lines that are not records each time, and a kind
+    /// it does not know the first time.
+    fn strange(&mut self) -> Vec<String> {
+        let mut said = Vec::new();
+        for source in &mut self.sources {
+            let harness = source.harness();
+            let mut strange = source.strange();
+            strange
+                .kinds
+                .retain(|kind, _| self.logged.insert((harness, kind.clone())));
+            said.extend(
+                strange
+                    .said(harness)
+                    .map(|strange| format!("{}: {strange}", harness.title())),
+            );
+        }
+        said
+    }
+
+    fn gather(&mut self, what: Read) -> Vec<Observation> {
         let kernel = &self.kernel;
         match what {
             Read::Seed(bound) => {
@@ -398,9 +445,6 @@ impl Sources {
                                     unread.path.display(),
                                     unread.error
                                 );
-                            }
-                            if let Some(said) = source.strange().said(source.harness()) {
-                                eprintln!("agent-leds: {title}: {said}");
                             }
                             seeded.extend(seed.observations);
                         }
@@ -447,7 +491,7 @@ impl Sources {
                     }
                 }
                 // A hook can name a folder that was not there before.
-                told.extend(self.read(Read::Roots));
+                told.extend(self.gather(Read::Roots));
                 told
             }
             Read::Behind => self
@@ -458,7 +502,7 @@ impl Sources {
                 .collect(),
             // Watching a new root restarts the watcher's stream for every
             // root, which drops what changed under any of them meanwhile.
-            Read::Roots if self.watch() => self.read(Read::All),
+            Read::Roots if self.watch() => self.gather(Read::All),
             Read::Roots => Vec::new(),
         }
     }
@@ -520,6 +564,8 @@ mod tests {
         lines: usize,
         /// How often it was told to read everything.
         rescans: usize,
+        /// What it is to say it could not make sense of.
+        strange: Strange,
     }
 
     /// A source of one folder that reads whatever it is told changed, in
@@ -590,7 +636,7 @@ mod tests {
         }
 
         fn strange(&mut self) -> Strange {
-            Strange::default()
+            std::mem::take(&mut self.seen.lock().unwrap().strange)
         }
     }
 
@@ -700,6 +746,39 @@ mod tests {
         }));
         let seen = seen.lock().unwrap();
         assert!(seen.paths.iter().all(|path| path.parent() == Some(&root)));
+    }
+
+    /// A kind a source does not know is logged the first time it is read,
+    /// and lines that are not records each time.
+    #[test]
+    fn what_a_live_read_cannot_make_sense_of_is_logged() {
+        let folder = tempfile::tempdir().unwrap();
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        let source = Folder {
+            root: folder.path().to_owned(),
+            shallow: false,
+            seen: seen.clone(),
+            log: None,
+            behind: false,
+        };
+        let (sender, _inputs) = mpsc::channel();
+        let mut sources = Sources::start(vec![Box::new(source)], sender).unwrap();
+        let count = |unparsed: usize| {
+            let mut seen = seen.lock().unwrap();
+            seen.strange.unparsed += unparsed;
+            seen.strange.kind("turn-summary", &[]);
+        };
+        count(0);
+        assert_eq!(
+            sources.strange(),
+            ["Claude Code: records of kinds Claude Code was not seen to write: turn-summary (1)"]
+        );
+        count(1);
+        assert_eq!(
+            sources.strange(),
+            ["Claude Code: 1 line is not a record it reads"]
+        );
+        assert!(sources.strange().is_empty());
     }
 
     #[test]

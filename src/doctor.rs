@@ -252,7 +252,12 @@ fn files(source: &mut dyn Source, k: &dyn Kernel, saved: &Queue, home: &Path) ->
     } else {
         sessions(&seeded.observations, saved, "running")?
     };
-    let said = format!("{sessions}, read from {}", roots.join(", "));
+    let mut said = format!("{sessions}, read from {}", roots.join(", "));
+    let strange = source.strange();
+    // A line a crash or a rewrite cut short is the harness's own.
+    if let Some(lines) = strange.lines() {
+        said = format!("{said}; {lines}, as a crash or a rewrite can leave");
+    }
     // A file or record it could not make sense of may be a session or a
     // move it missed.
     let mut problems = Vec::new();
@@ -271,7 +276,7 @@ fn files(source: &mut dyn Source, k: &dyn Kernel, saved: &Queue, home: &Path) ->
         }
         problems.push(format!("could not read {}", unread.join("; ")));
     }
-    problems.extend(source.strange().said(harness));
+    problems.extend(strange.unknown(harness));
     if problems.is_empty() {
         return Ok(said);
     }
@@ -507,26 +512,40 @@ mod tests {
         );
     }
 
+    /// A record of a kind the harness was not seen to write needs
+    /// attention; a line that is not a record, as a crash leaves, is said.
     #[test]
-    fn records_of_unknown_kinds_and_lines_that_are_none_need_attention() {
+    fn records_of_unknown_kinds_need_attention_and_lines_that_are_none_are_said() {
         let home = tempfile::tempdir().unwrap();
         let home = home.path();
         write(home, ".claude/sessions/90859.json", CLAUDE_SESSION);
+        let transcript =
+            ".claude/projects/-Users-me-Code-app/e8f843a7-1f54-44e3-b14d-99f53e9cec7a.jsonl";
+        let prompt = "{\"type\": \"user\", \"promptId\": \"p1\", \"promptSource\": \"typed\", \
+             \"timestamp\": \"2026-11-14T21:56:23.616Z\", \"message\": {\"content\": \"Go\"}}\n";
+        write(home, transcript, &format!("{prompt}not json\n"));
+        let mut claude = source_of(Harness::Claude, home);
+        let files = |claude: &mut Box<dyn Source>| {
+            files(claude.as_mut(), &Running(90859), &Queue::default(), home)
+        };
+        assert_eq!(
+            files(&mut claude).unwrap(),
+            "1 session running (working), read from ~/.claude/sessions, ~/.claude/projects; \
+             1 line is not a record it reads, as a crash or a rewrite can leave"
+        );
         write(
             home,
-            ".claude/projects/-Users-me-Code-app/e8f843a7-1f54-44e3-b14d-99f53e9cec7a.jsonl",
-            "{\"type\": \"user\", \"promptId\": \"p1\", \"promptSource\": \"typed\", \
-             \"timestamp\": \"2026-11-14T21:56:23.616Z\", \"message\": {\"content\": \"Go\"}}\n\
-             {\"type\": \"turn-summary\", \"timestamp\": \"2026-11-14T21:56:24.000Z\"}\n\
-             not json\n",
+            transcript,
+            &format!(
+                "{prompt}{{\"type\": \"turn-summary\", \"timestamp\": \"2026-11-14T21:56:24.000Z\"}}\n"
+            ),
         );
         let mut claude = source_of(Harness::Claude, home);
-        let problem = files(claude.as_mut(), &Running(90859), &Queue::default(), home);
         assert_eq!(
-            problem.unwrap_err().to_string(),
+            files(&mut claude).unwrap_err().to_string(),
             "1 session running (working), read from ~/.claude/sessions, ~/.claude/projects; \
-             but 1 line is not a record it reads; records of kinds Claude Code was not seen to \
-             write: turn-summary (1); the harness's format may have changed"
+             but records of kinds Claude Code was not seen to write: turn-summary (1); the \
+             harness's format may have changed"
         );
     }
 
