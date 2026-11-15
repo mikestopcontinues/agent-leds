@@ -966,7 +966,13 @@ mod tests {
 
     #[test]
     fn a_hook_under_the_worker_binds_the_chat_to_the_cli() {
+        let replay = replay("a_hook_under_the_worker_binds_the_chat_to_the_cli");
         // The hook runs under the worker 89038, the child of the CLI 88985.
+        assert_eq!(bound(&replay), 88985);
+    }
+
+    #[test]
+    fn a_hook_under_the_cli_binds_the_chat_to_it() {
         assert_eq!(bound(&replay("started.hook")), 88985);
     }
 
