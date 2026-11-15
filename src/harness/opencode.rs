@@ -311,9 +311,40 @@ mod tests {
             types,
             json!([
                 "session.execution.started",
+                "session.step.started",
                 "permission.asked",
                 "permission.replied"
             ])
+        );
+    }
+
+    /// The service started again resumes a background subagent with a step
+    /// and no start (gaps oc8, pid 95167): its first step says it runs, once.
+    #[test]
+    fn the_plugin_passes_on_a_run_the_2x_service_resumes_at_its_first_step() {
+        let child = "ses_e202904f4ffegKoZPcGV7jVtmD";
+        let step = |id: &str, message: &str| json!({ "id": id, "created": 1794757049964u64, "type": "session.step.started", "data": { "sessionID": child, "assistantMessageID": message, "agent": "general", "started": 1794757048942u64 } });
+        let (payloads, _) = streamed(json!([
+            {
+                "id": "evt_1dfdb5d2d001xl4dd8OveOHjGx", "created": 1794757057837u64, "type": "permission.replied",
+                "data": { "sessionID": child, "requestID": "per_1dfd7541c0015QcrFxQOtvhQPa", "reply": "once" }
+            },
+            step("evt_1dfdb3e6c001w3BPZ92TVQ42WE", "msg_1dfdb3a680015npBetis0JuVMl"),
+            step("evt_1dfdb4801001BrsVmaUafB8hti", "msg_1dfdb451e001fgQ1pKL1S7U5GG"),
+            {
+                "id": "evt_1dfdb56b8002kAt2VOtTRO9y7F", "created": 1794757056184u64, "type": "permission.asked",
+                "data": { "id": "per_1dfdb56b8001OABMUerpFmGyjA", "sessionID": child, "action": "shell", "resources": ["true"] }
+            },
+        ]));
+        let pid = payloads[0].0;
+        let payloads: Vec<Value> = payloads.into_iter().map(|(_, payload)| payload).collect();
+        assert_eq!(
+            payloads,
+            [
+                json!({ "event": "permission.replied", "session": child }),
+                json!({ "event": "busy", "session": child, "pid": pid, "directory": "/Users/me/Code/app" }),
+                json!({ "event": "permission.asked", "session": child }),
+            ]
         );
     }
 

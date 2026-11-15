@@ -65,8 +65,8 @@ const fn hook(signal: Signal, record: &'static str, cite: &'static str) -> Decla
 pub const SIGNALS: &[Declared] = &[
     hook(
         Signal::Started,
-        "the plugin's busy, as a session that is not a subagent's goes busy (1.x) or starts a run (2.x), from the OpenCode process whose pid it names: 2.x's background service, or the server a terminal interface runs",
-        "probe-opencode T3–T16 (session.status busy, in serve and the TUI); gaps oc8 (2.3.0 session.execution.started, in the service, in `--standalone` and in `run`), oc9 (one plugin file in 1.18.25 and 2.3.0)",
+        "the plugin's busy, as a session goes busy (1.x) or starts a run (2.x), or as 2.x first steps or asks in a process, as a run the service resumes does, from the OpenCode process whose pid it names: 2.x's background service, or the server a terminal interface runs; a subagent's starts the session it works for when that is not followed",
+        "probe-opencode T3–T16 (session.status busy, in serve and the TUI); gaps oc8 (2.3.0 session.execution.started, in the service, in `--standalone` and in `run`; session.step.started first after the service restarted), oc9 (one plugin file in 1.18.25 and 2.3.0)",
     ),
     hook(
         Signal::Prompted,
@@ -834,6 +834,20 @@ impl OpenCode {
         (cwd, unread)
     }
 
+    /// Follows a session a busy named, as `follow` does, and says where it
+    /// works.
+    fn bind(&mut self, id: &str, liveness: Liveness, directory: String) -> String {
+        let (cwd, unread) = self.follow(id, liveness, directory);
+        if let Some(unread) = unread {
+            eprintln!(
+                "agent-leds: reading {}: {}",
+                unread.path.display(),
+                unread.error
+            );
+        }
+        cwd
+    }
+
     /// Where the database leaves a session just followed, as the signals
     /// that take it there from Idle.
     fn current(&self, id: &str) -> Vec<Observation> {
@@ -1062,7 +1076,7 @@ impl Source for OpenCode {
         let id = self.root(&payload.session);
         let own = id == payload.session;
         let signals = match payload.event.as_str() {
-            "busy" if own => {
+            "busy" => {
                 // The plugin runs the hook itself, so the process it names is
                 // the hook's parent, whose start tells it from a later one.
                 let liveness = hook
@@ -1077,18 +1091,33 @@ impl Source for OpenCode {
                     return out;
                 };
                 let directory = payload.directory.unwrap_or_default();
+                // A subagent at work says its session's process runs: a
+                // session not followed, as when the service resumes a
+                // subagent once it starts again, is followed from where the
+                // database leaves it.
+                if !own {
+                    if !self.sessions.contains_key(&id) {
+                        let cwd = self.bind(&id, liveness.clone(), directory);
+                        out.push(Observation::new(
+                            Harness::OpenCode,
+                            &id,
+                            Channel::Hook,
+                            Event::Started(Start { cwd, liveness }),
+                            self.turn(&id),
+                        ));
+                        let mut current = self.current(&id);
+                        for o in &mut current {
+                            o.quiet = true;
+                        }
+                        out.extend(current);
+                    }
+                    return out;
+                }
                 let followed = self
                     .sessions
                     .get(&id)
                     .is_some_and(|session| session.liveness == liveness);
-                let (cwd, unread) = self.follow(&id, liveness.clone(), directory);
-                if let Some(unread) = unread {
-                    eprintln!(
-                        "agent-leds: reading {}: {}",
-                        unread.path.display(),
-                        unread.error
-                    );
-                }
+                let cwd = self.bind(&id, liveness.clone(), directory);
                 out.push(Observation::new(
                     Harness::OpenCode,
                     &id,
@@ -1337,6 +1366,25 @@ mod tests {
             .map(|(_, step)| steps[step])
             .collect();
         assert_eq!(replied, [Phase::Background, Phase::Background]);
+    }
+
+    /// The service started again resumes a background subagent with no
+    /// start of its own: the subagent's busy follows its session again, which
+    /// its permission then holds up, and the answer leaves in the background.
+    #[test]
+    fn a_subagent_the_service_resumes_holds_its_session() {
+        let replay = replay("a_subagent_the_service_resumes_holds_its_session");
+        let steps = steps(&replay);
+        let after = |signal: Signal| {
+            let (_, step) = replay
+                .yielded
+                .iter()
+                .rfind(|(o, _)| o.event.signals().contains(&signal))
+                .unwrap();
+            steps[step]
+        };
+        assert_eq!(after(Signal::PermissionAsked), Phase::Blocked);
+        assert_eq!(after(Signal::Answered), Phase::Background);
     }
 
     #[test]

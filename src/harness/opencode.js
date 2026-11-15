@@ -53,17 +53,23 @@ const server = async ({ directory }) => {
 };
 
 // 2.x writes how each run ends; only the run's start, with this process, and
-// its permissions are not written.
-const TYPES = ["session.execution.started", "permission.asked", "permission.replied"];
+// its permissions are not written. A run the service resumes as it starts
+// again, or one under way as this file loads, begins with a step rather
+// than a start, so the first a process hears of a session says it runs.
+const TYPES = ["session.execution.started", "session.step.started", "permission.asked", "permission.replied"];
 
 const setup = async (api) => {
   const directory = api.location?.directory;
+  /** The sessions this process has told of. */
+  const told = new Set();
   (async () => {
     for await (const event of api.event.subscribe({ types: TYPES })) {
       const session = event.data?.sessionID;
       if (!session) continue;
-      if (event.type === "session.execution.started") busy(session, directory);
-      else if (TYPES.includes(event.type)) send({ event: event.type, session });
+      const first = !told.has(session) && event.type !== "permission.replied";
+      if (first) told.add(session);
+      if (event.type === "session.execution.started" || first) busy(session, directory);
+      if (event.type.startsWith("permission.")) send({ event: event.type, session });
     }
   })().catch(() => {});
 };
