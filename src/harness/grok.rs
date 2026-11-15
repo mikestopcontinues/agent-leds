@@ -321,7 +321,7 @@ mod tests {
             "sessionId": "s1", "session_id": "s1",
             "reason": "end_turn", "lastAssistantMessage": "ok", "backgroundTasks": [],
         });
-        assert_eq!(signals(Harness::Codex, stop), None);
+        assert_eq!(signals(Harness::Junie, stop), None);
     }
 
     #[test]

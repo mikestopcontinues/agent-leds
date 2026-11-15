@@ -125,8 +125,7 @@ impl Harness {
 
     fn event(self, payload: &Value) -> Option<Event> {
         match self {
-            Harness::Claude => None,
-            Harness::Codex => codex::event(payload),
+            Harness::Claude | Harness::Codex => None,
             Harness::Grok => grok::event(payload),
             Harness::Cursor => cursor::event(payload),
             Harness::Junie => junie::event(payload),
@@ -291,7 +290,7 @@ impl Harness {
 pub fn signals(harness: Harness) -> &'static [Declared] {
     match harness {
         Harness::Claude => source::claude::SIGNALS,
-        Harness::Codex => codex::SIGNALS,
+        Harness::Codex => source::codex::SIGNALS,
         Harness::Grok => grok::SIGNALS,
         Harness::Cursor => cursor::SIGNALS,
         Harness::Junie => junie::SIGNALS,
@@ -351,8 +350,8 @@ enum Hook {
     Stop,
     StopFailure,
     SessionEnd,
-    /// The user cut the turn short. Codex has an event of this name; the
-    /// other harnesses say so in other ways.
+    /// The user cut the turn short, as Cursor says of a tool an interrupt
+    /// aborted.
     Interrupt,
 }
 
@@ -380,8 +379,7 @@ struct Event {
     subagent: bool,
 }
 
-/// A hook payload as Claude Code spells it, which Codex and Junie follow.
-/// Each harness reads the fields it sends.
+/// A hook payload as Claude Code spells it, which Junie follows.
 #[derive(Deserialize)]
 struct Payload {
     hook_event_name: String,
@@ -393,24 +391,11 @@ struct Payload {
     last_assistant_message: String,
     /// Set when a subagent sent the event.
     agent_id: Option<String>,
-    tool_name: Option<String>,
-    /// Codex sends null for a session it keeps no record of.
-    #[serde(default, deserialize_with = "present")]
-    transcript_path: Option<Option<String>>,
 }
 
 /// Reads text that may be null as empty.
 fn or_empty<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
     Option::deserialize(deserializer).map(Option::unwrap_or_default)
-}
-
-/// Reads a field that may be null, so that a null tells apart from a field left out.
-fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Option::deserialize(deserializer).map(Some)
 }
 
 impl Payload {

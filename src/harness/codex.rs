@@ -1,5 +1,6 @@
 //! Codex: its hooks live in `~/.codex/config.toml`, and it runs only the
-//! hooks whose hash that file says to trust.
+//! hooks whose hash that file says to trust. Its sessions are read from its
+//! files, `source::codex`; the one hook says what no file records.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -12,119 +13,17 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, value};
 
-use super::{Event, Harness, Hook, Payload, hooked};
-use crate::coverage::{Declared, Evidence};
+use super::Harness;
 use crate::files;
-use crate::fsm::Signal;
 
 pub const CONFIG: &str = ".codex/config.toml";
 
-/// The hook events the daemon needs, in the order a turn produces them.
-pub const HOOKS: [&str; 7] = [
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PermissionRequest",
-    "PostToolUse",
-    "Stop",
-    "Interrupt",
-    "SessionEnd",
-];
-
-/// What Codex's hooks tell, until its own files are read.
-pub const SIGNALS: &[Declared] = &[
-    hooked(
-        Signal::Started,
-        Evidence::Observed,
-        "any hook of a session Codex keeps a transcript of, run under the process named codex",
-        "0.5.0 hooks, probe-codex runA",
-    ),
-    hooked(
-        Signal::Prompted,
-        Evidence::Observed,
-        "UserPromptSubmit, PreToolUse or PostToolUse",
-        "0.5.0 hooks, probe-codex runA",
-    ),
-    hooked(
-        Signal::PermissionAsked,
-        Evidence::Observed,
-        "PermissionRequest",
-        "0.5.0 hooks, probe-codex runA",
-    ),
-    hooked(
-        Signal::QuestionAsked,
-        Evidence::Observed,
-        "PreToolUse for request_user_input or request_user_input_async",
-        "0.5.0 hooks, probe-codex runA",
-    ),
-    hooked(
-        Signal::TurnEnded,
-        Evidence::Observed,
-        "Stop",
-        "0.5.0 hooks, probe-codex runA",
-    ),
-    hooked(
-        Signal::TurnEndedAsking,
-        Evidence::Observed,
-        "Stop whose last message asks, or is a proposed plan",
-        "0.5.0 hooks, probe-codex runA",
-    ),
-    hooked(
-        Signal::Interrupted,
-        Evidence::Observed,
-        "Interrupt",
-        "0.5.0 hooks, probe-codex runA",
-    ),
-    hooked(
-        Signal::Backgrounded,
-        Evidence::Inferred,
-        "any hook a subagent sends, with agent_id; Codex runs none for its subagents",
-        "0.5.0 hooks",
-    ),
-    hooked(
-        Signal::Ended,
-        Evidence::Observed,
-        "SessionEnd, or the codex process gone",
-        "0.5.0 hooks, probe-codex runA",
-    ),
-];
+/// The hook events the daemon needs: only an approval that waits, which
+/// Codex writes nowhere until it is answered.
+pub const HOOKS: [&str; 1] = ["PermissionRequest"];
 
 /// How long Codex gets to say which hooks it sees.
 const ANSWER: Duration = Duration::from_secs(15);
-
-pub fn event(payload: &Value) -> Option<Event> {
-    // Codex runs agents of its own as sessions it keeps no record of, such
-    // as the one that consolidates its memories. Those are not the user's.
-    let payload = Payload::read(payload)?;
-    if payload.transcript_path == Some(None) {
-        return None;
-    }
-    let mut event = Event::read(&payload)?;
-    // Codex names a tool with or without its namespace.
-    let tool = payload
-        .tool_name
-        .as_deref()
-        .and_then(|tool| tool.rsplit('.').next());
-    let asks_user = matches!(
-        tool,
-        Some("request_user_input" | "request_user_input_async")
-    );
-    match event.hook {
-        Hook::PreToolUse => event.asks = asks_user,
-        // The async tool returns at once: that acknowledges the question and
-        // does not answer it.
-        Hook::PostToolUse if tool == Some("request_user_input_async") => return None,
-        // A turn that ends on a plan waits for the user to accept it.
-        Hook::Stop => event.asks |= proposes_plan(&payload.last_assistant_message),
-        _ => {}
-    }
-    Some(event)
-}
-
-/// Whether a final message is a plan put to the user for review.
-fn proposes_plan(message: &str) -> bool {
-    let mut lines = message.lines().map(str::trim);
-    lines.any(|line| line == "<proposed_plan>") && lines.any(|line| line == "</proposed_plan>")
-}
 
 pub fn install(home: &Path, exe: &Path) -> Result<()> {
     let config = home.join(CONFIG);
@@ -455,132 +354,11 @@ fn list_hooks(codex: &mut Child, home: &Path) -> Result<Value> {
 mod tests {
     use std::fs;
 
-    use super::super::tests::{Home, signals};
+    use super::super::tests::Home;
     use super::*;
-    use crate::fsm::Signal;
 
-    /// A payload with the fields Codex sends on every event of a turn.
-    fn event(name: &str, extra: Value) -> Option<Vec<Signal>> {
-        let mut event = json!({
-            "session_id": "019f0a3c-6f0e-7a51-8d2b-5d2f4c0e9a11",
-            "turn_id": "019f0a3c-7b1d-7c03-9d1e-0f6c1c2b3a44",
-            "transcript_path": "/Users/me/.codex/sessions/2026/11/13/rollout-2026-11-13T22-34-08-019f0a3c-6f0e-7a51-8d2b-5d2f4c0e9a11.jsonl",
-            "cwd": "/Users/me/Code/app",
-            "hook_event_name": name,
-            "model": "gpt-6.1-sol",
-            "permission_mode": "bypassPermissions",
-        });
-        event
-            .as_object_mut()
-            .unwrap()
-            .extend(extra.as_object().unwrap().clone());
-        signals(Harness::Codex, event)
-    }
-
-    #[test]
-    fn maps_a_turn() {
-        let working = Some(vec![Signal::Prompted]);
-        assert_eq!(
-            event("UserPromptSubmit", json!({ "prompt": "fix it" })),
-            working
-        );
-        assert_eq!(event("PreToolUse", json!({ "tool_name": "Bash" })), working);
-        assert_eq!(
-            event("PermissionRequest", json!({ "tool_name": "Bash" })),
-            Some(vec![Signal::PermissionAsked])
-        );
-        // A tool that fails still reports PostToolUse: Codex deals with it.
-        assert_eq!(
-            event(
-                "PostToolUse",
-                json!({ "tool_name": "Bash", "tool_response": "exit code: 1" })
-            ),
-            working
-        );
-        assert_eq!(
-            event(
-                "Stop",
-                json!({ "last_assistant_message": "Done.", "stop_hook_active": false })
-            ),
-            Some(vec![Signal::TurnEnded])
-        );
-        assert_eq!(
-            event(
-                "Stop",
-                json!({ "last_assistant_message": "Shall I push it?" })
-            ),
-            Some(vec![Signal::TurnEnded, Signal::TurnEndedAsking])
-        );
-        assert_eq!(
-            event("Stop", json!({ "last_assistant_message": null })),
-            Some(vec![Signal::TurnEnded])
-        );
-        assert_eq!(
-            event("Interrupt", json!({})),
-            Some(vec![Signal::Interrupted])
-        );
-        assert_eq!(
-            event("SessionEnd", json!({ "reason": "other" })),
-            Some(vec![Signal::Ended])
-        );
-        assert_eq!(event("SessionStart", json!({ "source": "startup" })), None);
-        assert_eq!(
-            event(
-                "PreToolUse",
-                json!({ "agent_id": "a1", "agent_type": "worker", "tool_name": "Bash" })
-            ),
-            Some(vec![Signal::Backgrounded])
-        );
-    }
-
-    #[test]
-    fn a_session_codex_keeps_no_record_of_is_its_own_and_is_ignored() {
-        let memories = json!({ "transcript_path": null, "cwd": "/Users/me/.codex/memories" });
-        assert_eq!(event("UserPromptSubmit", memories.clone()), None);
-        assert_eq!(event("Interrupt", memories), None);
-    }
-
-    #[test]
-    fn a_tool_that_asks_the_user_is_a_question() {
-        let question = Some(vec![Signal::Prompted, Signal::QuestionAsked]);
-        for tool in ["request_user_input", "functions.request_user_input_async"] {
-            assert_eq!(event("PreToolUse", json!({ "tool_name": tool })), question);
-        }
-        // The answer to the blocking tool is its result.
-        assert_eq!(
-            event(
-                "PostToolUse",
-                json!({ "tool_name": "request_user_input", "tool_response": { "answers": {} } })
-            ),
-            Some(vec![Signal::Prompted])
-        );
-        // The async tool only says the question was put.
-        assert_eq!(
-            event(
-                "PostToolUse",
-                json!({ "tool_name": "request_user_input_async", "tool_response": "{\"accepted\":true}" })
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn a_turn_that_ends_on_a_plan_asks_for_its_review() {
-        let plan = "<proposed_plan>\n### Test plan\n\n1. Run `sleep 5`.\n</proposed_plan>";
-        assert_eq!(
-            event("Stop", json!({ "last_assistant_message": plan })),
-            Some(vec![Signal::TurnEnded, Signal::TurnEndedAsking])
-        );
-        assert_eq!(
-            event(
-                "Stop",
-                json!({ "last_assistant_message": "Plans go in a `<proposed_plan>` block." })
-            ),
-            Some(vec![Signal::TurnEnded])
-        );
-    }
-
-    /// A config with another tool's hooks and its trusted hashes, as SidePulse writes them.
+    /// A config with other tools' hooks and their trusted hashes, as
+    /// SidePulse and an approval tool write them.
     const THEIRS: &str = r#"model = "gpt-6.1-sol"
 
 [features]
@@ -600,20 +378,29 @@ matcher = "*"
 type = "command"
 command = '''python hook_entry.py --provider codex ; true'''
 
+[[hooks.PermissionRequest]]
+[[hooks.PermissionRequest.hooks]]
+type = "command"
+command = '''python hook_entry.py --provider codex --approvals ; true'''
+
 # <<< agent-monitor hooks <<<
 
 [hooks.state."/Users/me/.codex/config.toml:stop:0:0"]
 trusted_hash = "sha256:271070a9"
+
+[hooks.state."/Users/me/.codex/config.toml:permission_request:0:0"]
+trusted_hash = "sha256:3f9a"
 "#;
 
     const PATH: &str = "/Users/me/.codex/config.toml";
 
-    /// Registers the hooks and trusts the Stop hook at `place` among the Stop groups.
+    /// Registers the hook and trusts it at `place` among the
+    /// PermissionRequest groups.
     fn install(config: &Path, place: usize) {
-        let hashes = [
-            (format!("{PATH}:stop:{place}:0"), "sha256:0d1f".to_owned()),
-            (format!("{PATH}:interrupt:0:0"), "sha256:9c2e".to_owned()),
-        ];
+        let hashes = [(
+            format!("{PATH}:permission_request:{place}:0"),
+            "sha256:0d1f".to_owned(),
+        )];
         edit(config, |config| {
             register(config, PATH, "/bin/agent-leds hook codex")
         })
@@ -629,6 +416,17 @@ trusted_hash = "sha256:271070a9"
         .unwrap();
     }
 
+    fn parse(config: &Path) -> toml::Value {
+        toml::from_str(&fs::read_to_string(config).unwrap()).unwrap()
+    }
+
+    /// The trusted hash recorded for a hook's `<event>:<group>:<handler>`.
+    fn hash(config: &Path, key: &str) -> Option<String> {
+        let parsed = parse(config);
+        let record = parsed["hooks"]["state"].get(format!("{PATH}:{key}"))?;
+        Some(record["trusted_hash"].as_str()?.to_owned())
+    }
+
     #[test]
     fn installing_adds_to_a_config_and_uninstalling_restores_it() {
         let home = Home::new();
@@ -641,23 +439,18 @@ trusted_hash = "sha256:271070a9"
         for line in THEIRS.lines() {
             assert!(added.any(|kept| kept == line), "lost {line:?}");
         }
-        let parsed: toml::Value = toml::from_str(&installed).unwrap();
-        let stop = parsed["hooks"]["Stop"].as_array().unwrap();
-        assert_eq!(stop.len(), 2);
+        let parsed = parse(&config);
+        let asked = parsed["hooks"]["PermissionRequest"].as_array().unwrap();
+        assert_eq!(asked.len(), 2);
         assert_eq!(
-            stop[1]["hooks"][0]["command"].as_str(),
+            asked[1]["hooks"][0]["command"].as_str(),
             Some("/bin/agent-leds hook codex")
         );
         assert_eq!(
-            parsed["hooks"]["state"][format!("{PATH}:stop:1:0").as_str()]["trusted_hash"].as_str(),
+            hash(&config, "permission_request:1:0").as_deref(),
             Some("sha256:0d1f")
         );
-        for event in HOOKS {
-            assert!(
-                parsed["hooks"][event].is_array(),
-                "{event} is not registered"
-            );
-        }
+        assert_eq!(parsed["hooks"]["Stop"].as_array().unwrap().len(), 1);
 
         install(&config, 1);
         assert_eq!(fs::read_to_string(&config).unwrap(), installed);
@@ -683,28 +476,112 @@ trusted_hash = "sha256:271070a9"
         home.write(CONFIG, THEIRS);
         let config = home.join(CONFIG);
         install(&config, 1);
-        // Another tool adds a Stop group after ours, and Codex trusts it there.
+        // Another tool adds a group after ours, and Codex trusts it there.
         let later = r#"
-[[hooks.Stop]]
-[[hooks.Stop.hooks]]
+[[hooks.PermissionRequest]]
+[[hooks.PermissionRequest.hooks]]
 type = "command"
 command = "later-tool"
 
-[hooks.state."/Users/me/.codex/config.toml:stop:2:0"]
+[hooks.state."/Users/me/.codex/config.toml:permission_request:2:0"]
 trusted_hash = "sha256:7777"
 "#;
         let installed = fs::read_to_string(&config).unwrap();
         fs::write(&config, installed + later).unwrap();
         uninstall(&config);
-        let parsed: toml::Value = toml::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
-        let stop = parsed["hooks"]["Stop"].as_array().unwrap();
-        assert_eq!(stop[1]["hooks"][0]["command"].as_str(), Some("later-tool"));
-        let state = parsed["hooks"]["state"].as_table().unwrap();
-        let hash = |key: &str| state.get(&format!("{PATH}:{key}"))?["trusted_hash"].as_str();
-        assert_eq!(hash("stop:0:0"), Some("sha256:271070a9"));
-        assert_eq!(hash("stop:1:0"), Some("sha256:7777"));
+        let parsed = parse(&config);
+        let asked = parsed["hooks"]["PermissionRequest"].as_array().unwrap();
+        assert_eq!(asked[1]["hooks"][0]["command"].as_str(), Some("later-tool"));
+        let hash = |key| hash(&config, key);
+        assert_eq!(
+            hash("permission_request:0:0").as_deref(),
+            Some("sha256:3f9a")
+        );
+        assert_eq!(
+            hash("permission_request:1:0").as_deref(),
+            Some("sha256:7777")
+        );
+        assert_eq!(hash("permission_request:2:0"), None);
+        assert_eq!(hash("stop:0:0").as_deref(), Some("sha256:271070a9"));
+    }
+
+    /// What 0.5.0 registered: a group of ours for each event it followed,
+    /// after the other tools' groups, each trusted where it sat, and then a
+    /// tool that registered after it.
+    fn registered_by_0_5_0() -> String {
+        let mut config = THEIRS.to_owned();
+        let events = [
+            ("UserPromptSubmit", 0),
+            ("PreToolUse", 0),
+            ("PermissionRequest", 1),
+            ("PostToolUse", 0),
+            ("Stop", 1),
+            ("Interrupt", 0),
+            ("SessionEnd", 0),
+        ];
+        for (event, place) in events {
+            config += &format!(
+                "\n[[hooks.{event}]]\n[[hooks.{event}.hooks]]\ntype = \"command\"\n\
+                 command = \"/opt/homebrew/bin/agent-leds hook codex\"\ntimeout = 5\n\n\
+                 [hooks.state.\"{PATH}:{}:{place}:0\"]\ntrusted_hash = \"sha256:{event}\"\n",
+                snake_case(event)
+            );
+        }
+        config += &format!(
+            "\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = \"command\"\ncommand = \"later-tool\"\n\n\
+             [hooks.state.\"{PATH}:stop:2:0\"]\ntrusted_hash = \"sha256:7777\"\n"
+        );
+        config
+    }
+
+    #[test]
+    fn installing_over_0_5_0_keeps_only_the_permission_hook_in_its_place_and_trusted() {
+        let home = Home::new();
+        home.write(CONFIG, &registered_by_0_5_0());
+        let config = home.join(CONFIG);
+        let exe = Path::new("/opt/homebrew/bin/agent-leds");
+        let error = Harness::Codex.check(&home, exe).unwrap_err().to_string();
+        assert!(
+            error.contains(
+                "does not use is registered for Stop, UserPromptSubmit, PreToolUse, PostToolUse, \
+                 Interrupt, SessionEnd"
+            ),
+            "{error}"
+        );
+        let command = Harness::Codex.command(exe);
+        edit(&config, |config| register(config, PATH, &command)).unwrap();
+        let ours: Vec<String> = hooks(&home)
+            .unwrap()
+            .into_iter()
+            .filter(|(_, command)| Harness::Codex.owns(command))
+            .map(|(event, _)| event)
+            .collect();
+        assert_eq!(ours, HOOKS);
+        // Kept where Codex trusted it, so it runs without being trusted again.
+        let parsed = parse(&config);
+        let asked = parsed["hooks"]["PermissionRequest"].as_array().unwrap();
+        assert_eq!(
+            asked[1]["hooks"][0]["command"].as_str(),
+            Some(command.as_str())
+        );
+        let hash = |key| hash(&config, key);
+        assert_eq!(
+            hash("permission_request:1:0").as_deref(),
+            Some("sha256:PermissionRequest")
+        );
+        // The others went with their records, and the tool after ours in
+        // Stop took its place with its record.
+        for key in [
+            "user_prompt_submit:0:0",
+            "pre_tool_use:0:0",
+            "interrupt:0:0",
+        ] {
+            assert_eq!(hash(key), None, "{key}");
+        }
+        assert_eq!(hash("stop:0:0").as_deref(), Some("sha256:271070a9"));
+        assert_eq!(hash("stop:1:0").as_deref(), Some("sha256:7777"));
         assert_eq!(hash("stop:2:0"), None);
-        assert_eq!(hash("interrupt:0:0"), None);
+        assert!(parsed["hooks"].get("SessionEnd").is_none());
     }
 
     #[test]
@@ -730,24 +607,15 @@ trusted_hash = "sha256:5151"
                 .contains("does not use is registered for Notification")
         );
         install(&config, 1);
-        let parsed: toml::Value = toml::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
-        assert!(parsed["hooks"].get("Notification").is_none());
-        let state = parsed["hooks"]["state"].as_table().unwrap();
-        assert!(!state.contains_key(&format!("{PATH}:notification:0:0")));
+        assert!(parse(&config)["hooks"].get("Notification").is_none());
+        assert_eq!(hash(&config, "notification:0:0"), None);
         uninstall(&config);
         assert_eq!(fs::read_to_string(&config).unwrap(), THEIRS);
     }
 
     #[test]
-    fn every_event_registered_is_one_the_daemon_follows() {
-        for event in HOOKS {
-            assert!(Hook::named(event).is_some(), "{event}");
-        }
-    }
-
-    #[test]
     fn spells_an_event_as_codex_keys_it() {
-        assert_eq!(snake_case("PreToolUse"), "pre_tool_use");
+        assert_eq!(snake_case("PermissionRequest"), "permission_request");
         assert_eq!(snake_case("Stop"), "stop");
     }
 
