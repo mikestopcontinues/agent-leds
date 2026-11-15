@@ -161,7 +161,7 @@ The database names no process and records no permission request, so the install 
 | The plugin's `busy`; in 1.x a new user message as the session's latest; in 2.x a new run, as when a finished background job wakes the session | working |
 | A `question` tool running in the turn (1.x) or in the latest assistant message (2.x), in the session or a subagent's | question |
 | The plugin's `permission.asked`, for the session or a subagent's | question |
-| The question tool done, or the plugin's `permission.replied` | working; in 2.x, working in the background again when the run had ended with a subagent's job left |
+| The question tool done, or the plugin's `permission.replied` to the last request still waiting | working; in 2.x, working in the background again when the run had ended with a subagent's job left |
 | 1.x: the latest assistant message completed, other than a step that finished on `tool-calls` or `unknown` with no error and no tool the user refused or dismissed; 2.x: the session idle since its latest run started | stopped |
 | The same, its last text part ending in a question mark | question, as a weak signal |
 | 2.x: the same, with a subagent's job of the session's left in `job` | working, in the background |
@@ -174,7 +174,7 @@ The database names no process and records no permission request, so the install 
 
 The gaps:
 
-- A pending permission is in the database only as a running tool, in 1.x and 2.x alike, so only the plugin says it waits. A daemon that was not running when it was asked shows the session working until it moves on, and one that was not running when it was replied shows it as a question until the turn ends.
+- A pending permission is in the database only as a running tool, in 1.x and 2.x alike, so only the plugin says it waits. A daemon that was not running when it was asked shows the session working until it moves on, one that was not running when it was replied shows it as a question until the turn ends, and one started while two requests waited takes the first reply for the answer.
 - In 1.x, an error before a turn's first step, such as an unknown model, is in the database at most as a prompt with no reply. OpenCode 1.19.5 goes busy before it looks the model up, so the plugin's `session.error` shows it; 1.17.3 failed that way without ever going busy. A prompt that fails before the session goes busy, for an unknown agent or command, writes nothing and is not shown. 2.x writes such a run as `failed`.
 - A turn waiting out a provider's retries shows as working, since nothing is written while it waits.
 - In 1.x, a step that overflowed the context and is compacted automatically is written as a step stopped with neither finish nor error, as an abort while retrying is, and its compaction is written just after. A read between the two shows the session idle for that moment. Compaction in 2.x was not tried.

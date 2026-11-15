@@ -93,8 +93,8 @@ pub const SIGNALS: &[Declared] = &[
     ),
     hook(
         Signal::Answered,
-        "permission.replied, for the session or a subagent's session under it",
-        "probe-opencode T3, T7, T12; gaps oc8 (2.3.0)",
+        "permission.replied, for the session or a subagent's session under it, that leaves no request asked since the turn began unreplied",
+        "probe-opencode T3, T7, T12; gaps oc8 (2.3.0, two requests of a subagent's at once)",
     ),
     file(
         Signal::Answered,
@@ -173,6 +173,8 @@ struct Payload {
     /// The name of the error, at `session.error`, which the plugin sends
     /// only for an error that ends the run.
     error: Option<String>,
+    /// The permission request asked, or replied to.
+    permission: Option<String>,
 }
 
 /// The `data` of a 1.x message row, with only the fields that carry state.
@@ -298,6 +300,9 @@ struct Session {
     /// While it holds, so does the level.
     stamp: Stamp,
     level: Level,
+    /// The permission requests asked for it, or for a subagent's session
+    /// under it, and not replied to since its turn began.
+    waits: BTreeSet<String>,
 }
 
 /// A session's row.
@@ -861,6 +866,7 @@ impl OpenCode {
                 known,
                 stamp,
                 level,
+                waits: BTreeSet::new(),
             },
         );
         (cwd, unread)
@@ -943,6 +949,9 @@ fn read_session(
     }
     let level = level(db, schema, id, strange)?;
     moved(id, &session.level, &level, out);
+    if level.turn() != session.level.turn() {
+        session.waits.clear();
+    }
     session.stamp = stamp;
     session.level = level;
     Ok(true)
@@ -1179,8 +1188,29 @@ impl Source for OpenCode {
                 }
                 BTreeSet::from([Signal::Prompted])
             }
-            "permission.asked" => BTreeSet::from([Signal::PermissionAsked]),
-            "permission.replied" => BTreeSet::from([Signal::Answered]),
+            // Requests can wait together, so a reply answers the wait only
+            // when it leaves none.
+            "permission.asked" | "permission.replied" => {
+                let Some(request) = payload.permission else {
+                    return out;
+                };
+                let asked = payload.event == "permission.asked";
+                if let Some(session) = self.sessions.get_mut(&id) {
+                    if asked {
+                        session.waits.insert(request);
+                    } else {
+                        session.waits.remove(&request);
+                        if !session.waits.is_empty() {
+                            return out;
+                        }
+                    }
+                }
+                if asked {
+                    BTreeSet::from([Signal::PermissionAsked])
+                } else {
+                    BTreeSet::from([Signal::Answered])
+                }
+            }
             "session.error" if own => {
                 let mut signals = BTreeSet::from([Signal::TurnFailed]);
                 if payload.error.as_deref() == Some("MessageAbortedError") {
@@ -1395,8 +1425,9 @@ mod tests {
         steps
     }
 
-    /// The subagent's permission held the session up after its run ended,
-    /// so the answer leaves it working in the background, as the files say.
+    /// The subagent's two permissions held the session up after its run
+    /// ended: the first reply leaves it waiting on the second, and the
+    /// second leaves it working in the background, as the files say.
     #[test]
     fn an_answer_to_a_background_subagent_leaves_its_session_in_the_background() {
         let replay = replay("a_background_subagent_s_permission_holds_the_session");
@@ -1407,7 +1438,18 @@ mod tests {
             .filter(|(o, _)| o.event.signals().contains(&Signal::Answered))
             .map(|(_, step)| steps[step])
             .collect();
-        assert_eq!(replied, [Phase::Background, Phase::Background]);
+        assert_eq!(replied, [Phase::Background]);
+        // Step 20 is the first reply, step 22 the second.
+        let mut phase = Phase::Gone;
+        let mut after = BTreeMap::new();
+        for step in 1..=22 {
+            if let Some(&reached) = steps.get(&step) {
+                phase = reached;
+            }
+            after.insert(step, phase);
+        }
+        assert_eq!(after[&20], Phase::Blocked);
+        assert_eq!(after[&22], Phase::Background);
     }
 
     /// The service started again resumes a background subagent with no

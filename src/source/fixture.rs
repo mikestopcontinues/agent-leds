@@ -28,9 +28,9 @@
 //!   since the last `expect` yielded, in order, one observation each; an
 //!   observation of several signals is `[["<signal>", ...], "<channel>"]`.
 //!   With `"restart":
-//!   "<phase>"` that a daemon started after one of those steps shows that
-//!   phase instead: a moment its files cannot tell from another, which a
-//!   daemon started any time before may show otherwise too.
+//!   "<phase>"` that a daemon started after one of those steps, or any time
+//!   before, shows that phase instead: a moment its files cannot tell from
+//!   another, or what a hook told that a daemon started since never heard.
 //!
 //! A line or text that is not a string is written as compact JSON. After
 //! each step the replay also holds the source to four properties: a rescan
@@ -410,6 +410,9 @@ pub fn replay(harness: Harness, name: &str) -> Replay {
     // The steps since the last expect after which a restart shows another
     // phase, with the phase it shows.
     let mut differs: Vec<(usize, Phase)> = Vec::new();
+    // The expects that say a restart shows another phase where none started
+    // right after their steps does.
+    let mut earlier = Vec::new();
     // The phases after each step that is not an expect.
     let mut shown: Vec<(usize, BTreeMap<Key, Phase>)> = Vec::new();
     for (index, step) in fixture.steps.iter().enumerate() {
@@ -428,10 +431,9 @@ pub fn replay(harness: Harness, name: &str) -> Replay {
                         "{name}: a daemon started after step {after} shows {shown:?}"
                     );
                 }
-                assert!(
-                    restart.is_none() || !differs.is_empty(),
-                    "{name}: step {number} says a restart shows {restart:?}, and none does"
-                );
+                if restart.is_some() && differs.is_empty() {
+                    earlier.push((number, *restart));
+                }
                 since.clear();
                 differs.clear();
                 continue;
@@ -472,8 +474,15 @@ pub fn replay(harness: Harness, name: &str) -> Replay {
         replay.phases(),
         "{name}: reading the file steps two at a time ends elsewhere"
     );
+    let mut resumed = BTreeSet::new();
     for &(after, _) in &shown {
-        resume(harness, name, &fixture, after, &shown);
+        resumed.extend(resume(harness, name, &fixture, after, &shown));
+    }
+    for (number, restart) in earlier {
+        assert!(
+            resumed.contains(&number),
+            "{name}: step {number} says a restart shows {restart:?}, and none does"
+        );
     }
     replay
 }
@@ -482,13 +491,15 @@ pub fn replay(harness: Harness, name: &str) -> Replay {
 /// show after each later step what the replay showed there, unless that
 /// step's expect says a restart shows another phase: whatever a hook told
 /// that the files cannot, the restarted source can still take on from there.
+/// Says the expects after which it showed another phase.
 fn resume(
     harness: Harness,
     name: &str,
     fixture: &Fixture,
     after: usize,
     shown: &[(usize, BTreeMap<Key, Phase>)],
-) {
+) -> Vec<usize> {
+    let mut differed = Vec::new();
     let mut replay = Replay::new(harness, name);
     let mut source = replay.source();
     let seeded = whole(
@@ -502,24 +513,32 @@ fn resume(
         replay.take(observations, *number);
         if *number == after {
             (source, replay.queue) = restarted(&replay);
-        } else if *number > after && !untold(fixture, *number) {
-            assert_eq!(
-                replay.phases(),
-                *live,
-                "{name}: a daemon started after step {after} shows this after step {number}"
-            );
+        } else if *number > after {
+            match untold(fixture, *number) {
+                Some(expect) => {
+                    if replay.phases() != *live {
+                        differed.push(expect);
+                    }
+                }
+                None => assert_eq!(
+                    replay.phases(),
+                    *live,
+                    "{name}: a daemon started after step {after} shows this after step {number}"
+                ),
+            }
         }
     }
+    differed
 }
 
-/// Whether the expect after a step says a restart shows another phase.
-fn untold(fixture: &Fixture, number: usize) -> bool {
-    let mut after = fixture.steps[number..].iter();
-    let restart = after.find_map(|step| match step {
-        Step::Expect { restart, .. } => Some(restart.is_some()),
+/// The expect after a step, if it says a restart shows another phase.
+fn untold(fixture: &Fixture, number: usize) -> Option<usize> {
+    let mut after = fixture.steps.iter().enumerate().skip(number);
+    let (index, restart) = after.find_map(|(index, step)| match step {
+        Step::Expect { restart, .. } => Some((index, restart.is_some())),
         _ => None,
-    });
-    restart.unwrap_or(false)
+    })?;
+    restart.then_some(index + 1)
 }
 
 /// A payload with each string that starts `~/` made a path under `home`.

@@ -216,8 +216,8 @@ mod tests {
             payloads,
             [
                 busy.clone(),
-                json!({ "event": "permission.asked", "session": session }),
-                json!({ "event": "permission.replied", "session": session }),
+                json!({ "event": "permission.asked", "session": session, "permission": "per_1dc10dc8f001i7QPGQfw1Ith8O" }),
+                json!({ "event": "permission.replied", "session": session, "permission": "per_1dc10dc8f001i7QPGQfw1Ith8O" }),
                 json!({ "event": "session.error", "session": session, "error": "MessageAbortedError" }),
                 busy,
             ]
@@ -301,10 +301,10 @@ mod tests {
             payloads,
             [
                 json!({ "event": "busy", "session": session, "pid": pid, "directory": "/Users/me/Code/app" }),
-                json!({ "event": "permission.asked", "session": session }),
-                json!({ "event": "permission.replied", "session": session }),
+                json!({ "event": "permission.asked", "session": session, "permission": "per_1dfd3228e001weupwRT1frii2n" }),
+                json!({ "event": "permission.replied", "session": session, "permission": "per_1dfd3228e001weupwRT1frii2n" }),
                 json!({ "event": "busy", "session": child, "pid": pid, "directory": "/Users/me/Code/app" }),
-                json!({ "event": "permission.asked", "session": child }),
+                json!({ "event": "permission.asked", "session": child, "permission": "per_1dfd7541c0015QcrFxQOtvhQPa" }),
             ]
         );
         assert_eq!(
@@ -341,9 +341,9 @@ mod tests {
         assert_eq!(
             payloads,
             [
-                json!({ "event": "permission.replied", "session": child }),
+                json!({ "event": "permission.replied", "session": child, "permission": "per_1dfd7541c0015QcrFxQOtvhQPa" }),
                 json!({ "event": "busy", "session": child, "pid": pid, "directory": "/Users/me/Code/app" }),
-                json!({ "event": "permission.asked", "session": child }),
+                json!({ "event": "permission.asked", "session": child, "permission": "per_1dfdb56b8001OABMUerpFmGyjA" }),
             ]
         );
     }
