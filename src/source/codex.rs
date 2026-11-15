@@ -1624,6 +1624,12 @@ mod tests {
     }
 
     #[test]
+    fn a_look_while_a_message_turn_runs_reads_the_stop_it_goes_back_to() {
+        let replay = replay("a_look_while_a_message_turn_runs_reads_the_stop_it_goes_back_to");
+        assert_eq!(phase(&replay), Phase::StoppedRead);
+    }
+
+    #[test]
     fn only_a_mark_taken_off_a_list_still_kept_is_a_look() {
         let list = |account: &str, host: &str, ids: &[&str]| {
             let ids = ids.iter().map(|id| id.to_string()).collect();

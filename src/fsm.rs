@@ -475,11 +475,17 @@ pub const TABLE: &[Rule] = &[
         on: ReadExpired,
         to: Go(Idle),
     },
-    // Reading settles a weak question, never a blocked one.
+    // Reading settles a weak question, never a blocked one. A look while a
+    // turn nobody typed runs reads the light it goes back to.
     Rule {
         from: &[Stopped],
         on: Looked,
         to: Go(StoppedRead),
+    },
+    Rule {
+        from: &[Unattended],
+        on: Looked,
+        to: Go(Unattended),
     },
     Rule {
         from: &[Asked],
@@ -585,12 +591,15 @@ impl Holds {
 }
 
 /// What a session that moves from `from`, holding `held` there, holds once
-/// in `to`, for a move back. A wait and a turn nobody typed hold the phase
-/// they were entered from; a wait entered from a turn nobody typed holds
-/// work, since the user it waits on has a hand in the turn from then on, so
-/// no held phase ever holds one of its own. Any other phase holds nothing.
-pub fn held(from: Phase, held: Option<Phase>, to: Phase) -> Option<Holds> {
+/// `on` takes it to `to`, for a move back. A wait and a turn nobody typed
+/// hold the phase they were entered from; a wait entered from a turn nobody
+/// typed holds work, since the user it waits on has a hand in the turn from
+/// then on, so no held phase ever holds one of its own. A look while a turn
+/// nobody typed runs reads the light it holds. Any other phase holds nothing.
+pub fn held(from: Phase, held: Option<Phase>, on: Signal, to: Phase) -> Option<Holds> {
+    let read = |held: Phase| step(held, Looked).map_or(held, |to| to.phase(held));
     match to {
+        Unattended if from == Unattended && on == Looked => held.map(read).map(Holds::Kept),
         Blocked | Unattended if to == from => held.map(Holds::Kept),
         Blocked if from == Unattended => Some(Holds::Left(Working)),
         Blocked | Unattended => Some(Holds::Left(from)),
@@ -881,7 +890,7 @@ mod tests {
         for from in [Idle, Asked, AskedRead, Stopped, StoppedRead, Failed] {
             assert_eq!(step(from, Woke), Some(Go(Unattended)), "{from:?}");
             assert_eq!(
-                held(from, None, Unattended),
+                held(from, None, Woke, Unattended),
                 Some(Holds::Left(from)),
                 "{from:?}"
             );
@@ -904,6 +913,18 @@ mod tests {
     }
 
     #[test]
+    fn a_look_while_a_turn_nobody_typed_runs_reads_the_light_it_goes_back_to() {
+        assert_eq!(step(Unattended, Looked), Some(Go(Unattended)));
+        let read = |found| held(Unattended, Some(found), Looked, Unattended);
+        assert_eq!(read(Stopped), Some(Holds::Kept(StoppedRead)));
+        assert_eq!(read(Asked), Some(Holds::Kept(AskedRead)));
+        for found in [Idle, StoppedRead, AskedRead, Failed] {
+            assert_eq!(read(found), Some(Holds::Kept(found)), "{found:?}");
+        }
+        assert!(!announces(Unattended, Looked, Unattended));
+    }
+
+    #[test]
     fn a_turn_nobody_typed_dismissed_while_it_runs_ends_dark() {
         assert_eq!(step(Unattended, Dismissed), Some(Go(Idle)));
         let quiet = told(&[TurnEnded, TurnEndedQuietly]);
@@ -920,7 +941,7 @@ mod tests {
     fn a_wait_in_a_turn_nobody_typed_makes_the_turn_the_users() {
         assert_eq!(step(Unattended, PermissionAsked), Some(Go(Blocked)));
         assert_eq!(
-            held(Unattended, Some(Stopped), Blocked),
+            held(Unattended, Some(Stopped), PermissionAsked, Blocked),
             Some(Holds::Left(Working))
         );
         assert_eq!(step(Blocked, Answered), Some(Go(Working)));
@@ -938,7 +959,7 @@ mod tests {
         for rule in TABLE {
             let Go(to) = rule.to else { continue };
             for &from in rule.from.iter().filter(|&&from| from != to) {
-                if let Some(kept) = held(from, None, to).map(Holds::phase) {
+                if let Some(kept) = held(from, None, rule.on, to).map(Holds::phase) {
                     assert!(!holds(kept), "{:?} from {from:?} holds {kept:?}", rule.on);
                 }
             }

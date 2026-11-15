@@ -172,9 +172,34 @@ impl Queue {
         let held = position.and_then(|index| self.sessions[index].held);
         let to = rule.to.phase(held.map_or(Phase::Idle, |held| held.phase));
         let announce = fsm::announces(from, rule.on, to);
-        // A row that holds the phase changes nothing.
+        // What it holds there, with the times a move back restores.
+        let kept = position.and_then(|index| {
+            let session = &self.sessions[index];
+            let holds = fsm::held(from, held.map(|held| held.phase), rule.on, to)?;
+            Some(match (holds, held) {
+                // A held light a look read was read now.
+                (Holds::Kept(phase), Some(held)) if phase != held.phase => Held {
+                    phase,
+                    entered: now,
+                    ..held
+                },
+                (Holds::Kept(_), Some(held)) => held,
+                (holds, _) => Held {
+                    phase: holds.phase(),
+                    since: session.since,
+                    entered: session.entered,
+                },
+            })
+        });
+        // A row that holds the phase changes nothing but what it holds.
         if to == from && !announce {
-            return Change::None;
+            return match position {
+                Some(index) if kept != held => {
+                    self.sessions[index].held = kept;
+                    Change::Saved
+                }
+                _ => Change::None,
+            };
         }
         let light = to.state() != from.state();
         let moved = (o.channel != Channel::File).then_some((o.channel, from));
@@ -198,15 +223,7 @@ impl Queue {
             }
             (Some(index), _) => {
                 let session = &mut self.sessions[index];
-                let kept = fsm::held(from, held.map(|held| held.phase), to);
-                session.held = kept.map(|holds| match (holds, held) {
-                    (Holds::Kept(phase), Some(held)) => Held { phase, ..held },
-                    (holds, _) => Held {
-                        phase: holds.phase(),
-                        since: session.since,
-                        entered: session.entered,
-                    },
-                });
+                session.held = kept;
                 match (rule.to, held) {
                     (To::Back, Some(back)) => {
                         session.since = back.since;
@@ -386,11 +403,13 @@ impl Queue {
                 if let Some(held) = session.held
                     && stands(held.phase)
                 {
-                    session.held = fsm::held(old.phase, None, Phase::Blocked).map(|holds| Held {
-                        phase: holds.phase(),
-                        since: old.since,
-                        entered: old.entered,
-                    });
+                    let wait = Signal::PermissionAsked;
+                    session.held =
+                        fsm::held(old.phase, None, wait, Phase::Blocked).map(|holds| Held {
+                            phase: holds.phase(),
+                            since: old.since,
+                            entered: old.entered,
+                        });
                 }
                 continue;
             }
@@ -720,6 +739,30 @@ mod tests {
         let due = queue.due(20 + 1000, keep(1000));
         apply_all(&mut queue, |_| due, 20 + 1000);
         assert_eq!(states(&queue), [("later", State::Stopped)]);
+    }
+
+    #[test]
+    fn a_look_while_a_turn_nobody_typed_runs_reads_the_light_it_goes_back_to() {
+        let quiet = |id: &str| {
+            let mut o = signal(id, TurnEnded, None);
+            o.event = Event::Signals([TurnEnded, TurnEndedQuietly].into());
+            o
+        };
+        let mut queue = Queue::default();
+        tell(&mut queue, "stop", &[TurnEnded], 10);
+        tell(&mut queue, "asks", &[TurnEndedAsking], 10);
+        for id in ["stop", "asks"] {
+            tell(&mut queue, id, &[Woke], 20);
+            assert_eq!(tell(&mut queue, id, &[Looked], 30), Change::Saved, "{id}");
+            assert_eq!(tell(&mut queue, id, &[Looked], 31), Change::None, "{id}");
+            assert_eq!(phase(&queue, id), Unattended);
+            assert_eq!(queue.apply(&quiet(id), 40), Change::Settle, "{id}");
+        }
+        assert_eq!(phase(&queue, "stop"), StoppedRead);
+        assert_eq!(phase(&queue, "asks"), AskedRead);
+        // Read when it was looked at, so it expires from then.
+        let due = queue.due(30 + 1000, keep(1000));
+        assert_eq!(due.len(), 2);
     }
 
     #[test]

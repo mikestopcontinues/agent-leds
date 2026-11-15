@@ -278,7 +278,8 @@ impl Told {
             return;
         };
         let to = rule.to.phase(self.held);
-        self.held = fsm::held(self.phase, Some(self.held), to).map_or(Phase::Idle, Holds::phase);
+        self.held =
+            fsm::held(self.phase, Some(self.held), rule.on, to).map_or(Phase::Idle, Holds::phase);
         self.phase = to;
         if matches!(rule.on, Signal::PermissionAsked | Signal::QuestionAsked) {
             self.wait = rule.on;
