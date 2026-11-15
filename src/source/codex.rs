@@ -1123,9 +1123,13 @@ impl Source for Codex {
         Harness::Codex
     }
 
-    /// `~/.codex`, for the locks and rollouts in its folders and the goals
-    /// database beside them.
     fn roots(&self) -> Vec<PathBuf> {
+        vec![self.locks_dir.clone(), self.sessions_dir.clone()]
+    }
+
+    /// `~/.codex` itself, for the goals database beside the locks and
+    /// rollouts, and none of the worktrees and builds Codex keeps under it.
+    fn shallow_roots(&self) -> Vec<PathBuf> {
         vec![self.dir.clone()]
     }
 

@@ -202,6 +202,11 @@ pub trait Source {
     /// The folders whose changes this source reads, recursively. Asked
     /// again after each hook and device check, for folders that appear later.
     fn roots(&self) -> Vec<PathBuf>;
+    /// The folders whose own files it reads changes of, and not those in
+    /// their subfolders, as `roots` are asked.
+    fn shallow_roots(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
     /// At daemon start: for each session its files show running, and each
     /// hook-bound session in `bound` that is still alive, a quiet Started
     /// and then the signals `Told::current` gives of where its files leave
@@ -412,11 +417,10 @@ impl Sources {
                         .iter()
                         .filter(|(canonical, _, _)| path.starts_with(canonical))
                         .max_by_key(|(canonical, _, _)| canonical.as_os_str().len());
+                    // The paths come sorted and once each.
                     if let Some((canonical, root, index)) = root {
-                        let path = root.join(path.strip_prefix(canonical).expect("a prefix"));
-                        if !routed[*index].contains(&path) {
-                            routed[*index].push(path);
-                        }
+                        routed[*index]
+                            .push(root.join(path.strip_prefix(canonical).expect("a prefix")));
                     }
                 }
                 let mut changed = Vec::new();
@@ -469,14 +473,20 @@ impl Sources {
     fn watch(&mut self) -> bool {
         let mut gained = false;
         for (index, source) in self.sources.iter().enumerate() {
-            for root in source.roots() {
+            let deep = source
+                .roots()
+                .into_iter()
+                .map(|root| (root, RecursiveMode::Recursive));
+            let shallow = source.shallow_roots().into_iter();
+            let roots = deep.chain(shallow.map(|root| (root, RecursiveMode::NonRecursive)));
+            for (root, mode) in roots {
                 if self.watched.iter().any(|(_, watched, _)| *watched == root) {
                     continue;
                 }
                 let Ok(canonical) = root.canonicalize() else {
                     continue;
                 };
-                if let Err(error) = self.watcher.watch(&canonical, RecursiveMode::Recursive) {
+                if let Err(error) = self.watcher.watch(&canonical, mode) {
                     eprintln!("agent-leds: watching {}: {error}", root.display());
                     continue;
                 }
@@ -512,9 +522,11 @@ mod tests {
         rescans: usize,
     }
 
-    /// A source of one folder that reads whatever it is told changed.
+    /// A source of one folder that reads whatever it is told changed, in
+    /// its subfolders too unless it is `shallow`.
     struct Folder {
         root: PathBuf,
+        shallow: bool,
         seen: Arc<Mutex<Seen>>,
         log: Option<Tail>,
         behind: bool,
@@ -526,7 +538,19 @@ mod tests {
         }
 
         fn roots(&self) -> Vec<PathBuf> {
-            vec![self.root.clone()]
+            if self.shallow {
+                Vec::new()
+            } else {
+                vec![self.root.clone()]
+            }
+        }
+
+        fn shallow_roots(&self) -> Vec<PathBuf> {
+            if self.shallow {
+                vec![self.root.clone()]
+            } else {
+                Vec::new()
+            }
         }
 
         fn seed(&mut self, _k: &dyn Kernel, _bound: &[(String, Liveness)]) -> Result<Seed> {
@@ -606,6 +630,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(Seen::default()));
         let source = Folder {
             root: root.clone(),
+            shallow: false,
             seen: seen.clone(),
             log: None,
             behind: false,
@@ -647,6 +672,36 @@ mod tests {
         assert!(until(&mut sources, &inputs, &seen, |seen| seen.lines == 200));
     }
 
+    /// A shallow root's own files are read, and nothing in its subfolders,
+    /// however busy, is handed to the source.
+    #[test]
+    fn a_shallow_root_reads_only_its_own_files() {
+        let folder = tempfile::tempdir().unwrap();
+        let root = folder.path().to_owned();
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        let source = Folder {
+            root: root.clone(),
+            shallow: true,
+            seen: seen.clone(),
+            log: None,
+            behind: false,
+        };
+        let (sender, inputs) = mpsc::channel();
+        let mut sources = Sources::start(vec![Box::new(source)], sender).unwrap();
+        let build = root.join("worktrees/app/target");
+        std::fs::create_dir_all(&build).unwrap();
+        for n in 0..50 {
+            std::fs::write(build.join(format!("{n}.o")), "x").unwrap();
+        }
+        let goals = root.join("goals_1.sqlite-wal");
+        std::fs::write(&goals, "wal").unwrap();
+        assert!(until(&mut sources, &inputs, &seen, |seen| {
+            seen.texts.contains_key(&goals)
+        }));
+        let seen = seen.lock().unwrap();
+        assert!(seen.paths.iter().all(|path| path.parent() == Some(&root)));
+    }
+
     #[test]
     fn a_root_that_appears_has_every_source_read_again() {
         let folder = tempfile::tempdir().unwrap();
@@ -654,6 +709,7 @@ mod tests {
         std::fs::create_dir(&early).unwrap();
         let folders = [early, late.clone()].map(|root| Folder {
             root,
+            shallow: false,
             seen: Arc::new(Mutex::new(Seen::default())),
             log: None,
             behind: false,
@@ -680,6 +736,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(Seen::default()));
         let source = Folder {
             root: folder.path().to_owned(),
+            shallow: false,
             seen: seen.clone(),
             log: None,
             behind: true,
