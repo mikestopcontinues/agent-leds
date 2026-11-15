@@ -77,7 +77,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### Answered
 
-- Claude Code, file, observed: the session file going from waiting to busy: while the turn is open, or after it closed, when a subagent it left is let go on (probe-claude cc1, cc2)
+- Claude Code, file, observed: the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt (probe-claude cc1, cc2)
 
 ### TurnEnded
 
