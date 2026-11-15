@@ -43,7 +43,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 | [Answered](#answered) | file | — | — | — | — | file+hook | — |
 | [TurnEnded](#turnended) | file | hook | hook | hook | hook* | file | hook |
 | [TurnEndedAsking](#turnendedasking) | file | hook | hook | — | hook* | file | hook |
-| [TurnFailed](#turnfailed) | file | — | hook* | hook* | hook* | file+hook | hook* |
+| [TurnFailed](#turnfailed) | file | — | hook* | hook* | hook* | file+hook* | hook* |
 | [Interrupted](#interrupted) | file | hook | hook | hook | — | file+hook | hook |
 | [Backgrounded](#backgrounded) | file | hook* | — | — | — | — | — |
 | [BackgroundDone](#backgrounddone) | file | — | — | — | — | — | — |
@@ -117,7 +117,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Cursor, hook, inferred: stop with status error; not reproduced in the probe (0.5.0 hooks, probe-cursor runs A–I)
 - Junie, hook, inferred: StopFailure (0.5.0 hooks; Junie was not installed for the probe)
 - OpenCode, file, observed: that message carrying an error, a MessageAbortedError included (probe-opencode T7–T9)
-- OpenCode, hook, observed: session.error, for the session itself, while it is busy, other than a ContextOverflowError (probe-opencode T1, T7, T8)
+- OpenCode, hook, inferred: session.error, for the session itself, while it is busy, other than a ContextOverflowError (OpenCode 1.19.5's SessionPrompt.run, which sets the session busy before getModel publishes session.error UnknownError; probe-opencode T11 (a user message and no reply))
 - Pi, hook, inferred: agent_settled with stop_reason error (0.5.0 extension, probe-pi rpc1, tui1)
 
 ### Interrupted

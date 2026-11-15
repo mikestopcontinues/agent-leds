@@ -53,8 +53,8 @@ const fn hook(signal: Signal, record: &'static str, cite: &'static str) -> Decla
     }
 }
 
-/// What OpenCode's database and our plugin tell, all of it seen in the
-/// probe's runs.
+/// What OpenCode's database and our plugin tell, all of it but the plugin's
+/// error seen in the probe's runs.
 pub const SIGNALS: &[Declared] = &[
     hook(
         Signal::Started,
@@ -106,11 +106,15 @@ pub const SIGNALS: &[Declared] = &[
         "that message carrying an error, a MessageAbortedError included",
         "probe-opencode T7–T9",
     ),
-    hook(
-        Signal::TurnFailed,
-        "session.error, for the session itself, while it is busy, other than a ContextOverflowError",
-        "probe-opencode T1, T7, T8",
-    ),
+    // No run of the probe caught the plugin's error for an unknown model.
+    Declared {
+        evidence: Evidence::Inferred,
+        ..hook(
+            Signal::TurnFailed,
+            "session.error, for the session itself, while it is busy, other than a ContextOverflowError",
+            "OpenCode 1.19.5's SessionPrompt.run, which sets the session busy before getModel publishes session.error UnknownError; probe-opencode T11 (a user message and no reply)",
+        )
+    },
     file(
         Signal::Interrupted,
         "that message's error a MessageAbortedError, or the message with neither finish nor error",
