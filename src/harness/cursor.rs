@@ -11,6 +11,9 @@ use crate::files;
 
 pub const FILE: &str = ".cursor/hooks.json";
 
+/// What an install writes to a hooks file that is not there, to add to.
+const CREATED: &str = "{ \"version\": 1 }\n";
+
 /// The hook events the daemon needs. A prompt given as an argument or a
 /// text-only turn writes nothing until the turn ends, and no file names
 /// the process a chat runs in, so the prompt's hook says both. An
@@ -27,7 +30,7 @@ fn is_ours(entry: &Value) -> bool {
 pub fn install(home: &Path, exe: &Path) -> Result<()> {
     let file = home.join(FILE);
     if !file.exists() {
-        files::replace(&file, "{ \"version\": 1 }\n")?;
+        files::replace(&file, CREATED)?;
     }
     let entry = json!({ "command": Harness::Cursor.command(exe), "timeout": 5 });
     edit_hooks(&file, |hooks| {
@@ -45,10 +48,21 @@ pub fn hooks(home: &Path) -> Result<Vec<(String, String)>> {
 }
 
 pub fn uninstall(home: &Path) -> Result<()> {
-    edit_hooks(&home.join(FILE), |hooks| {
-        unregister(hooks, is_ours);
+    let file = home.join(FILE);
+    let mut removed = false;
+    edit_hooks(&file, |hooks| {
+        removed = unregister(hooks, is_ours);
         Ok(())
-    })
+    })?;
+    // Nothing is left of a file the install created.
+    let left = files::read_optional(&file)?;
+    let created: Value = serde_json::from_str(CREATED)?;
+    if removed
+        && left.is_some_and(|text| serde_json::from_str::<Value>(&text).ok() == Some(created))
+    {
+        files::remove(&file)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -129,5 +143,18 @@ mod tests {
         Harness::Cursor
             .check(&home, Path::new("/opt/homebrew/bin/agent-leds"))
             .unwrap();
+    }
+
+    #[test]
+    fn uninstalling_removes_the_file_an_install_created() {
+        let home = Home::new();
+        fs::create_dir(home.join(".cursor")).unwrap();
+        install(&home, Path::new("/bin/agent-leds")).unwrap();
+        uninstall(&home).unwrap();
+        assert!(!home.join(FILE).exists());
+        // One the user made is theirs, though it holds no more.
+        home.write(FILE, CREATED);
+        uninstall(&home).unwrap();
+        assert_eq!(fs::read_to_string(home.join(FILE)).unwrap(), CREATED);
     }
 }

@@ -456,16 +456,19 @@ fn register(
 }
 
 /// Removes the entries an install added to a `hooks` object, and the events
-/// that removing them left with none.
-fn unregister(hooks: &mut Map<String, Value>, ours: impl Fn(&Value) -> bool) {
+/// that removing them left with none, and says whether there were any.
+fn unregister(hooks: &mut Map<String, Value>, ours: impl Fn(&Value) -> bool) -> bool {
+    let mut removed = false;
     hooks.retain(|_, entries| {
         let Some(entries) = entries.as_array_mut() else {
             return true;
         };
         let before = entries.len();
         entries.retain(|entry| !ours(entry));
+        removed |= entries.len() < before;
         entries.len() == before || !entries.is_empty()
     });
+    removed
 }
 
 /// Whether a group of handlers holds one an install of `harness` added.

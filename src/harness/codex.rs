@@ -39,10 +39,16 @@ pub fn install(home: &Path, exe: &Path) -> Result<()> {
 
 pub fn uninstall(home: &Path) -> Result<()> {
     let config = home.join(CONFIG);
+    let mut removed = false;
     edit(&config, |document| {
-        unregister(document, &config.to_string_lossy(), &[]);
+        removed = unregister(document, &config.to_string_lossy(), &[]);
         Ok(())
-    })
+    })?;
+    // Nothing is left of a config the install created.
+    if removed && read(&config)?.to_string().trim().is_empty() {
+        files::remove(&config)?;
+    }
+    Ok(())
 }
 
 /// Rewrites the config through `edit`, leaving every line `edit` does not
@@ -188,13 +194,15 @@ fn trust(config: &mut DocumentMut, hashes: &[(String, String)]) -> Result<()> {
 
 /// Removes the groups an install added under every event but those in
 /// `keep`, the events left with no group, and what was recorded about
-/// trusting them. Codex keys that record by a group's place among its
-/// event's groups, so the groups after a removed one take their records
-/// with them as they move up.
-fn unregister(config: &mut DocumentMut, path: &str, keep: &[&str]) {
+/// trusting them, and says whether there were any. Codex keys that record
+/// by a group's place among its event's groups, so the groups after a
+/// removed one take their records with them as they move up. A table left
+/// empty goes only if it has no header of its own, and so prints nothing.
+fn unregister(config: &mut DocumentMut, path: &str, keep: &[&str]) -> bool {
     let Some(hooks) = config.get_mut("hooks").and_then(Item::as_table_mut) else {
-        return;
+        return false;
     };
+    let mut removed = false;
     let events: Vec<String> = hooks
         .iter()
         .map(|(event, _)| event.to_owned())
@@ -206,6 +214,7 @@ fn unregister(config: &mut DocumentMut, path: &str, keep: &[&str]) {
             continue;
         };
         let ours: Vec<bool> = groups.iter().map(is_ours).collect();
+        removed |= ours.contains(&true);
         groups.retain(|group| !is_ours(group));
         if groups.is_empty() {
             hooks.remove(event);
@@ -219,9 +228,18 @@ fn unregister(config: &mut DocumentMut, path: &str, keep: &[&str]) {
     if let Some(state) = hooks.get_mut("state").and_then(Item::as_table_mut) {
         move_records(state, path, &moves);
     }
-    if hooks.is_empty() {
+    let unheaded = |table: &Table| table.is_empty() && table.is_implicit();
+    if hooks
+        .get("state")
+        .and_then(Item::as_table)
+        .is_some_and(unheaded)
+    {
+        hooks.remove("state");
+    }
+    if unheaded(hooks) {
         config.remove("hooks");
     }
+    removed
 }
 
 /// Moves each group's trust records from its old place to its new one, and
@@ -628,5 +646,37 @@ trusted_hash = "sha256:5151"
         let events: Vec<&str> = listed.iter().map(|(event, _)| event.as_str()).collect();
         assert_eq!(events, HOOKS);
         assert!(listed.iter().all(|(_, hook)| hook == command));
+    }
+
+    #[test]
+    fn uninstalling_removes_the_config_an_install_created() {
+        let home = Home::new();
+        fs::create_dir(home.join(".codex")).unwrap();
+        let config = home.join(CONFIG);
+        let path = config.to_string_lossy().into_owned();
+        let hashes = [(
+            format!("{path}:permission_request:0:0"),
+            "sha256:0d1f".to_owned(),
+        )];
+        edit(&config, |config| {
+            register(config, &path, "/bin/agent-leds hook codex")
+        })
+        .unwrap();
+        edit(&config, |config| trust(config, &hashes)).unwrap();
+        super::uninstall(&home).unwrap();
+        assert!(!home.join(CONFIG).exists());
+    }
+
+    #[test]
+    fn an_empty_hooks_table_of_the_users_is_left_as_it_was() {
+        let home = Home::new();
+        let headed = "model = \"gpt-6.1-sol\"\n\n[hooks]\n";
+        home.write(CONFIG, headed);
+        let config = home.join(CONFIG);
+        uninstall(&config);
+        assert_eq!(fs::read_to_string(&config).unwrap(), headed);
+        install(&config, 0);
+        uninstall(&config);
+        assert_eq!(fs::read_to_string(&config).unwrap(), headed);
     }
 }
