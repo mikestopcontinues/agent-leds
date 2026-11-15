@@ -228,9 +228,10 @@ impl Queue {
         items
     }
 
-    /// When the oldest session that has not been read since its turn ended stopped.
+    /// When the oldest session the daemon can tell is read, and that has
+    /// not been read since its turn ended, stopped.
     pub fn unread_since(&self) -> Option<u64> {
-        let unread = self.sessions.iter().filter(|s| s.phase.unread());
+        let unread = self.sessions.iter().filter(|s| readable(s));
         unread.map(|s| s.since).min()
     }
 
@@ -243,10 +244,9 @@ impl Queue {
     /// its state, given when each was last looked at, of the harnesses whose
     /// reading the daemon tells: Claude Code's, in the desktop app.
     pub fn looked(&self, at: &HashMap<String, u64>) -> Vec<Observation> {
-        let read = |s: &&Session| harness::declares(s.key.harness, Signal::Looked, Channel::Daemon);
         self.sessions
             .iter()
-            .filter(|s| read(s) && s.phase.unread())
+            .filter(|s| readable(s))
             .filter(|s| at.get(&s.key.id).is_some_and(|&at| at >= s.since))
             .map(|s| told(s, Signal::Looked))
             .collect()
@@ -363,6 +363,13 @@ impl Queue {
         }
         Queue { sessions }
     }
+}
+
+/// Whether a session is unread, and of a harness whose reading the daemon
+/// tells.
+fn readable(session: &Session) -> bool {
+    session.phase.unread()
+        && harness::declares(session.key.harness, Signal::Looked, Channel::Daemon)
 }
 
 /// A signal the daemon tells about a session.
@@ -943,6 +950,21 @@ mod tests {
         let mut restored = Queue::restore(saved, seeded(&[TurnEnded, PermissionAsked], "t1"));
         restored.apply(&signal("a", Released, Some("t1")), 200);
         assert_eq!(phase(&restored, "a"), StoppedRead);
+    }
+
+    /// Only a session the daemon can tell is read keeps it looking.
+    #[test]
+    fn only_a_session_the_daemon_can_tell_is_read_keeps_it_looking() {
+        let mut queue = one(&[TurnEnded], false, false);
+        let mut codex = started("b", "/Users/me/app", process(2));
+        codex.key.harness = Harness::Codex;
+        let mut ended = signal("b", TurnEnded, Some("t1"));
+        ended.key.harness = Harness::Codex;
+        queue.apply(&codex, 1);
+        queue.apply(&ended, 1);
+        assert_eq!(queue.unread_since(), Some(2));
+        apply_all(&mut queue, |queue| queue.dismissed(Some("a")), 3);
+        assert_eq!(queue.unread_since(), None);
     }
 
     #[test]
