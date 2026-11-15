@@ -145,6 +145,9 @@ impl Source for Interim {
     fn behind(&self) -> bool {
         false
     }
+    fn due(&self) -> Option<u64> {
+        None
+    }
 }
 
 #[cfg(test)]

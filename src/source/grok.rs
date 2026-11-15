@@ -60,7 +60,7 @@ pub const SIGNALS: &[Declared] = &[
     file(
         Signal::PermissionAsked,
         Evidence::Observed,
-        "events.jsonl phase_changed to permission_prompt for a tool other than ask_user_question, still unresolved where the read ends; every tool writes one, and an approval Grok gives itself resolves in the same millisecond",
+        "events.jsonl permission_requested for a tool other than ask_user_question, still unresolved 250 ms after it was written; every tool writes one, and an approval Grok gives itself resolves within a few milliseconds",
         "probe-grok permission_pending, runs a, h; grok5",
     ),
     file(
@@ -129,6 +129,11 @@ const USER_CATEGORIES: [&str; 2] = ["permission_rejected", "permission_cancelled
 
 const QUESTION_TOOL: &str = "ask_user_question";
 
+/// How long a permission prompt stays unresolved before it counts as a wait
+/// on the user, in milliseconds. Every tool asks, and Grok resolves the ones
+/// it approves itself within 7 ms of the prompt; the user takes seconds.
+const PERMISSION_HOLD_MS: u64 = 250;
+
 /// A row of `active_sessions.json`.
 #[derive(Deserialize)]
 struct Row {
@@ -147,7 +152,6 @@ struct Record {
     #[serde(rename = "type")]
     kind: String,
     turn_number: Option<u64>,
-    phase: Option<String>,
     tool_name: Option<String>,
     outcome: Option<String>,
     cancellation_category: Option<String>,
@@ -169,6 +173,11 @@ impl Record {
     fn before(&self, start: i64) -> bool {
         let written = self.ts.as_deref().and_then(liveness::iso_second);
         written.is_some_and(|written| written < start)
+    }
+
+    /// When it was written, in Unix milliseconds.
+    fn written_ms(&self) -> Option<u64> {
+        self.ts.as_deref().and_then(liveness::iso_ms)
     }
 
     /// Whether the user cut the turn this record ends short.
@@ -258,8 +267,9 @@ struct Reader {
 #[derive(Clone, Copy, PartialEq)]
 enum Permission {
     None,
-    /// Opened, and not told yet: told if the read ends with it still open.
-    Open,
+    /// Requested at this Unix millisecond, and not told yet: told once it
+    /// is still unresolved when its hold runs out.
+    Open(u64),
     Told,
 }
 
@@ -276,8 +286,6 @@ struct Session {
     /// The turn that started and has not ended.
     open: Option<u64>,
     turn: Option<TurnKey>,
-    /// The tool the turn last started, whose approval a permission prompt asks.
-    tool: Option<String>,
     /// Whether an ask_user_question waits on the user.
     question: bool,
     permission: Permission,
@@ -401,7 +409,6 @@ impl Grok {
                 updates: Reader::default(),
                 open: None,
                 turn: None,
-                tool: None,
                 question: false,
                 permission: Permission::None,
                 failed: None,
@@ -412,8 +419,9 @@ impl Grok {
             },
         );
         // The updates first, so a turn end in the events has its text.
-        self.read(&id, Log::Updates, out);
-        self.read(&id, Log::Events, out);
+        let now = k.now_ms();
+        self.read(&id, Log::Updates, now, out);
+        self.read(&id, Log::Events, now, out);
     }
 
     /// The session's folder, found by its name under any cwd folder: that
@@ -443,7 +451,7 @@ impl Grok {
     /// Reads what was appended to one of a session's logs. A log read for
     /// the first time is read back to where the session's last turn began,
     /// counting only what its own process wrote.
-    fn read(&mut self, id: &str, log: Log, out: &mut Vec<Observation>) {
+    fn read(&mut self, id: &str, log: Log, now: u64, out: &mut Vec<Observation>) {
         let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
@@ -489,17 +497,17 @@ impl Grok {
         };
         for line in lines {
             match log {
-                Log::Events => self.event(id, &line, out),
+                Log::Events => self.event(id, &line, now, out),
                 Log::Updates => self.update(id, &line, out),
             }
         }
         if log == Log::Events {
-            self.settle(id, out);
+            self.settle(id, now, out);
         }
     }
 
     /// What one events record says.
-    fn event(&mut self, id: &str, line: &[u8], out: &mut Vec<Observation>) {
+    fn event(&mut self, id: &str, line: &[u8], now: u64, out: &mut Vec<Observation>) {
         let Some(record) = Record::read(line) else {
             return;
         };
@@ -512,7 +520,6 @@ impl Grok {
             "turn_started" => {
                 session.open = record.turn_number;
                 session.turn = record.turn_number.map(|n| TurnKey(n.to_string()));
-                session.tool = None;
                 session.question = false;
                 session.permission = Permission::None;
                 session.failed = None;
@@ -522,12 +529,10 @@ impl Grok {
             _ if session.open.is_none() => {}
             // The question tool asks for its own approval, which Grok gives:
             // that prompt is the question's, not a wait of its own.
-            "phase_changed"
-                if record.phase.as_deref() == Some("permission_prompt")
-                    && session.tool.as_deref() != Some(QUESTION_TOOL)
-                    && session.permission == Permission::None =>
+            "permission_requested"
+                if tool != Some(QUESTION_TOOL) && session.permission == Permission::None =>
             {
-                session.permission = Permission::Open;
+                session.permission = Permission::Open(record.written_ms().unwrap_or(now));
             }
             "permission_resolved" => {
                 if session.permission == Permission::Told {
@@ -535,27 +540,24 @@ impl Grok {
                 }
                 session.permission = Permission::None;
             }
-            "tool_started" => {
-                session.tool = record.tool_name.clone();
-                if tool == Some(QUESTION_TOOL) {
-                    session.question = true;
-                    tell(id, session, Channel::File, [Signal::QuestionAsked], out);
-                }
+            "tool_started" if tool == Some(QUESTION_TOOL) => {
+                session.question = true;
+                tell(id, session, Channel::File, [Signal::QuestionAsked], out);
             }
             "tool_completed" if tool == Some(QUESTION_TOOL) && session.question => {
                 session.question = false;
                 tell(id, session, Channel::File, [Signal::Answered], out);
             }
-            "turn_ended" => self.end(id, &record, out),
+            "turn_ended" => self.end(id, &record, now, out),
             _ => {}
         }
     }
 
     /// The end of the open turn: the updates are read to their end first,
     /// for the turn's final text and the subagents it leaves running.
-    fn end(&mut self, id: &str, record: &Record, out: &mut Vec<Observation>) {
+    fn end(&mut self, id: &str, record: &Record, now: u64, out: &mut Vec<Observation>) {
         loop {
-            self.read(id, Log::Updates, out);
+            self.read(id, Log::Updates, now, out);
             if !self.sessions[id].updates.behind {
                 break;
             }
@@ -586,11 +588,13 @@ impl Grok {
     }
 
     /// Tells a permission prompt still open where a read of the events
-    /// ends. One Grok approves by itself resolves in the same millisecond,
-    /// so it is read with its resolution and never told.
-    fn settle(&mut self, id: &str, out: &mut Vec<Observation>) {
+    /// ends, once its hold has run out at `now`. One Grok approves by itself
+    /// resolves within the hold, so it is never told.
+    fn settle(&mut self, id: &str, now: u64, out: &mut Vec<Observation>) {
         let session = self.sessions.get_mut(id).expect("tracked");
-        if session.permission == Permission::Open {
+        if let Permission::Open(at) = session.permission
+            && now >= at.saturating_add(PERMISSION_HOLD_MS)
+        {
             session.permission = Permission::Told;
             tell(id, session, Channel::File, [Signal::PermissionAsked], out);
         }
@@ -727,7 +731,7 @@ impl Source for Grok {
             if let Some(dir) = found {
                 self.sessions.get_mut(&id).expect("tracked").dir = Some(dir);
             }
-            self.read(&id, log, &mut out);
+            self.read(&id, log, k.now_ms(), &mut out);
         }
         for id in gone {
             self.sessions.remove(&id);
@@ -765,6 +769,13 @@ impl Source for Grok {
     fn behind(&self) -> bool {
         let behind = |session: &Session| session.events.behind || session.updates.behind;
         self.sessions.values().any(behind)
+    }
+    fn due(&self) -> Option<u64> {
+        let open = |session: &Session| match session.permission {
+            Permission::Open(at) => Some(at.saturating_add(PERMISSION_HOLD_MS)),
+            _ => None,
+        };
+        self.sessions.values().filter_map(open).min()
     }
 }
 

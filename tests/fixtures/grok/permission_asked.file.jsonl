@@ -13,10 +13,14 @@
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dc0d-63f4-7eb0-95d3-175af42f88aa/events.jsonl","line":{"ts":"2026-11-14T21:53:50.047Z","type":"phase_changed","phase":"tool_execution"}}
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dc0d-63f4-7eb0-95d3-175af42f88aa/events.jsonl","line":{"ts":"2026-11-14T21:53:50.048Z","type":"tool_started","tool_name":"run_terminal_command"}}
 {"expect":[]}
+{"now":"2026-11-14T21:53:50.144Z"}
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dc0d-63f4-7eb0-95d3-175af42f88aa/events.jsonl","line":{"ts":"2026-11-14T21:53:50.144Z","type":"phase_changed","phase":"permission_prompt"}}
-{"expect":[["permission_asked","file"]]}
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dc0d-63f4-7eb0-95d3-175af42f88aa/events.jsonl","line":{"ts":"2026-11-14T21:53:50.145Z","type":"permission_requested","tool_name":"run_terminal_command"}}
 {"expect":[]}
+{"now":"2026-11-14T21:53:50.394Z"}
+{"expect":[]}
+{"now":"2026-11-14T21:53:50.395Z"}
+{"expect":[["permission_asked","file"]]}
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dc0d-63f4-7eb0-95d3-175af42f88aa/events.jsonl","line":{"ts":"2026-11-14T21:54:00.882Z","type":"permission_resolved","tool_name":"run_terminal_command","decision":"cancelled","wait_ms":10736}}
 {"expect":[["answered","file"]]}
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dc0d-63f4-7eb0-95d3-175af42f88aa/events.jsonl","line":{"ts":"2026-11-14T21:54:00.882Z","type":"phase_changed","phase":"tool_execution"}}

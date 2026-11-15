@@ -73,7 +73,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 - Claude Code, file, observed: the session file going to status waiting, for anything but input needed; or a prompt read while the session file says so (probe-claude cc1, cc4, cc10)
 - Codex, hook, observed: PermissionRequest (0.5.0 hooks, probe-codex runA)
-- Grok, file, observed: events.jsonl phase_changed to permission_prompt for a tool other than ask_user_question, still unresolved where the read ends; every tool writes one, and an approval Grok gives itself resolves in the same millisecond (probe-grok permission_pending, runs a, h; grok5)
+- Grok, file, observed: events.jsonl permission_requested for a tool other than ask_user_question, still unresolved 250 ms after it was written; every tool writes one, and an approval Grok gives itself resolves within a few milliseconds (probe-grok permission_pending, runs a, h; grok5)
 - OpenCode, hook, observed: permission.asked (0.5.0 plugin, probe-opencode T2–T17)
 
 ### QuestionAsked

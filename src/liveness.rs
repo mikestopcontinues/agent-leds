@@ -9,6 +9,7 @@ use std::io;
 use std::mem;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -38,7 +39,8 @@ pub enum StartCheck {
     NotAfterMs(u64),
 }
 
-/// What liveness asks of the operating system, so tests can stand in for it.
+/// What liveness and the sources ask of the operating system, so tests can
+/// stand in for it.
 pub trait Kernel {
     /// When a running process started, in Unix microseconds, or None if no
     /// process has the pid.
@@ -46,6 +48,8 @@ pub trait Kernel {
     /// Whether another process holds a lock on the file. Err(NotFound) if
     /// the file is gone.
     fn locked(&self, path: &Path) -> io::Result<bool>;
+    /// The wall clock, in Unix milliseconds.
+    fn now_ms(&self) -> u64;
 }
 
 /// The operating system itself.
@@ -71,6 +75,12 @@ impl Kernel for System {
             return Err(io::Error::last_os_error());
         }
         Ok(lock.l_type != libc::F_UNLCK as libc::c_short)
+    }
+
+    fn now_ms(&self) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis() as u64)
     }
 }
 
@@ -101,6 +111,20 @@ pub fn lstart(text: &str) -> Option<i64> {
 /// beside a process's lstart.
 pub fn iso_second(text: &str) -> Option<i64> {
     utc(text, c"%Y-%m-%dT%H:%M:%S", true)
+}
+
+/// The Unix millisecond of an ISO 8601 UTC time such as
+/// "2026-11-14T21:56:09.103Z", as Grok stamps its events.
+pub fn iso_ms(text: &str) -> Option<u64> {
+    let second = u64::try_from(iso_second(text)?).ok()?;
+    let fraction = text.split_once('.').map_or("", |(_, fraction)| fraction);
+    let digits: String = fraction
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .take(3)
+        .collect();
+    let ms = format!("{digits:0<3}").parse::<u64>().ok()?;
+    Some(second * 1000 + ms)
 }
 
 /// The Unix second `text` gives in `format`, read as UTC, with whatever
@@ -183,7 +207,6 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
     use std::process::{Command, Stdio};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn process(pid: i32, start: StartCheck) -> Liveness {
         Liveness::Process { pid, start }
@@ -274,6 +297,21 @@ mod tests {
         assert_eq!(iso_second("2026-11-01T09:05:03Z"), Some(1_793_523_903));
         assert_eq!(iso_second("Sat Nov 14 21:55:57 2026"), None);
         assert_eq!(iso_second(""), None);
+    }
+
+    #[test]
+    fn a_record_s_time_reads_to_the_millisecond() {
+        assert_eq!(
+            iso_ms("2026-11-14T21:55:57.103Z"),
+            Some(iso_second("2026-11-14T21:55:57Z").unwrap() as u64 * 1000 + 103)
+        );
+        assert_eq!(iso_ms("2026-11-01T09:05:03Z"), Some(1_793_523_903_000));
+        assert_eq!(iso_ms("2026-11-01T09:05:03.5Z"), Some(1_793_523_903_500));
+        assert_eq!(
+            iso_ms("2026-11-01T09:05:03.123456Z"),
+            Some(1_793_523_903_123)
+        );
+        assert_eq!(iso_ms(""), None);
     }
 
     #[test]
