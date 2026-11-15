@@ -170,6 +170,10 @@ struct Payload {
     pid: Option<i32>,
     /// The folder OpenCode was started in, at `busy`.
     directory: Option<String>,
+    /// Set on 2.x's `busy`, a run's, whose end its rows say; 1.x's is a
+    /// turn's, whose prompt may not be written yet.
+    #[serde(default)]
+    run: bool,
     /// The name of the error, at `session.error`, which the plugin sends
     /// only for an error that ends the run.
     error: Option<String>,
@@ -1170,9 +1174,11 @@ impl Source for OpenCode {
                 // 2.x writes a run's start before the plugin hears of it, so
                 // a run that failed at once may have ended by now: as read
                 // already, or, for a session not followed yet, told here.
-                // 1.x's busy can come before the turn's prompt is written.
+                // 1.x's busy can come before the turn's prompt is written,
+                // also on a session 2.x ran last.
                 let level = self.sessions[&id].level.clone();
                 if let Level::Ended { turn, .. } = &level
+                    && payload.run
                     && self.schema(&id) == Some(Schema::V2)
                 {
                     if !followed {
@@ -1498,6 +1504,21 @@ mod tests {
             .filter(|(o, _)| o.event.signals().contains(&Signal::TurnEnded))
             .count();
         assert_eq!(ends, 2);
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    /// A 1.x busy that comes before its prompt is written, on a session 2.x
+    /// ran last, starts a turn and never tells 2.x's old end again.
+    #[test]
+    fn a_1x_busy_on_a_session_2x_ran_last_starts_its_turn() {
+        let replay = replay("a_1x_busy_on_a_session_2x_ran_last_starts_its_turn");
+        let ends = replay
+            .yielded
+            .iter()
+            .filter(|(o, _)| o.event.signals().contains(&Signal::TurnEnded))
+            .count();
+        // 1.x's first turn, 2.x's run and this turn, each once.
+        assert_eq!(ends, 3);
         assert_eq!(phase(&replay), Phase::Stopped);
     }
 

@@ -17,7 +17,7 @@ const send = (payload) => {
   } catch {}
 };
 
-const busy = (session, directory) => send({ event: "busy", session, pid: process.pid, directory: directory ?? "" });
+const busy = (session, directory) => ({ event: "busy", session, pid: process.pid, directory: directory ?? "" });
 
 // A request asked names itself by `id`, and a reply names it by `requestID`.
 const permission = (type, session, data) =>
@@ -36,7 +36,7 @@ const server = async ({ directory }) => {
           if (p.status?.type === "idle") running.delete(p.sessionID);
           else if (p.status?.type === "busy" && !running.has(p.sessionID)) {
             running.add(p.sessionID);
-            busy(p.sessionID, directory);
+            send(busy(p.sessionID, directory));
           }
           return;
         case "permission.asked":
@@ -72,7 +72,8 @@ const setup = async (api) => {
       if (!session) continue;
       const first = !told.has(session) && event.type !== "permission.replied";
       if (first) told.add(session);
-      if (event.type === "session.execution.started" || first) busy(session, directory);
+      // A run of 2.x's, which its rows say the end of.
+      if (event.type === "session.execution.started" || first) send({ ...busy(session, directory), run: true });
       if (event.type.startsWith("permission.")) permission(event.type, session, event.data);
     }
   })().catch(() => {});
