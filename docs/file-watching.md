@@ -48,6 +48,7 @@ What each harness's files record was established with real sessions on 2026-11-1
 
 These need a real session to settle, and each would change a declared signal:
 
-- Whether a permission prompt in the Claude desktop app sets the session file's `waiting` status, as the CLI's does. If not, Claude Code needs a `PermissionRequest` hook.
 - Junie's whole file format, which needs Junie installed.
 - Whether turns that retry after a failed request should show as something other than working.
+
+Whether a permission prompt in the Claude desktop app sets the session file's `waiting` status, as the CLI's does, is settled as far as a run without the app can settle it: the stream-json permission prompt the app answers, recorded from `claude -p` with the app's entrypoint, sets it (`tests/fixtures/claude/a_desktop_permission_prompt_shows_a_question.jsonl`, marked inferred), so Claude Code keeps no hook.
