@@ -567,16 +567,33 @@ pub fn announces(from: Phase, on: Signal, to: Phase) -> bool {
         && (to != from || matches!(on, TurnEnded | TurnEndedAsking))
 }
 
+/// What a session holds once a move takes it to a phase that holds one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Holds {
+    /// The phase it held before the move.
+    Kept(Phase),
+    /// The phase the move left, or work.
+    Left(Phase),
+}
+
+impl Holds {
+    pub fn phase(self) -> Phase {
+        match self {
+            Holds::Kept(phase) | Holds::Left(phase) => phase,
+        }
+    }
+}
+
 /// What a session that moves from `from`, holding `held` there, holds once
 /// in `to`, for a move back. A wait and a turn nobody typed hold the phase
 /// they were entered from; a wait entered from a turn nobody typed holds
 /// work, since the user it waits on has a hand in the turn from then on, so
 /// no held phase ever holds one of its own. Any other phase holds nothing.
-pub fn held(from: Phase, held: Option<Phase>, to: Phase) -> Option<Phase> {
+pub fn held(from: Phase, held: Option<Phase>, to: Phase) -> Option<Holds> {
     match to {
-        Blocked | Unattended if to == from => held,
-        Blocked if from == Unattended => Some(Working),
-        Blocked | Unattended => Some(from),
+        Blocked | Unattended if to == from => held.map(Holds::Kept),
+        Blocked if from == Unattended => Some(Holds::Left(Working)),
+        Blocked | Unattended => Some(Holds::Left(from)),
         _ => None,
     }
 }
@@ -863,7 +880,11 @@ mod tests {
         };
         for from in [Idle, Asked, AskedRead, Stopped, StoppedRead, Failed] {
             assert_eq!(step(from, Woke), Some(Go(Unattended)), "{from:?}");
-            assert_eq!(held(from, None, Unattended), Some(from), "{from:?}");
+            assert_eq!(
+                held(from, None, Unattended),
+                Some(Holds::Left(from)),
+                "{from:?}"
+            );
             let quiet = &[TurnEnded, TurnEndedQuietly];
             assert_eq!(to(Unattended, from, quiet), Some(from), "{from:?}");
             assert!(!announces(Unattended, TurnEndedQuietly, from), "{from:?}");
@@ -898,7 +919,10 @@ mod tests {
     #[test]
     fn a_wait_in_a_turn_nobody_typed_makes_the_turn_the_users() {
         assert_eq!(step(Unattended, PermissionAsked), Some(Go(Blocked)));
-        assert_eq!(held(Unattended, Some(Stopped), Blocked), Some(Working));
+        assert_eq!(
+            held(Unattended, Some(Stopped), Blocked),
+            Some(Holds::Left(Working))
+        );
         assert_eq!(step(Blocked, Answered), Some(Go(Working)));
         assert_eq!(step(Working, TurnEndedQuietly), None);
         // A turn nobody typed that starts over a wait, or over work going
@@ -914,7 +938,7 @@ mod tests {
         for rule in TABLE {
             let Go(to) = rule.to else { continue };
             for &from in rule.from.iter().filter(|&&from| from != to) {
-                if let Some(kept) = held(from, None, to) {
+                if let Some(kept) = held(from, None, to).map(Holds::phase) {
                     assert!(!holds(kept), "{:?} from {from:?} holds {kept:?}", rule.on);
                 }
             }

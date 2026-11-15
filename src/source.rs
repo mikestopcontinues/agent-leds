@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::daemon::Input;
-use crate::fsm::{self, Channel, Phase, Signal};
+use crate::fsm::{self, Channel, Holds, Phase, Signal};
 use crate::harness::{self, Harness};
 use crate::liveness::{Kernel, Liveness, Proc, System};
 use crate::queue::{Key, TurnKey};
@@ -278,7 +278,7 @@ impl Told {
             return;
         };
         let to = rule.to.phase(self.held);
-        self.held = fsm::held(self.phase, Some(self.held), to).unwrap_or(Phase::Idle);
+        self.held = fsm::held(self.phase, Some(self.held), to).map_or(Phase::Idle, Holds::phase);
         self.phase = to;
         if matches!(rule.on, Signal::PermissionAsked | Signal::QuestionAsked) {
             self.wait = rule.on;

@@ -48,6 +48,8 @@ The lights have to mean something, so every one of them has a way out:
 | Error | At the next prompt. |
 | Any | When the session ends, or the process its harness names does, which the daemon checks every few seconds; at `agent-leds dismiss`; or after `abandon_days` without a word from the session. |
 
+A light that a released wait or a quiet end goes back to keeps its place in the queue, and a read one the time it was read, so `keep_read_minutes` runs from the look however often turns nobody typed cover it.
+
 A turn that ends again in a session that had already stopped counts as new: the light is unread again and the change is announced.
 
 The daemon applies everything one read finds before it shows anything, and announces only a state its session still holds after all of it. A turn that ends while a prompt you queued starts the next one in the same read goes on working without a snake.
