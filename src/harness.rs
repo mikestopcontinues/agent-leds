@@ -223,10 +223,11 @@ impl Harness {
         Ok(())
     }
 
-    /// What `agent-leds doctor` says of a harness whose hooks are right.
+    /// What `agent-leds doctor` says of a harness whose hooks are right,
+    /// after what its files show.
     pub fn registered(self) -> &'static str {
         match self {
-            Harness::Claude | Harness::Junie => "read from its own files, with no hooks",
+            Harness::Claude | Harness::Junie => "no hooks",
             Harness::OpenCode | Harness::Pi => "plugin installed",
             _ => "hooks registered",
         }

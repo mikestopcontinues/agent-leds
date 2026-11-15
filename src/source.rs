@@ -28,7 +28,7 @@ use serde_json::Value;
 
 use crate::daemon::Input;
 use crate::fsm::{self, Channel, Phase, Signal};
-use crate::harness::Harness;
+use crate::harness::{self, Harness};
 use crate::liveness::{Kernel, Liveness, Proc, System};
 use crate::queue::{Key, TurnKey};
 
@@ -63,6 +63,20 @@ impl Observation {
             turn,
             quiet: false,
         }
+    }
+
+    /// The signals in it that its harness does not declare through its
+    /// channel. The daemon's own are never declared, and never undeclared.
+    pub fn undeclared(&self) -> Vec<Signal> {
+        if self.channel == Channel::Daemon {
+            return Vec::new();
+        }
+        let harness = self.key.harness;
+        self.event
+            .signals()
+            .into_iter()
+            .filter(|&signal| !harness::declares(harness, signal, self.channel))
+            .collect()
     }
 }
 
@@ -199,6 +213,22 @@ pub fn all(home: &Path, junie: &Path) -> Vec<Box<dyn Source>> {
     ]
 }
 
+/// Seeds one source as the daemon does at start, handing it the hook-bound
+/// sessions in `bound` that are its harness's.
+pub fn seed(
+    source: &mut dyn Source,
+    k: &dyn Kernel,
+    bound: &[(Key, Liveness)],
+) -> Result<Vec<Observation>> {
+    let harness = source.harness();
+    let bound: Vec<(String, Liveness)> = bound
+        .iter()
+        .filter(|(key, _)| key.harness == harness)
+        .map(|(key, liveness)| (key.id.clone(), liveness.clone()))
+        .collect();
+    source.seed(k, &bound)
+}
+
 /// What the daemon asks the sources to read.
 pub enum Read<'a> {
     /// Daemon start, with the hook-bound sessions saved in the queue.
@@ -254,15 +284,11 @@ impl Sources {
             Read::Seed(bound) => {
                 let mut seeded = Vec::new();
                 for source in &mut self.sources {
-                    let harness = source.harness();
-                    let bound: Vec<(String, Liveness)> = bound
-                        .iter()
-                        .filter(|(key, _)| key.harness == harness)
-                        .map(|(key, liveness)| (key.id.clone(), liveness.clone()))
-                        .collect();
-                    match source.seed(kernel, &bound) {
+                    match seed(source.as_mut(), kernel, bound) {
                         Ok(observations) => seeded.extend(observations),
-                        Err(error) => eprintln!("agent-leds: {}: {error:#}", harness.title()),
+                        Err(error) => {
+                            eprintln!("agent-leds: {}: {error:#}", source.harness().title())
+                        }
                     }
                 }
                 seeded

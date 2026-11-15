@@ -21,7 +21,7 @@ use crate::device;
 use crate::eject;
 use crate::files;
 use crate::fsm::{self, Channel, Signal};
-use crate::harness::{self, Harness};
+use crate::harness::Harness;
 use crate::ipc::{self, Overlap, Request, Status, View};
 use crate::liveness::{self, Liveness};
 use crate::player::Player;
@@ -34,20 +34,13 @@ fn queue_path() -> PathBuf {
     state_dir().join("queue.json")
 }
 
-/// The queue as last saved, so a restart keeps what is unread and in progress.
-fn saved_queue() -> Queue {
-    let saved = match files::read_optional(&queue_path()) {
-        Ok(Some(saved)) => saved,
-        Ok(None) => return Queue::default(),
-        Err(error) => {
-            eprintln!("agent-leds: ignoring the saved queue: {error:#}");
-            return Queue::default();
-        }
-    };
-    serde_json::from_str(&saved).unwrap_or_else(|error| {
-        eprintln!("agent-leds: ignoring the saved queue: {error}");
-        Queue::default()
-    })
+/// The queue as last saved, so a restart keeps what is unread and in
+/// progress. Empty when nothing was saved.
+pub fn saved_queue() -> Result<Queue> {
+    match files::read_optional(&queue_path())? {
+        Some(saved) => Ok(serde_json::from_str(&saved)?),
+        None => Ok(Queue::default()),
+    }
 }
 
 /// How often to read the device's uptime, which also keeps the SD reader awake.
@@ -219,7 +212,11 @@ pub fn run() -> Result<()> {
         exe,
         sources,
     };
-    let mut daemon = Daemon::new(world, Config::load()?, saved_queue());
+    let saved = saved_queue().unwrap_or_else(|error| {
+        eprintln!("agent-leds: ignoring the saved queue: {error:#}");
+        Queue::default()
+    });
+    let mut daemon = Daemon::new(world, Config::load()?, saved);
     while !daemon.replaced {
         let wait = daemon
             .deadline()
@@ -431,25 +428,19 @@ impl<W: World> Daemon<W> {
     fn apply(&mut self, o: &Observation) -> Change {
         let harness = o.key.harness;
         let signals = o.event.signals();
-        if o.channel != Channel::Daemon {
-            let undeclared: Vec<Signal> = signals
-                .iter()
-                .copied()
-                .filter(|&signal| !harness::declares(harness, signal, o.channel))
-                .collect();
-            if !undeclared.is_empty() {
-                self.undeclared += 1;
-                for signal in undeclared {
-                    if self.logged.insert((harness, signal, o.channel)) {
-                        eprintln!(
-                            "agent-leds: {} produced {signal:?} through {:?}, which it does not declare",
-                            harness.title(),
-                            o.channel
-                        );
-                    }
+        let undeclared = o.undeclared();
+        if !undeclared.is_empty() {
+            self.undeclared += 1;
+            for signal in undeclared {
+                if self.logged.insert((harness, signal, o.channel)) {
+                    eprintln!(
+                        "agent-leds: {} produced {signal:?} through {:?}, which it does not declare",
+                        harness.title(),
+                        o.channel
+                    );
                 }
-                return Change::None;
             }
+            return Change::None;
         }
         let from = self.queue.phase(&o.key);
         if fsm::overlaps(from, &signals) {

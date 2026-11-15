@@ -170,7 +170,6 @@ impl Queue {
     }
 
     /// Every session, with a light or not.
-    #[cfg(test)]
     pub fn sessions(&self) -> &[Session] {
         &self.sessions
     }
