@@ -254,7 +254,8 @@ impl Queue {
     /// keeping a saved session's read mark or dismissal when it is about the
     /// same turn and the daemon alone could have taken it there. A turn that
     /// ended while the daemon was down shows unread, and a session whose
-    /// process is gone is not in `fresh` at all.
+    /// process is gone is not in `fresh` at all. A session only its hooks
+    /// told of, which no file can contradict, is kept as it was saved.
     pub fn restore(saved: Queue, fresh: Queue) -> Queue {
         let daemon: Vec<Signal> = Signal::ALL.into_iter().filter(|s| s.daemon()).collect();
         let mut sessions = fresh.sessions;
@@ -262,10 +263,16 @@ impl Queue {
             let Some(old) = saved.sessions.iter().find(|old| old.key == session.key) else {
                 continue;
             };
-            if old.turn.is_some()
-                && old.turn == session.turn
-                && fsm::reachable(session.phase, &daemon).contains(&old.phase)
-            {
+            if old.bound == Channel::Hook && old.turn.is_none() && session.turn.is_none() {
+                *session = old.clone();
+                continue;
+            }
+            if old.turn != session.turn {
+                continue;
+            }
+            // Nothing new was heard of it, so its silence goes on.
+            session.seen = old.seen;
+            if old.turn.is_some() && fsm::reachable(session.phase, &daemon).contains(&old.phase) {
                 session.phase = old.phase;
                 session.since = old.since;
                 session.entered = old.entered;
@@ -696,6 +703,52 @@ mod tests {
         let restored = Queue::restore(one(&[TurnEnded], true, false), seeded(&[TurnEnded], "t2"));
         assert_eq!(phase(&restored, "a"), Stopped);
         assert_eq!(restored.unread_since(), Some(100));
+    }
+
+    #[test]
+    fn a_restart_measures_silence_from_what_was_last_heard() {
+        let expiry = Expiry {
+            keep_read_ms: 0,
+            abandon_ms: 3 * DAY_MS,
+        };
+        let mut saved = one(&[Prompted], false, false);
+        saved.sessions[0].seen = 2;
+        let mut fresh = Queue::default();
+        fresh.apply(&started("a", "/Users/me/app", process(1)), DAY_MS);
+        let mut o = signal("a", Prompted, Some("t1"));
+        o.quiet = true;
+        fresh.apply(&o, DAY_MS);
+        let restored = Queue::restore(saved, fresh);
+        assert_eq!(restored.due(3 * DAY_MS + 3, expiry).len(), 1);
+        // A turn the files show and the saved queue does not was heard just now.
+        let restored = Queue::restore(one(&[Prompted], false, false), seeded(&[Prompted], "t2"));
+        assert_eq!(restored.sessions[0].seen, 100);
+    }
+
+    #[test]
+    fn a_restart_keeps_a_session_only_its_hooks_told_of() {
+        let mut saved = Queue::default();
+        let mut hooked = started("a", "/Users/me/app", process(1));
+        hooked.channel = Channel::Hook;
+        saved.apply(&hooked, 1);
+        let mut ended = signal("a", TurnEnded, None);
+        ended.channel = Channel::Hook;
+        saved.apply(&ended, 2);
+        // Its source starts it again, knowing nothing of where it stood.
+        let mut fresh = Queue::default();
+        hooked.event = Event::Started(Start {
+            cwd: String::new(),
+            liveness: process(1),
+        });
+        hooked.quiet = true;
+        fresh.apply(&hooked, 100);
+        let restored = Queue::restore(saved, fresh);
+        assert_eq!(states(&restored), [("a", State::Stopped)]);
+        let session = &restored.sessions[0];
+        assert_eq!(
+            (session.label.as_str(), session.since, session.seen),
+            ("app", 2, 2)
+        );
     }
 
     #[test]

@@ -89,10 +89,26 @@ impl Source for Interim {
         Vec::new()
     }
 
-    /// No file says where a hook-bound session stood, so its next hook
-    /// starts it again.
-    fn seed(&mut self, _k: &dyn Kernel, _bound: &[(String, Liveness)]) -> Result<Vec<Observation>> {
-        Ok(Vec::new())
+    /// Each hook-bound session whose process still runs, started again. No
+    /// file says where it stood, so the saved queue does.
+    fn seed(&mut self, k: &dyn Kernel, bound: &[(String, Liveness)]) -> Result<Vec<Observation>> {
+        Ok(bound
+            .iter()
+            .filter(|(_, liveness)| liveness::alive(k, liveness))
+            .map(|(id, liveness)| Observation {
+                key: Key {
+                    harness: self.harness,
+                    id: id.clone(),
+                },
+                channel: Channel::Hook,
+                event: Event::Started(Start {
+                    cwd: String::new(),
+                    liveness: liveness.clone(),
+                }),
+                turn: None,
+                quiet: true,
+            })
+            .collect())
     }
 
     fn changed(&mut self, _k: &dyn Kernel, _paths: Option<&[PathBuf]>) -> Vec<Observation> {
@@ -160,9 +176,34 @@ impl Source for Interim {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::fsm::Phase;
-    use crate::harness::Harness;
+    use crate::liveness::System;
     use crate::source::fixture;
+
+    #[test]
+    fn a_daemon_starting_again_starts_each_hook_bound_session_still_running() {
+        let home = tempfile::tempdir().unwrap();
+        let mut source = Interim::new(Harness::Codex, home.path(), home.path());
+        let pid = std::process::id() as i32;
+        let running = Liveness::Process {
+            pid,
+            start: StartCheck::ExactUs(System.started_us(pid).unwrap()),
+        };
+        let ended = Liveness::Process {
+            pid,
+            start: StartCheck::ExactUs(1),
+        };
+        let bound = [("a".to_owned(), running.clone()), ("b".to_owned(), ended)];
+        let seeded = source.seed(&System, &bound).unwrap();
+        assert_eq!(seeded.len(), 1);
+        let o = &seeded[0];
+        assert_eq!(
+            (o.key.id.as_str(), o.channel, o.quiet),
+            ("a", Channel::Hook, true)
+        );
+        assert!(matches!(&o.event, Event::Started(start) if start.liveness == running));
+    }
 
     #[test]
     fn a_subagent_at_work_keeps_its_parent_asking() {
