@@ -35,7 +35,7 @@ pub fn install(home: &Path, exe: &Path) -> Result<()> {
     let entry = json!({ "command": Harness::Cursor.command(exe), "timeout": 5 });
     edit_hooks(&file, |hooks| {
         // Only these events, whatever an older version registered.
-        unregister(hooks, is_ours);
+        unregister(hooks, Harness::Cursor, false);
         for event in HOOKS {
             register(hooks, event, entry.clone(), is_ours)?;
         }
@@ -51,7 +51,7 @@ pub fn uninstall(home: &Path) -> Result<()> {
     let file = home.join(FILE);
     let mut removed = false;
     edit_hooks(&file, |hooks| {
-        removed = unregister(hooks, is_ours);
+        removed = unregister(hooks, Harness::Cursor, false);
         Ok(())
     })?;
     // Nothing is left of a file the install created.

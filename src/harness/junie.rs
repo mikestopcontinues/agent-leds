@@ -9,7 +9,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use super::{Harness, commands, edit_hooks, owns_group, read_hooks, unregister};
+use super::{Harness, commands, edit_hooks, read_hooks, unregister};
 use crate::files;
 
 pub const CONFIG: &str = ".junie/config.json";
@@ -31,7 +31,7 @@ pub fn hooks(home: &Path) -> Result<Vec<(String, String)>> {
 
 pub fn uninstall(home: &Path) -> Result<()> {
     edit_hooks(&home.join(CONFIG), |hooks| {
-        unregister(hooks, |group| owns_group(Harness::Junie, group));
+        unregister(hooks, Harness::Junie, true);
         Ok(())
     })?;
     files::remove(&home.join(SESSION))
@@ -61,6 +61,11 @@ mod tests {
             "PreToolUse".into(),
             json!([{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "python guard.py" }] }]),
         );
+        // A handler of someone else's in a group of ours.
+        hooks["Stop"][0]["hooks"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "type": "command", "command": "say done" }));
         json!({ "model": "sonnet", "hooks": hooks })
     }
 
@@ -78,7 +83,10 @@ mod tests {
         install(&home, exe).unwrap();
         let theirs = json!({
             "model": "sonnet",
-            "hooks": { "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "python guard.py" }] }] }
+            "hooks": {
+                "Stop": [{ "hooks": [{ "type": "command", "command": "say done" }] }],
+                "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "python guard.py" }] }],
+            }
         });
         assert_eq!(home.json(CONFIG), theirs);
         assert!(!home.join(SESSION).exists());

@@ -447,7 +447,7 @@ fn edit_hooks(path: &Path, edit: impl FnOnce(&mut Map<String, Value>) -> Result<
     };
     edit(hooks)?;
     if hooks.is_empty() && !empty {
-        root.remove("hooks");
+        root.shift_remove("hooks");
     }
     if settings == before {
         return Ok(());
@@ -472,31 +472,42 @@ fn register(
     Ok(())
 }
 
-/// Removes the entries an install added to a `hooks` object, and the events
-/// that removing them left with none, and says whether there were any.
-fn unregister(hooks: &mut Map<String, Value>, ours: impl Fn(&Value) -> bool) -> bool {
+/// Removes the handlers an install of `harness` added to a `hooks` object,
+/// laid out as `commands` reads it, with the groups and events that
+/// removing them left with none, and says whether there were any. Another
+/// tool's handler in a group of ours stays, with the group.
+fn unregister(hooks: &mut Map<String, Value>, harness: Harness, grouped: bool) -> bool {
+    let ours = |handler: &Value| {
+        handler["command"]
+            .as_str()
+            .is_some_and(|command| harness.owns(command))
+    };
+    // Drops what `ours` matches from a list, and says whether that left it
+    // empty where it was not.
+    let prune = |list: &mut Vec<Value>, removed: &mut bool| {
+        let before = list.len();
+        list.retain(|entry| !ours(entry));
+        *removed |= list.len() < before;
+        list.len() < before && list.is_empty()
+    };
     let mut removed = false;
     hooks.retain(|_, entries| {
         let Some(entries) = entries.as_array_mut() else {
             return true;
         };
+        if !grouped {
+            return !prune(entries, &mut removed);
+        }
         let before = entries.len();
-        entries.retain(|entry| !ours(entry));
-        removed |= entries.len() < before;
+        entries.retain_mut(
+            |group| match group.get_mut("hooks").and_then(Value::as_array_mut) {
+                Some(handlers) => !prune(handlers, &mut removed),
+                None => true,
+            },
+        );
         entries.len() == before || !entries.is_empty()
     });
     removed
-}
-
-/// Whether a group of handlers holds one an install of `harness` added.
-fn owns_group(harness: Harness, group: &Value) -> bool {
-    group["hooks"].as_array().is_some_and(|handlers| {
-        handlers.iter().any(|handler| {
-            handler["command"]
-                .as_str()
-                .is_some_and(|command| harness.owns(command))
-        })
-    })
 }
 
 #[cfg(test)]
@@ -576,21 +587,26 @@ mod tests {
         for text in theirs {
             home.write("settings.json", text);
             edit_hooks(&path, |hooks| {
-                unregister(hooks, |group| owns_group(Harness::Claude, group));
+                unregister(hooks, Harness::Claude, true);
                 Ok(())
             })
             .unwrap();
             assert_eq!(fs::read_to_string(&path).unwrap(), text);
         }
-        // An event and a `hooks` that held only ours go with them.
-        let ours = json!({ "hooks": { "Stop": [{ "hooks": [{ "command": "/bin/agent-leds hook claude" }] }] }, "x": 1 });
-        home.write("settings.json", &ours.to_string());
+        // An event and a `hooks` that held only ours go with them, and the
+        // keys after it keep their order.
+        home.write(
+            "settings.json",
+            r#"{"model":"opus","hooks":{"Stop":[{"hooks":[{"command":"/bin/agent-leds hook claude"}]}]},"permissions":{},"theme":"dark"}"#,
+        );
         edit_hooks(&path, |hooks| {
-            unregister(hooks, |group| owns_group(Harness::Claude, group));
+            unregister(hooks, Harness::Claude, true);
             Ok(())
         })
         .unwrap();
-        assert_eq!(home.json("settings.json"), json!({ "x": 1 }));
+        let left = home.json("settings.json");
+        let keys: Vec<&String> = left.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["model", "permissions", "theme"]);
     }
 
     #[test]

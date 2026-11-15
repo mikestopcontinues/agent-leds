@@ -163,5 +163,14 @@ mod tests {
         home.write(CONFIG, "");
         super::super::install(&home, exe);
         Harness::Grok.check(&home, exe).unwrap();
+        // The user's own handlers stay, the one beside ours included.
+        let left = home.json(claude::SETTINGS)["hooks"].clone();
+        assert_eq!(
+            left,
+            json!({
+                "StopFailure": [{ "hooks": [{ "type": "command", "command": "afplay done.aiff" }] }],
+                "Notification": [{ "hooks": [{ "type": "command", "command": "afplay ping.aiff" }] }],
+            })
+        );
     }
 }

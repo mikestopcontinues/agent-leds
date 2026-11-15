@@ -6,7 +6,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use super::{Harness, commands, edit_hooks, owns_group, read_hooks, unregister};
+use super::{Harness, commands, edit_hooks, read_hooks, unregister};
 
 /// The hook events the daemon needs: none, since its files say it all.
 pub const HOOKS: [&str; 0] = [];
@@ -24,7 +24,7 @@ pub fn hooks(home: &Path) -> Result<Vec<(String, String)>> {
 
 pub fn uninstall(home: &Path) -> Result<()> {
     edit_hooks(&home.join(SETTINGS), |hooks| {
-        unregister(hooks, |group| owns_group(Harness::Claude, group));
+        unregister(hooks, Harness::Claude, true);
         Ok(())
     })
 }
@@ -68,7 +68,12 @@ mod tests {
             0,
             json!({ "matcher": "*", "hooks": [{ "type": "command", "command": "python hook_entry.py --provider claude" }] }),
         );
-        json!({ "model": "opus", "hooks": hooks })
+        // The user, or `/hooks`, added a handler to a group of ours.
+        hooks["StopFailure"][0]["hooks"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "type": "command", "command": "afplay done.aiff" }));
+        json!({ "model": "opus", "hooks": hooks, "theme": "dark" })
     }
 
     #[test]
@@ -81,7 +86,11 @@ mod tests {
         install(&home, exe).unwrap();
         let theirs = json!({
             "model": "opus",
-            "hooks": { "Stop": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "python hook_entry.py --provider claude" }] }] }
+            "hooks": {
+                "Stop": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "python hook_entry.py --provider claude" }] }],
+                "StopFailure": [{ "hooks": [{ "type": "command", "command": "afplay done.aiff" }] }],
+            },
+            "theme": "dark"
         });
         assert_eq!(home.json(SETTINGS), theirs);
         Harness::Claude.check(&home, exe).unwrap();
