@@ -406,8 +406,9 @@ fn commands(hooks: &Map<String, Value>, grouped: bool) -> Vec<(String, String)> 
 }
 
 /// Rewrites a JSON settings file through `edit`, which is given the file's
-/// `hooks` object. Everything else in the file stays as it is, and a file
-/// that `edit` leaves unchanged is not written.
+/// `hooks` object. Everything else in the file stays as it is, a `hooks`
+/// that `edit` leaves empty goes only if it was not empty already, and a
+/// file that `edit` leaves unchanged is not written.
 fn edit_hooks(path: &Path, edit: impl FnOnce(&mut Map<String, Value>) -> Result<()>) -> Result<()> {
     let text = files::read_optional(path)?.unwrap_or_else(|| "{}".into());
     let before: Value =
@@ -416,6 +417,10 @@ fn edit_hooks(path: &Path, edit: impl FnOnce(&mut Map<String, Value>) -> Result<
     let Some(root) = settings.as_object_mut() else {
         bail!("{} is not a JSON object", path.display())
     };
+    let empty = root
+        .get("hooks")
+        .and_then(Value::as_object)
+        .is_some_and(Map::is_empty);
     let Some(hooks) = root
         .entry("hooks")
         .or_insert_with(|| json!({}))
@@ -424,7 +429,7 @@ fn edit_hooks(path: &Path, edit: impl FnOnce(&mut Map<String, Value>) -> Result<
         bail!("hooks in {} is not an object", path.display())
     };
     edit(hooks)?;
-    if hooks.is_empty() {
+    if hooks.is_empty() && !empty {
         root.remove("hooks");
     }
     if settings == before {
@@ -451,14 +456,16 @@ fn register(
 }
 
 /// Removes the entries an install added to a `hooks` object, and the events
-/// left with none.
+/// that removing them left with none.
 fn unregister(hooks: &mut Map<String, Value>, ours: impl Fn(&Value) -> bool) {
-    for entries in hooks.values_mut() {
-        if let Some(entries) = entries.as_array_mut() {
-            entries.retain(|entry| !ours(entry));
-        }
-    }
-    hooks.retain(|_, entries| entries.as_array().is_none_or(|entries| !entries.is_empty()));
+    hooks.retain(|_, entries| {
+        let Some(entries) = entries.as_array_mut() else {
+            return true;
+        };
+        let before = entries.len();
+        entries.retain(|entry| !ours(entry));
+        entries.len() == before || !entries.is_empty()
+    });
 }
 
 /// Whether a group of handlers holds one an install of `harness` added.
@@ -536,6 +543,34 @@ mod tests {
         let installed = install(&home, Path::new("/bin/agent-leds"));
         assert!(matches!(installed[..], [(Harness::Cursor, Ok(()))]));
         assert!(home.join(cursor::FILE).exists());
+    }
+
+    #[test]
+    fn a_settings_file_holding_nothing_of_ours_is_not_rewritten() {
+        let home = Home::new();
+        let path = home.join("settings.json");
+        let theirs = [
+            "{\n    \"model\": \"opus\",\n    \"hooks\": {}\n}\n",
+            r#"{"hooks":{"Stop":[]},"x":1}"#,
+        ];
+        for text in theirs {
+            home.write("settings.json", text);
+            edit_hooks(&path, |hooks| {
+                unregister(hooks, |group| owns_group(Harness::Claude, group));
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        }
+        // An event and a `hooks` that held only ours go with them.
+        let ours = json!({ "hooks": { "Stop": [{ "hooks": [{ "command": "/bin/agent-leds hook claude" }] }] }, "x": 1 });
+        home.write("settings.json", &ours.to_string());
+        edit_hooks(&path, |hooks| {
+            unregister(hooks, |group| owns_group(Harness::Claude, group));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(home.json("settings.json"), json!({ "x": 1 }));
     }
 
     #[test]
