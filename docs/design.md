@@ -4,7 +4,15 @@ How the service decides what the lights show and keeps them showing it. [harness
 
 ## How it works
 
-A small daemon owns the queue and the device. It reads what Claude Code writes about its sessions in `~/.claude/sessions/` and `~/.claude/projects/`, as FSEvents reports each change; the other harnesses report to it through hooks, until their own files are read too. Each harness declares the signals it gives and how each is known, and [coverage.md](coverage.md), generated from those declarations and the session table in `src/fsm.rs`, lists what each one cannot show. The CLI and the workshop talk to the daemon over a Unix socket.
+A small daemon owns the queue and the device. The CLI and the workshop talk to it over a Unix socket.
+
+The daemon learns what each session does from the harness's own files. Each harness has one source, which reads the folders the harness writes its sessions to as FSEvents reports each change. When the daemon starts, each source reads where each running session's files leave it, and goes on from their end, so nothing is replayed. A hook remains only for a moment no file records, such as Codex's approval wait; [harnesses.md](harnesses.md) lists each, and the hook goes through the same source.
+
+A source reports what each record says as signals, each a fact of its own: a prompt, a wait on the user, the end of a turn, an error. Every signal goes through one table, in `src/fsm.rs`, whose rows are in priority order: from the session's phase, the first row that matches one of the signals decides. Some signals belong together, as the ways a turn can end. Others told together overlap, as when a harness's format changes; the table's order still decides, and the daemon logs each set once and counts it in `agent-leds status --json`, which `agent-leds doctor` reports. Each harness declares the signals it gives and how each is known. A signal it does not declare is dropped and counted the same way. [coverage.md](coverage.md), generated from those declarations and the table, lists what each harness cannot show.
+
+No timer infers a state. A working session stays working until its harness says otherwise, however long it is quiet. A session's process is known only by what the harness names: a pid and its start time in its own files, a file its process keeps locked, a marker, or the pid its hook or plugin passes on. The daemon looks up only that process, and never lists the process table.
+
+`agent-leds doctor` reads each harness in use with the same sources, as the daemon does when it starts, and writes nothing. It prints one line per harness: how many sessions its files show running, by light, and the folders it read, then what the check of its hooks found. A folder that cannot be read, a read that fails, or a signal the harness does not declare or that overlaps needs attention. While the daemon runs, doctor also reports what the daemon counted.
 
 The device runs whatever program is written to its `LEDS.LED` file, in SidePulse's own animation language, limited to 512 bytes and 20 lines. The daemon writes programs only when the queue changes, so a steady display costs nothing on the Mac:
 
@@ -13,7 +21,7 @@ The device runs whatever program is written to its `LEDS.LED` file, in SidePulse
 
   To fit more lines in a program, a line names only the lights that change, or gives a row cut off after its last lit light, whichever is shorter. The rise is kept in one program where it fits, so that no write falls in the middle of it.
 - **More than eight items** are cut to fit. Every state present keeps at least one light and the rest go to states in queue order. Nothing marks the items that are hidden.
-- **Any other change** settles in quietly: a session going back to work, or a light leaving because its session was read, went silent, ended or was dismissed. The wave alone runs from the front of the queue to the back, with no fade out and no snake. Each light holds its old color until the wave reaches it, goes dark for a step, and rises in its new color. A quiet change never interrupts a snake; the snake ends on the queue as it is by then.
+- **Any other change** settles in quietly: a session going back to work, or a light leaving because its session was read, ended, was dismissed or was abandoned. The wave alone runs from the front of the queue to the back, with no fade out and no snake. Each light holds its old color until the wave reaches it, goes dark for a step, and rises in its new color. A quiet change never interrupts a snake; the snake ends on the queue as it is by then.
 - **A played program or shown scene** (`agent-leds play`, or the workshop's "Show on device") holds the lights for a few seconds, then the queue returns.
 
 The daemon saves the queue to `~/.local/state/agent-leds/queue.json` on every change and reloads it when it starts, so restarting it loses nothing.
@@ -38,7 +46,7 @@ The lights have to mean something, so every one of them has a way out:
 | Question, weak: the turn ended on a question | The same as stopped. You may read it and leave it unanswered. |
 | Question, strong: a permission request, `AskUserQuestion` or an elicitation | When it is answered. The agent is blocked on it. |
 | Error | At the next prompt. |
-| Any | When the session ends, or the process running it does, which the daemon checks every few seconds; at `agent-leds dismiss`; or after `abandon_days` without a word from the session. |
+| Any | When the session ends, or the process its harness names does, which the daemon checks every few seconds; at `agent-leds dismiss`; or after `abandon_days` without a word from the session. |
 
 A turn that ends again in a session that had already stopped counts as new: the light is unread again and the change is announced.
 
@@ -55,14 +63,14 @@ A turn whose last line ends in a question mark shows as a question that reading 
 Each module owns one concern; the ones that touch the system are thin.
 
 - `main.rs`: the command line.
-- `doctor.rs`: `agent-leds doctor`, which checks the service, the card, the hooks and for SidePulse's own software.
+- `doctor.rs`: `agent-leds doctor`, which checks the service, the card, what the daemon has read, each harness's files and hooks, and for SidePulse's own software.
 - `daemon.rs`: the service's loop. Everything it reads or changes outside itself goes through its `World` trait, which tests replace.
 - `player.rs`: what the lights play and when, given the time. No I/O.
 - `render.rs`: a queue or a change, as LEDS.LED programs. No I/O.
 - `fsm.rs`: the session table, every phase a session can be in and the signal that moves it to each other. No I/O.
-- `queue.rs`: the sessions followed, changed only by applying observations through the table, and the order their lights show in. No I/O. `state.rs` is what the daemon saves.
+- `queue.rs`: the sessions followed, changed only by applying observations through the table, and the order their lights show in. No I/O. `state.rs` is the four lights.
 - `coverage.rs`: renders `docs/coverage.md` from what each harness declares.
-- `source.rs` and `source/`: reading the harnesses. one file per harness reads its files and translates the hooks it keeps, with `claude.rs` the model the others follow; `tail.rs` reads files as they grow; `fixture.rs` replays recorded sessions in the tests.
+- `source.rs` and `source/`: reading the harnesses, and the watcher that tells the sources what changed. One file per harness reads its files and translates the hooks it keeps, with `claude.rs` the model the others follow; `tail.rs` reads files as they grow; `fixture.rs` replays recorded sessions in the tests.
 - `liveness.rs`: whether the process running a session is still the one that started it, and the hook process's own ancestors.
 - `harness.rs` and `harness/`: what each harness declares it tells, the plugins OpenCode and Pi load, and installing, checking and removing hooks.
 - `ipc.rs`: the socket protocol between the command line, the hooks and the service.
@@ -84,7 +92,7 @@ Each module owns one concern; the ones that touch the system are thin.
 ## Open questions
 
 - Installing with Homebrew has been checked on Apple silicon. On Intel, CI builds and tests every push, but no install has been run.
-- Claude Code, Codex 0.153.2, Grok 1.0.13 and `cursor-agent` 2026.05.28 have been checked against real sessions; Grok, Cursor and Codex's subagents only from the command line (`grok -p`, `cursor-agent -p`, `codex exec`). What Cursor sends from its interface is taken from its code, and Junie's events from its documentation.
+- What each harness writes was studied in real sessions of Claude Code 2.1.325, Codex 0.153.2, Grok 1.0.77, Cursor 2026.11.13, OpenCode 1.19.5 and Pi 0.84.4 and 1.5.2. Junie was not installed, so its files are taken from captures others published. [harnesses.md](harnesses.md) lists what each run left untried, and [coverage.md](coverage.md) marks each signal known only from code, docs or captures.
 - Refusing an eject has been checked with `diskutil eject`: the eject fails and the card is mounted again within 5 seconds. A wake from hibernation with the screen locked has not been seen, nor has a restart of Disk Arbitration.
 - Input in the Claude app with a session open is taken as having looked at it. Typing in a second window, or in the Chat tab, would count too.
 - How the snake looks on the card. Each program is written when the one before it should end, so a slow write shows as a short pause in the snake.

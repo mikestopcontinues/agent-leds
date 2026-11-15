@@ -2,9 +2,9 @@
 
 What each agent harness reports to the service and where it falls short. [design.md](design.md) covers what the service does with the reports.
 
-The service reads every harness's own files as they change. Claude Code's and Junie's files say all it needs, so it registers no hooks with them. With Codex, Grok and Cursor, `agent-leds install` registers `agent-leds hook <harness>` for the one or two events listed below that their files do not record; OpenCode and Pi load a plugin of ours that runs it for what their files leave out. The hook passes the event to the daemon with the processes it runs under, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked. Whatever the hooks say, a session leaves when the process running it ends.
+The service reads every harness's own files as they change. Claude Code's and Junie's files say all it needs, so it registers no hooks with them. With Codex, Grok and Cursor, `agent-leds install` registers `agent-leds hook <harness>` for the one or two events listed below that their files do not record; OpenCode and Pi load a plugin of ours that runs it for what their files leave out. The hook passes the event to the daemon with the processes it runs under, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked. Whatever the hooks say, a session leaves when the process its harness names ends; each section says how that process is known. Nothing is guessed from time or from the process table, so a moment that neither a file nor a hook records is a gap, listed under its harness.
 
-[coverage.md](coverage.md) lists every signal each harness gives, how each is known, and the moves each cannot make.
+[coverage.md](coverage.md) lists every signal each harness gives, how each is known, and the moves each cannot make. `agent-leds doctor` reads each harness's files with the same readers and says how many sessions they show running, or what keeps it from reading them.
 
 ## Claude Code
 

@@ -26,9 +26,9 @@ brew install mikestopcontinues/tap/agent-leds
 agent-leds install
 ```
 
-`agent-leds install` starts the service at login. The service reads Claude Code's and Junie's own files, so they get no hooks; the install adds hooks to each other harness you use (`~/.codex`, `~/.grok`, `~/.cursor`, `~/.config/opencode`, `~/.pi`), leaving other hooks alone and removing any of its own that this version no longer uses. OpenCode and Pi get a plugin of their own instead of hooks. Run it again after you start using another harness. After `brew upgrade agent-leds` the service restarts on the new version by itself; run `agent-leds install` as well whenever `agent-leds doctor` then reports a hook or plugin from another version, since a version that hooks the harnesses differently cannot follow their sessions through the old hooks.
+`agent-leds install` starts the service at login. The service reads each harness's own session files as they change. Where a harness writes nothing at some moment, such as while Codex waits on an approval, the install adds a hook for that moment alone: Codex, Grok and Cursor get one or two hooks, OpenCode and Pi a plugin of their own, and Claude Code and Junie nothing. It touches only the harnesses you use (`~/.claude`, `~/.codex`, `~/.grok`, `~/.cursor`, `~/.junie`, `~/.config/opencode`, `~/.pi`), leaves other hooks alone, and removes any of its own that this version no longer uses. Run it again after you start using another harness. After `brew upgrade agent-leds` the service restarts on the new version by itself; run `agent-leds install` as well whenever `agent-leds doctor` then reports a hook or plugin from another version, since a version that hooks the harnesses differently cannot follow their sessions through the old hooks.
 
-If the lights don't follow your sessions, `agent-leds doctor` checks the service, the card and each harness's hooks, and says what to fix.
+If the lights don't follow your sessions, `agent-leds doctor` says what to fix. It checks the service and the card, reads each harness's files the way the service does and says how many sessions they show running, and checks each harness's hooks. It writes nothing and does not need the service running.
 
 To remove it, run `agent-leds uninstall`, then `brew uninstall agent-leds`.
 

@@ -2,7 +2,7 @@
 
 ## Outcome and acceptance
 
-Today the daemon learns what each session is doing from hooks, and fills the gaps hooks leave with two timers: a working session silent for 30 minutes is dropped, and a Claude Code session whose process has been idle for 5 seconds counts as interrupted. The change makes each harness's own files the primary source for all seven harnesses, keeps a hook only for a moment no file records, and drops both timers. Session state lives in one explicit finite state machine whose transition table is data, its rows in priority order: a source reports each fact a record establishes, and the first row that matches one of them decides. Facts told together that share no declared family overlap; they are resolved the same way, counted in `status` and reported by `doctor`.
+Before this change the daemon learned what each session was doing from hooks, and filled the gaps hooks left with two timers: a working session silent for 30 minutes was dropped, and a Claude Code session whose process had been idle for 5 seconds counted as interrupted. The change makes each harness's own files the primary source for all seven harnesses, keeps a hook only for a moment no file records, and drops both timers. Session state lives in one explicit finite state machine whose transition table is data, its rows in priority order: a source reports each fact a record establishes, and the first row that matches one of them decides. Facts told together that share no declared family overlap; they are resolved the same way, counted in `status` and reported by `doctor`.
 
 It is done when:
 
