@@ -109,6 +109,14 @@ pub const SIGNALS: &[Declared] = &[
         "the session file deleted or naming another session (/clear), or its process gone",
         "probe-claude cc1, cc2, cc10",
     ),
+    // Told by the daemon, which reads the desktop app's files in `desktop`.
+    Declared::new(
+        Signal::Looked,
+        Channel::Daemon,
+        Evidence::Observed,
+        "the desktop app's file for the session, ~/Library/Application Support/Claude/claude-code-sessions/*.json, with a lastFocusedAt since the light took its state; or the session it names opened last while the app is in front and the keyboard or pointer was used in the last five seconds",
+        "the desktop app's session files, as desktop.rs and its tests read them",
+    ),
 ];
 
 /// What a session file says the process is doing.

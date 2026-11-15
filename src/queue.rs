@@ -11,7 +11,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::fsm::{self, Channel, Phase, Signal};
-use crate::harness::Harness;
+use crate::harness::{self, Harness};
 use crate::liveness::Liveness;
 use crate::source::{Event, Observation};
 use crate::state::State;
@@ -239,12 +239,14 @@ impl Queue {
         !self.sessions.is_empty()
     }
 
-    /// The unread Claude Code sessions the user has looked at since their
-    /// light took its state, given when each was last looked at.
+    /// The unread sessions the user has looked at since their light took
+    /// its state, given when each was last looked at, of the harnesses whose
+    /// reading the daemon tells: Claude Code's, in the desktop app.
     pub fn looked(&self, at: &HashMap<String, u64>) -> Vec<Observation> {
+        let read = |s: &&Session| harness::declares(s.key.harness, Signal::Looked, Channel::Daemon);
         self.sessions
             .iter()
-            .filter(|s| s.key.harness == Harness::Claude && s.phase.unread())
+            .filter(|s| read(s) && s.phase.unread())
             .filter(|s| at.get(&s.key.id).is_some_and(|&at| at >= s.since))
             .map(|s| told(s, Signal::Looked))
             .collect()

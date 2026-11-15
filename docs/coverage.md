@@ -32,7 +32,7 @@ Any other signals told together overlap: the order above still decides, and the 
 
 ## Signals by harness
 
-Each cell is the channel a harness produces the signal on: `file`, `hook`, both, or `—` for neither. `*` marks a channel known only from code, docs or someone else's captures, not from a real session.
+Each cell is the channel a harness produces the signal on: `file`, `hook`, both, `daemon` for what the daemon reads itself, or `—` for none. `*` marks a channel known only from code, docs or someone else's captures, not from a real session.
 
 | Signal | Claude Code | Codex | Grok | Cursor | Junie | OpenCode | Pi |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -49,6 +49,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 | [Backgrounded](#backgrounded) | file | file | file | — | — | file | — |
 | [BackgroundDone](#backgrounddone) | file | file | file* | — | — | — | — |
 | [Ended](#ended) | file | file | file | file+hook | file* | file+hook | hook |
+| [Looked](#looked) | daemon | — | — | — | — | file | — |
 
 ### Started
 
@@ -175,17 +176,22 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - OpenCode, hook, observed: the process the plugin's busy named gone (probe-opencode T14, T17; gaps oc8 (2.3.0 terminal interface quit, service stopped))
 - Pi, hook, observed: session_shutdown other than for a reload, as at quit and /new, or the Pi process gone; no file records an exit; inferred: another session's session_start or agent_start from the same Pi process, which runs one session at a time, as after a /new whose session_shutdown was lost (probe-pi ext084, ext152, extfork, tq1–tq6, rpc5–rpc7; inferred from gaps-pi sig084 with its session_shutdown removed)
 
+### Looked
+
+- Claude Code, daemon, observed: the desktop app's file for the session, ~/Library/Application Support/Claude/claude-code-sessions/*.json, with a lastFocusedAt since the light took its state; or the session it names opened last while the app is in front and the keyboard or pointer was used in the last five seconds (the desktop app's session files, as desktop.rs and its tests read them)
+- OpenCode, file, observed: 2.x: the session seen idle since it last went idle, as the terminal interface writes once it shows the session while its terminal has focus; not for a 1.x session, whose rows record no viewing (gaps oc8 (2.3.0 session.viewed))
+
 ## Moves each harness cannot make
 
 **PermissionAsked**: an approval wait shows as the light it interrupts.
 
 - Grok, for a tool's approval card
-- Cursor: Idle, Working, Asked, AskedRead, Stopped, StoppedRead, Failed → Blocked
-- Pi: Idle, Working, Asked, AskedRead, Stopped, StoppedRead, Failed → Blocked
+- Cursor: Idle, Working, Asked, Stopped, Failed → Blocked
+- Pi: Idle, Working, Asked, Stopped, Failed → Blocked
 
 **QuestionAsked**: a question the agent waits on shows as the light it interrupts.
 
-- Cursor: Idle, Working, Asked, AskedRead, Stopped, StoppedRead, Failed → Blocked
+- Cursor: Idle, Working, Asked, Stopped, Failed → Blocked
 
 **Released**: a wait answered with no turn running shows as a question until the session moves on.
 
@@ -197,24 +203,49 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 **Backgrounded**: a turn whose background work runs on shows as stopped while that work runs.
 
-- Cursor: Idle, Working, Stopped, StoppedRead → Background
-- Junie: Idle, Working, Stopped, StoppedRead → Background
-- Pi: Idle, Working, Stopped, StoppedRead → Background
+- Cursor: Idle, Working, Stopped → Background
+- Junie: Idle, Working, Stopped → Background
+- Pi: Idle, Working, Stopped → Background
 
 **BackgroundDone**: background work that finishes is never announced, and shows as working until the next turn.
 
 - OpenCode: Background → Stopped
 
+**Looked**: looking at a session never marks it read.
+
+- Codex: Stopped → StoppedRead
+- Codex: Asked → AskedRead
+- Grok: Stopped → StoppedRead
+- Grok: Asked → AskedRead
+- Cursor: Stopped → StoppedRead
+- Cursor: Asked → AskedRead
+- Junie: Stopped → StoppedRead
+- Junie: Asked → AskedRead
+- OpenCode, for a 1.x session, whose rows record no viewing
+- Pi: Stopped → StoppedRead
+- Pi: Asked → AskedRead
+
 ## Phases never entered
 
-Searched from `Gone` over the signals a harness declares and the daemon's own.
+Searched from `Gone` over the signals a harness declares and those the daemon tells of every session.
 
-- Cursor: Background, Blocked
-- Junie: Background
-- Pi: Background
+- Codex: AskedRead, StoppedRead
+- Grok: AskedRead, StoppedRead
+- Cursor: Background, Blocked, AskedRead, StoppedRead
+- Junie: Background, AskedRead, StoppedRead
+- Pi: Background, AskedRead, StoppedRead
 
 ## Stuck phases
 
-Phases with a light that a harness reaches but leaves only when its process ends or through the daemon's own signals. Each is a place where an experiment or a deliberate guess is worth considering.
+Phases with a light that a harness reaches but leaves only when its process ends or through the daemon's own signals, and phases reading settles that a harness never marks read, which keep their light until the session moves on, ends, or is dismissed or abandoned. Each is a place where an experiment or a deliberate guess is worth considering.
 
-No harness has a stuck phase.
+- Codex, Asked: never read
+- Codex, Stopped: never read
+- Grok, Asked: never read
+- Grok, Stopped: never read
+- Cursor, Asked: never read
+- Cursor, Stopped: never read
+- Junie, Asked: never read
+- Junie, Stopped: never read
+- Pi, Asked: never read
+- Pi, Stopped: never read

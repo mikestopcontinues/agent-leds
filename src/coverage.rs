@@ -150,16 +150,19 @@ fn matrix(harnesses: &[(Harness, &[Declared])]) -> Vec<String> {
         String::new(),
         "## Signals by harness".to_owned(),
         String::new(),
-        "Each cell is the channel a harness produces the signal on: `file`, `hook`, both, or `—` \
-         for neither. `*` marks a channel known only from code, docs or someone else's captures, \
-         not from a real session."
+        "Each cell is the channel a harness produces the signal on: `file`, `hook`, both, \
+         `daemon` for what the daemon reads itself, or `—` for none. `*` marks a channel known \
+         only from code, docs or someone else's captures, not from a real session."
             .to_owned(),
         String::new(),
     ];
     let titles: Vec<&str> = harnesses.iter().map(|(h, _)| h.title()).collect();
     out.push(format!("| Signal | {} |", titles.join(" | ")));
     out.push(format!("| --- |{}", " --- |".repeat(harnesses.len())));
-    let told: Vec<Signal> = Signal::ALL.into_iter().filter(|s| !s.daemon()).collect();
+    let told: Vec<Signal> = Signal::ALL
+        .into_iter()
+        .filter(|&s| !everywhere(s))
+        .collect();
     for &signal in &told {
         let cells: Vec<String> = harnesses
             .iter()
@@ -213,7 +216,7 @@ fn missing(harnesses: &[(Harness, &[Declared])]) -> Vec<String> {
         "## Moves each harness cannot make".to_owned(),
     ];
     let mut any = false;
-    for signal in Signal::ALL.into_iter().filter(|s| !s.daemon()) {
+    for signal in Signal::ALL.into_iter().filter(|&s| !everywhere(s)) {
         let mut lines = Vec::new();
         for (harness, declared) in harnesses {
             if declared.iter().any(|d| d.signal == signal) {
@@ -267,7 +270,9 @@ fn never_entered(harnesses: &[(Harness, &[Declared])]) -> Vec<String> {
         String::new(),
         "## Phases never entered".to_owned(),
         String::new(),
-        "Searched from `Gone` over the signals a harness declares and the daemon's own.".to_owned(),
+        "Searched from `Gone` over the signals a harness declares and those the daemon tells of \
+         every session."
+            .to_owned(),
         String::new(),
     ];
     let mut lines = Vec::new();
@@ -290,15 +295,18 @@ fn never_entered(harnesses: &[(Harness, &[Declared])]) -> Vec<String> {
 }
 
 /// Part 5: the phases with a light that a harness reaches but leaves only
-/// when its process ends or through the daemon's own signals.
+/// when its process ends or through the daemon's own signals, and those
+/// reading settles that it never marks read.
 fn stuck(harnesses: &[(Harness, &[Declared])]) -> Vec<String> {
     let mut out = vec![
         String::new(),
         "## Stuck phases".to_owned(),
         String::new(),
         "Phases with a light that a harness reaches but leaves only when its process ends or \
-         through the daemon's own signals. Each is a place where an experiment or a deliberate \
-         guess is worth considering."
+         through the daemon's own signals, and phases reading settles that a harness never marks \
+         read, which keep their light until the session moves on, ends, or is dismissed or \
+         abandoned. Each is a place where an experiment or a deliberate guess is worth \
+         considering."
             .to_owned(),
         String::new(),
     ];
@@ -321,6 +329,8 @@ fn stuck(harnesses: &[(Harness, &[Declared])]) -> Vec<String> {
                     harness.title(),
                     by.join(", ")
                 ));
+            } else if phase.unread() && !signals.contains(&Signal::Looked) {
+                lines.push(format!("- {}, {phase:?}: never read", harness.title()));
             }
         }
     }
@@ -331,11 +341,18 @@ fn stuck(harnesses: &[(Harness, &[Declared])]) -> Vec<String> {
     out
 }
 
-/// The signals a harness declares, with the daemon's own.
+/// Whether the daemon tells the signal of every harness's sessions by
+/// itself. Looked needs a record of the user looking, which only some
+/// harnesses have, so it counts only where it is declared.
+fn everywhere(signal: Signal) -> bool {
+    signal.daemon() && signal != Signal::Looked
+}
+
+/// The signals a harness declares, with those the daemon tells of every session.
 fn signals(declared: &[Declared]) -> BTreeSet<Signal> {
     Signal::ALL
         .into_iter()
-        .filter(|&s| s.daemon() || declared.iter().any(|d| d.signal == s))
+        .filter(|&s| everywhere(s) || declared.iter().any(|d| d.signal == s))
         .collect()
 }
 
@@ -500,7 +517,7 @@ Any other signals told together overlap: the order above still decides, and the 
 
 ## Signals by harness
 
-Each cell is the channel a harness produces the signal on: `file`, `hook`, both, or `—` for neither. `*` marks a channel known only from code, docs or someone else's captures, not from a real session.
+Each cell is the channel a harness produces the signal on: `file`, `hook`, both, `daemon` for what the daemon reads itself, or `—` for none. `*` marks a channel known only from code, docs or someone else's captures, not from a real session.
 
 | Signal | Claude Code | Codex |
 | --- | --- | --- |
@@ -517,6 +534,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 | Backgrounded | — | — |
 | BackgroundDone | — | — |
 | [Ended](#ended) | file | hook |
+| Looked | — | — |
 
 ### Started
 
@@ -551,7 +569,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 **QuestionAsked**: a question the agent waits on shows as the light it interrupts.
 
-- Claude Code: Idle, Working, Stopped, StoppedRead → Blocked
+- Claude Code: Idle, Working, Stopped → Blocked
 - Codex: Idle, Working → Blocked
 
 **Answered**: an answered approval or question shows as a question until the turn ends.
@@ -568,35 +586,40 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 **TurnEndedAsking**: a turn that ends on a question shows as stopped, not as a question.
 
-- Claude Code: Idle, Working, Blocked, Stopped, StoppedRead → Asked
+- Claude Code: Idle, Working, Blocked, Stopped → Asked
 - Codex: Idle, Working → Asked
 
 **TurnFailed**: a turn that ends on an error never shows the error light.
 
-- Claude Code: Idle, Working, Blocked, Stopped, StoppedRead → Failed
+- Claude Code: Idle, Working, Blocked, Stopped → Failed
 - Codex: Idle, Working → Failed
 
 **Interrupted**: an interrupted turn keeps its light until the next turn or the process ends.
 
-- Claude Code: Working, Blocked, Stopped, StoppedRead → Idle
+- Claude Code: Working, Blocked, Stopped → Idle
 - Codex: Working → Idle
 
 **Backgrounded**: a turn whose background work runs on shows as stopped while that work runs.
 
-- Claude Code: Idle, Working, Stopped, StoppedRead → Background
+- Claude Code: Idle, Working, Stopped → Background
 - Codex: Idle, Working → Background
+
+**Looked**: looking at a session never marks it read.
+
+- Claude Code: Stopped → StoppedRead
 
 ## Phases never entered
 
-Searched from `Gone` over the signals a harness declares and the daemon's own.
+Searched from `Gone` over the signals a harness declares and those the daemon tells of every session.
 
-- Claude Code: Background, Asked, AskedRead, Failed
+- Claude Code: Background, Asked, AskedRead, StoppedRead, Failed
 - Codex: Background, Blocked, Asked, AskedRead, Stopped, StoppedRead, Failed
 
 ## Stuck phases
 
-Phases with a light that a harness reaches but leaves only when its process ends or through the daemon's own signals. Each is a place where an experiment or a deliberate guess is worth considering.
+Phases with a light that a harness reaches but leaves only when its process ends or through the daemon's own signals, and phases reading settles that a harness never marks read, which keep their light until the session moves on, ends, or is dismissed or abandoned. Each is a place where an experiment or a deliberate guess is worth considering.
 
+- Claude Code, Stopped: never read
 - Codex, Working: left only by Ended, Abandoned, Dismissed
 "#;
 

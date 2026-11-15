@@ -692,7 +692,12 @@ mod tests {
     #[test]
     fn every_declared_row_is_demonstrated_by_a_fixture_of_its_evidence() {
         for harness in Harness::ALL {
-            for declared in harness::signals(harness) {
+            // What the daemon reads itself, as Claude Code's desktop app, is
+            // no source's, and is tested where it is read.
+            let sourced = harness::signals(harness)
+                .iter()
+                .filter(|declared| declared.channel != Channel::Daemon);
+            for declared in sourced {
                 let name = demonstrating(declared);
                 assert!(
                     names(harness).contains(&name),

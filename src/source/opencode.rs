@@ -143,7 +143,8 @@ pub const SIGNALS: &[Declared] = &[
         Signal::Looked,
         "2.x: the session seen idle since it last went idle, as the terminal interface writes once it shows the session while its terminal has focus",
         "gaps oc8 (2.3.0 session.viewed)",
-    ),
+    )
+    .untold("a 1.x session, whose rows record no viewing"),
     file(
         Signal::Ended,
         "the session's row deleted or archived",
