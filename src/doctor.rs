@@ -34,11 +34,8 @@ pub fn run() -> Result<()> {
     let saved = daemon::saved_queue();
     checks.push(("queue".to_owned(), queue(&saved, &home)));
     let saved = saved.unwrap_or_default();
-    // Claude Code's and Junie's folders as the service finds them, from
-    // launchd's environment.
-    let claude = source::claude::folder(launchd::getenv("CLAUDE_CONFIG_DIR").as_deref(), &home);
-    let junie = source::junie::folder(launchd::getenv("JUNIE_HOME").as_deref());
-    let used = |harness| in_use(harness, &home, &claude, &junie);
+    let (claude, junie) = harness::service_folders(&home);
+    let used = |harness| harness::in_use(harness, &home, &claude, &junie);
     for (harness, hooks) in harness::check(&home, &exe, used) {
         let mut source = source::of(harness, &home, &claude, &junie);
         let mut files = files(source.as_mut(), &System, &saved, &home);
@@ -79,16 +76,6 @@ pub fn run() -> Result<()> {
         bail!("{failed} of {} checks need attention", checks.len());
     }
     Ok(())
-}
-
-/// Whether a harness is in use: Claude Code's and Junie's folders where the
-/// service or this shell finds them, the others' in `home`.
-fn in_use(harness: Harness, home: &Path, claude: &Path, junie: &Path) -> bool {
-    match harness {
-        Harness::Claude => claude.is_dir() || source::claude::config_dir(home).is_dir(),
-        Harness::Junie => junie.is_dir() || source::junie::home().is_dir(),
-        _ => harness::at_home(home, harness),
-    }
 }
 
 /// Whether launchd runs this binary as the service, and it answers on this version.
@@ -485,22 +472,6 @@ mod tests {
 
     /// The session file of tests/fixtures/claude/started.file.jsonl.
     const CLAUDE_SESSION: &str = r#"{"pid": 90859, "sessionId": "e8f843a7-1f54-44e3-b14d-99f53e9cec7a", "cwd": "/Users/me/Code/app", "startedAt": 1794693357235, "procStart": "Sat Nov 14 21:55:57 2026", "version": "2.1.325", "kind": "interactive", "status": "idle"}"#;
-
-    /// Claude Code and Junie are in use where their folders are, which may
-    /// be outside the home folder; the others, in it.
-    #[test]
-    fn a_harness_is_in_use_where_its_folder_is() {
-        let home = tempfile::tempdir().unwrap();
-        let home = home.path();
-        let (claude, junie) = (home.join("work/claude"), home.join("work/junie"));
-        std::fs::create_dir_all(&claude).unwrap();
-        std::fs::create_dir_all(&junie).unwrap();
-        assert!(in_use(Harness::Claude, home, &claude, &junie));
-        assert!(in_use(Harness::Junie, home, &claude, &junie));
-        assert!(!in_use(Harness::Codex, home, &claude, &junie));
-        std::fs::create_dir(home.join(".codex")).unwrap();
-        assert!(in_use(Harness::Codex, home, &claude, &junie));
-    }
 
     #[test]
     fn files_say_how_many_sessions_run_and_from_where() {

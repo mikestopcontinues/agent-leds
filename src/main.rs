@@ -151,11 +151,11 @@ fn main() -> Result<()> {
         Command::Install => {
             let exe = std::env::current_exe()?;
             launchd::install(&exe)?;
-            let registered = registered(harness::install(&home(), &exe))?;
-            println!(
-                "The service is running and starts at login. It follows the sessions of: {}.",
-                registered.join(", ")
-            );
+            let home = home();
+            let (claude, junie) = harness::service_folders(&home);
+            let used = |harness| harness::in_use(harness, &home, &claude, &junie);
+            let registered = registered(harness::install(&home, &exe, used))?;
+            println!("{}", installed(&registered));
             Ok(())
         }
         Command::Uninstall => {
@@ -247,6 +247,20 @@ fn registered(outcomes: Vec<(Harness, Result<()>)>) -> Result<Vec<&'static str>>
         anyhow::bail!("the hooks of {} need attention", failed.join(", "));
     }
     Ok(registered)
+}
+
+/// What an install says, given the harnesses it found in use.
+fn installed(harnesses: &[&str]) -> String {
+    let running = "The service is running and starts at login.";
+    if harnesses.is_empty() {
+        return format!(
+            "{running} No harness is in use yet; run `agent-leds install` again once one is."
+        );
+    }
+    format!(
+        "{running} It follows the sessions of: {}.",
+        harnesses.join(", ")
+    )
 }
 
 fn stdin() -> Result<String> {
@@ -414,6 +428,19 @@ mod tests {
         assert_eq!(
             status_text(&status),
             "The queue is empty.\nNo SidePulse volume is mounted.\n"
+        );
+    }
+
+    #[test]
+    fn an_install_says_what_it_follows_or_that_nothing_is_in_use() {
+        assert_eq!(
+            installed(&["Claude Code", "Codex"]),
+            "The service is running and starts at login. It follows the sessions of: Claude \
+             Code, Codex."
+        );
+        assert!(
+            installed(&[])
+                .ends_with("No harness is in use yet; run `agent-leds install` again once one is.")
         );
     }
 

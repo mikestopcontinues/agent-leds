@@ -10,7 +10,7 @@ mod junie;
 mod opencode;
 mod pi;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,7 @@ use serde_json::{Map, Value, json};
 use crate::coverage::Declared;
 use crate::files;
 use crate::fsm::{Channel, Signal};
+use crate::launchd;
 use crate::source;
 
 /// An agent harness whose sessions the queue shows.
@@ -302,17 +303,38 @@ pub fn at_home(home: &Path, harness: Harness) -> bool {
     home.join(harness.folder()).is_dir()
 }
 
-/// The harnesses that have a folder in `home`.
-fn used(home: &Path) -> impl Iterator<Item = Harness> {
-    Harness::ALL
-        .into_iter()
-        .filter(|&harness| at_home(home, harness))
+/// Claude Code's and Junie's folders as the service finds them, from
+/// launchd's environment.
+pub fn service_folders(home: &Path) -> (PathBuf, PathBuf) {
+    let claude = launchd::getenv("CLAUDE_CONFIG_DIR");
+    let junie = launchd::getenv("JUNIE_HOME");
+    (
+        source::claude::folder(claude.as_deref(), home),
+        source::junie::folder(junie.as_deref()),
+    )
 }
 
-/// Registers the hook with every harness in use, replacing any earlier
-/// registration. One harness failing does not stop the rest.
-pub fn install(home: &Path, exe: &Path) -> Vec<(Harness, Result<()>)> {
-    used(home)
+/// Whether a harness is in use: Claude Code's and Junie's folders where the
+/// service, given `claude` and `junie`, or this shell finds them, the
+/// others' in `home`.
+pub fn in_use(harness: Harness, home: &Path, claude: &Path, junie: &Path) -> bool {
+    match harness {
+        Harness::Claude => claude.is_dir() || source::claude::config_dir(home).is_dir(),
+        Harness::Junie => junie.is_dir() || source::junie::home().is_dir(),
+        _ => at_home(home, harness),
+    }
+}
+
+/// Registers the hook with every harness `used` says is in use, replacing
+/// any earlier registration. One harness failing does not stop the rest.
+pub fn install(
+    home: &Path,
+    exe: &Path,
+    used: impl Fn(Harness) -> bool,
+) -> Vec<(Harness, Result<()>)> {
+    Harness::ALL
+        .into_iter()
+        .filter(|&harness| used(harness))
         .map(|harness| (harness, harness.install(home, exe)))
         .collect()
 }
@@ -542,6 +564,22 @@ mod tests {
         }
     }
 
+    /// Claude Code and Junie are in use where their folders are, which may
+    /// be outside the home folder; the others, in it.
+    #[test]
+    fn a_harness_is_in_use_where_its_folder_is() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let (claude, junie) = (home.join("work/claude"), home.join("work/junie"));
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::create_dir_all(&junie).unwrap();
+        assert!(in_use(Harness::Claude, home, &claude, &junie));
+        assert!(in_use(Harness::Junie, home, &claude, &junie));
+        assert!(!in_use(Harness::Codex, home, &claude, &junie));
+        std::fs::create_dir(home.join(".codex")).unwrap();
+        assert!(in_use(Harness::Codex, home, &claude, &junie));
+    }
+
     #[test]
     fn a_message_asks_only_when_its_last_line_does() {
         assert!(!ends_on_question("Done. All tests pass."));
@@ -569,9 +607,10 @@ mod tests {
     #[test]
     fn only_harnesses_that_have_been_used_are_registered() {
         let home = Home::new();
-        assert!(install(&home, Path::new("/bin/agent-leds")).is_empty());
+        let used = |harness| at_home(&home, harness);
+        assert!(install(&home, Path::new("/bin/agent-leds"), used).is_empty());
         fs::create_dir(home.join(".cursor")).unwrap();
-        let installed = install(&home, Path::new("/bin/agent-leds"));
+        let installed = install(&home, Path::new("/bin/agent-leds"), used);
         assert!(matches!(installed[..], [(Harness::Cursor, Ok(()))]));
         assert!(home.join(cursor::FILE).exists());
     }

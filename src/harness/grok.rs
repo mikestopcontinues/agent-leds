@@ -161,7 +161,7 @@ mod tests {
         Harness::Grok.check(&home, exe).unwrap();
         // Installing removes them from Claude Code's settings.
         home.write(CONFIG, "");
-        super::super::install(&home, exe);
+        super::super::install(&home, exe, |harness| super::super::at_home(&home, harness));
         Harness::Grok.check(&home, exe).unwrap();
         // The user's own handlers stay, the one beside ours included.
         let left = home.json(claude::SETTINGS)["hooks"].clone();
