@@ -26,7 +26,7 @@ use serde::Deserialize;
 use serde::de::IgnoredAny;
 use serde_json::Value;
 
-use super::tail::{self, Lines, MAX_LINE, Tail};
+use super::tail::{self, MAX_LINE, Tail};
 use super::{Event, Hook, Observation, Seed, Source, Start, Strange, Told, Unread};
 use crate::coverage::{Declared, Evidence};
 use crate::fsm::{self, Channel, Phase, Signal};
@@ -591,7 +591,7 @@ struct Thread {
     /// The same, as a Unix second, to set beside the records' times.
     start: i64,
     rollout: PathBuf,
-    tail: Tail,
+    tail: Option<Tail>,
     /// Whether the last read of the rollout stopped at its budget.
     behind: bool,
     /// Whether a turn started and has not ended.
@@ -802,7 +802,7 @@ impl Codex {
                 taken,
                 start,
                 rollout,
-                tail,
+                tail: Some(tail),
                 behind: false,
                 open: false,
                 turn: None,
@@ -848,22 +848,14 @@ impl Codex {
         let Some(thread) = self.threads.get_mut(id) else {
             return;
         };
-        let lines = match thread.tail.read(&thread.rollout) {
-            Ok(Lines::Read { lines, more }) => {
-                thread.behind = more;
-                lines
-            }
-            Ok(Lines::Replaced) => {
-                if let Ok(tail) = Tail::at_end(&thread.rollout) {
-                    thread.tail = tail;
-                }
-                thread.behind = false;
-                return;
-            }
-            Err(_) => {
-                thread.behind = false;
-                return;
-            }
+        let read = tail::follow(
+            &mut thread.tail,
+            &thread.rollout,
+            &mut thread.behind,
+            &mut self.strange,
+        );
+        let Ok(lines) = read else {
+            return;
         };
         for line in lines {
             if let Some(record) = Record::counted(&line, &mut self.strange) {
@@ -900,13 +892,13 @@ impl Codex {
         let start = thread.start;
         // Back to the last typed turn's start, or to what an earlier
         // process wrote.
-        let read = tail::tail_back(&thread.rollout, |line| {
+        let read = tail::tail_back(&thread.rollout, &mut self.strange, |line| {
             Record::read(line)
                 .is_some_and(|record| record.starts_typed_turn() || record.before(start))
         });
         let lines = match read {
             Ok((lines, tail)) => {
-                thread.tail = tail;
+                thread.tail = Some(tail);
                 lines
             }
             // The thread is still followed, from what it writes next.

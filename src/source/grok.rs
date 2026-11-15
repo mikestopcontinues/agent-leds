@@ -28,7 +28,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::tail::{self, Lines, Tail};
+use super::tail::{self, Tail};
 use super::{Event, Hook, Observation, Seed, Source, Start, Strange, Told, Unread};
 use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
@@ -550,7 +550,7 @@ impl Grok {
                     Log::Updates => Update::read(line)
                         .is_some_and(|update| update.is_prompt() || update.before(start)),
                 };
-                let (lines, tail) = match tail::tail_back(&path, anchors) {
+                let (lines, tail) = match tail::tail_back(&path, &mut self.strange, anchors) {
                     Ok(read) => read,
                     // Not written yet.
                     Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -559,27 +559,15 @@ impl Grok {
                 reader.tail = Some(tail);
                 lines
             }
-            Some(tail) => match tail.read(&path) {
-                Ok(Lines::Read { lines, more }) => {
-                    reader.behind = more;
-                    lines
-                }
-                Ok(Lines::Replaced) => {
-                    reader.tail = Tail::at_end(&path).ok();
-                    reader.behind = false;
-                    return Ok(());
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    reader.tail = None;
-                    reader.behind = false;
-                    return Ok(());
-                }
-                // Read again at its next change, not over and over now.
-                Err(error) => {
-                    reader.behind = false;
-                    return Err(Unread::new(&path, error));
-                }
-            },
+            Some(_) => {
+                let read = tail::follow(
+                    &mut reader.tail,
+                    &path,
+                    &mut reader.behind,
+                    &mut self.strange,
+                );
+                read.map_err(|error| Unread::new(&path, error))?
+            }
         };
         for line in lines {
             match log {
@@ -784,7 +772,8 @@ fn newest_schema(sessions: &Path) -> Option<String> {
         .map(|session| session.path().join(Log::Events.name()))
         .filter_map(|log| Some((modified(&log)?, log)))
         .max()?;
-    let (lines, _) = tail::tail_back(&newest.1, Record::starts_turn).ok()?;
+    let strange = &mut Strange::default();
+    let (lines, _) = tail::tail_back(&newest.1, strange, Record::starts_turn).ok()?;
     let started = lines
         .iter()
         .find_map(|line| Record::read(line).filter(|record| record.kind == "turn_started"))?;

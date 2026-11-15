@@ -13,6 +13,8 @@ use std::mem;
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::Path;
 
+use super::Strange;
+
 /// The most a `Tail` reads in one call. The daemon reads each tail at most
 /// once each time it wakes, so a burst of appends is read in slices between
 /// animation steps.
@@ -37,12 +39,13 @@ pub struct Tail {
     rest: Vec<u8>,
     /// Whether the bytes up to the next newline belong to a line being skipped.
     skipping: bool,
-    skipped: u64,
+    /// The lines skipped since they were last counted in a `Strange`.
+    skipped: usize,
 }
 
 /// What a `Tail` found since it last read.
 #[derive(Debug, PartialEq)]
-pub enum Lines {
+enum Lines {
     /// Complete lines without their newline, and whether bytes are left
     /// beyond the read budget.
     Read { lines: Vec<Vec<u8>>, more: bool },
@@ -86,7 +89,7 @@ impl Tail {
     /// '\n' is held back until it is finished. A line over MAX_LINE is skipped
     /// up to its '\n' and counted in `skipped`. Replaced when the inode
     /// changed or the file shrank, and the tail is left as it was.
-    pub fn read(&mut self, path: &Path) -> io::Result<Lines> {
+    fn read(&mut self, path: &Path) -> io::Result<Lines> {
         let mut file = File::open(path)?;
         let metadata = file.metadata()?;
         let size = metadata.len();
@@ -116,10 +119,9 @@ impl Tail {
         Ok(true)
     }
 
-    /// How many lines over MAX_LINE this tail has skipped.
-    #[allow(dead_code)]
-    pub fn skipped(&self) -> u64 {
-        self.skipped
+    /// Counts in `strange` the lines over MAX_LINE skipped since last asked.
+    fn count(&mut self, strange: &mut Strange) {
+        strange.oversized += mem::take(&mut self.skipped);
     }
 
     /// The complete lines in `bytes`, which follow what was read before.
@@ -147,14 +149,49 @@ impl Tail {
     }
 }
 
+/// Reads what was appended to `path` since the tail in `slot` stopped, as a
+/// source follows a log: says in `behind` whether the budget left more,
+/// follows a file that was replaced from its end, drops the tail of a file
+/// that is gone, and counts in `strange` each line too long to read. A read
+/// that fails is left to the file's next change, not tried over and over.
+pub fn follow(
+    slot: &mut Option<Tail>,
+    path: &Path,
+    behind: &mut bool,
+    strange: &mut Strange,
+) -> io::Result<Vec<Vec<u8>>> {
+    *behind = false;
+    let Some(tail) = slot else {
+        return Ok(Vec::new());
+    };
+    match tail.read(path) {
+        Ok(Lines::Read { lines, more }) => {
+            *behind = more;
+            tail.count(strange);
+            Ok(lines)
+        }
+        Ok(Lines::Replaced) => {
+            *slot = Tail::at_end(path).ok();
+            Ok(Vec::new())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            *slot = None;
+            Ok(Vec::new())
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Reads backward from the end in windows of 256 KiB, doubling up to 16 MiB,
 /// until the window holds a line `anchors` accepts (one where the state the
 /// lines fold into began), or reaches the start of the file. Each byte is
 /// read once, and each line offered to `anchors` once. Drops the window's
-/// first, partial line. Returns the lines in file order and a Tail at the
-/// end, which holds back a last line that is not finished.
+/// first, partial line, and counts in `strange` each line too long to read.
+/// Returns the lines in file order and a Tail at the end, which holds back
+/// a last line that is not finished.
 pub fn tail_back(
     path: &Path,
+    strange: &mut Strange,
     mut anchors: impl FnMut(&[u8]) -> bool,
 ) -> io::Result<(Vec<Vec<u8>>, Tail)> {
     let file = File::open(path)?;
@@ -175,6 +212,7 @@ pub fn tail_back(
         let lines = tail.split(&bytes);
         let new = &lines[..lines.len() - offered];
         if new.iter().any(|line| anchors(line)) || begin == 0 || window >= LAST_WINDOW {
+            tail.count(strange);
             return Ok((lines, tail));
         }
         offered = lines.len();
@@ -261,22 +299,64 @@ mod tests {
         let mut tail = Tail::at_end(&path).unwrap();
         append(&path, b" line\nnew\n");
         assert_eq!(lines(tail.read(&path).unwrap()), [b"new".to_vec()]);
-        assert_eq!(tail.skipped(), 0);
+        assert_eq!(tail.skipped, 0);
     }
 
     #[test]
     fn a_huge_line_is_skipped_and_counted() {
         let (_folder, path) = log();
-        let mut tail = Tail::at_start(&path).unwrap();
+        let mut slot = Some(Tail::at_start(&path).unwrap());
+        let mut strange = Strange::default();
+        let mut follow = |strange: &mut Strange| {
+            let mut behind = true;
+            let lines = follow(&mut slot, &path, &mut behind, strange).unwrap();
+            assert!(!behind);
+            lines
+        };
         append(&path, &vec![b'x'; MAX_LINE]);
         append(&path, b"\n");
         append(&path, &vec![b'y'; MAX_LINE - 1]);
-        assert_eq!(lines(tail.read(&path).unwrap()), [vec![b'x'; MAX_LINE]]);
+        assert_eq!(follow(&mut strange), [vec![b'x'; MAX_LINE]]);
         append(&path, b"yy");
-        assert_eq!(lines(tail.read(&path).unwrap()), Vec::<Vec<u8>>::new());
+        assert_eq!(follow(&mut strange), Vec::<Vec<u8>>::new());
         append(&path, b"yyy\nsmall\n");
-        assert_eq!(lines(tail.read(&path).unwrap()), [b"small".to_vec()]);
-        assert_eq!(tail.skipped(), 1);
+        assert_eq!(follow(&mut strange), [b"small".to_vec()]);
+        assert_eq!(strange.oversized, 1);
+        // Counted once.
+        append(&path, b"more\n");
+        follow(&mut strange);
+        assert_eq!(strange.oversized, 1);
+        // And when a seed reads it back.
+        let mut back = Strange::default();
+        tail_back(&path, &mut back, |_| false).unwrap();
+        assert_eq!(back.oversized, 1);
+    }
+
+    #[test]
+    fn a_followed_file_that_is_gone_or_replaced_is_let_go_or_followed_from_its_end() {
+        let (folder, path) = log();
+        append(&path, b"one\n");
+        let mut slot = Some(Tail::at_start(&path).unwrap());
+        let (mut behind, mut strange) = (true, Strange::default());
+        let staged = folder.path().join("staged");
+        fs::write(&staged, b"other\n").unwrap();
+        fs::rename(&staged, &path).unwrap();
+        assert!(
+            follow(&mut slot, &path, &mut behind, &mut strange)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!behind);
+        append(&path, b"two\n");
+        let read = follow(&mut slot, &path, &mut behind, &mut strange).unwrap();
+        assert_eq!(read, [b"two".to_vec()]);
+        fs::remove_file(&path).unwrap();
+        assert!(
+            follow(&mut slot, &path, &mut behind, &mut strange)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(slot.is_none());
     }
 
     #[test]
@@ -349,7 +429,7 @@ mod tests {
         // The anchor, record 1000, is 500 KB from the end: past the first
         // window and inside the second.
         let mut offered = Vec::new();
-        let (found, mut tail) = tail_back(&path, |line| {
+        let (found, mut tail) = tail_back(&path, &mut Strange::default(), |line| {
             offered.push(line.to_vec());
             line == record(1000).as_bytes()
         })
@@ -377,7 +457,7 @@ mod tests {
         let (_folder, path) = log();
         append(&path, b"first\nsecond\n");
         let mut asked = 0;
-        let (found, _) = tail_back(&path, |_| {
+        let (found, _) = tail_back(&path, &mut Strange::default(), |_| {
             asked += 1;
             false
         })

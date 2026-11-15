@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::Deserialize;
 
-use super::tail::{self, Lines, Tail};
+use super::tail::{self, Tail};
 use super::{Event, Hook, Observation, Seed, Source, Start, Strange, Told, Unread};
 use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
@@ -465,29 +465,16 @@ impl Pi {
             };
             session.tail = Some(tail);
         }
-        let tail = session.tail.as_mut().expect("opened");
-        let lines = match tail.read(&file) {
-            Ok(Lines::Read { lines, more }) => {
-                session.behind = more;
-                lines
-            }
-            // Pi rewrites a file only to migrate it from an older version, as
-            // it loads it, which is history.
-            Ok(Lines::Replaced) => {
-                session.tail = Tail::at_end(&file).ok();
-                session.behind = false;
-                return;
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                session.tail = None;
-                session.behind = false;
-                return;
-            }
-            // Read again at its next change, not over and over now.
-            Err(_) => {
-                session.behind = false;
-                return;
-            }
+        // Pi rewrites a file only to migrate it from an older version, as it
+        // loads it, which is history: a file replaced is followed from its end.
+        let read = tail::follow(
+            &mut session.tail,
+            &file,
+            &mut session.behind,
+            &mut self.strange,
+        );
+        let Ok(lines) = read else {
+            return;
         };
         for line in lines {
             if let Some(entry) = Entry::counted(&line, &mut self.strange) {
@@ -566,7 +553,7 @@ impl Pi {
             // holds, is history: it says only which turn the session is on,
             // as a seed reads it, though this process may have written it
             // before it went to another session and back.
-            if let Ok((lines, tail)) = tail::tail_back(&file, holds_prompt) {
+            if let Ok((lines, tail)) = tail::tail_back(&file, &mut self.strange, holds_prompt) {
                 let strange = &mut self.strange;
                 let entries = lines
                     .iter()
@@ -600,7 +587,7 @@ impl Pi {
             session.made = header.timestamp;
             session.cwd = header.cwd.unwrap_or_default();
         }
-        let (lines, tail) = tail::tail_back(path, holds_prompt)?;
+        let (lines, tail) = tail::tail_back(path, &mut self.strange, holds_prompt)?;
         let strange = &mut self.strange;
         let entries: Vec<Entry> = lines
             .iter()

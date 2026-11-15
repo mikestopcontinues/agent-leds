@@ -22,7 +22,7 @@ use serde::Deserialize;
 use serde::de::IgnoredAny;
 use serde_json::Value;
 
-use super::tail::{self, Lines, Tail};
+use super::tail::{self, Tail};
 use super::{Event, Hook, Observation, Seed, Source, Start, Strange, Told, Unread};
 use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
@@ -435,7 +435,9 @@ struct Session {
     /// Whether the wait the session file says is a request made outside a
     /// turn, which began after the turn's end.
     request: bool,
-    transcript: Option<(PathBuf, Tail)>,
+    /// The transcript it follows, with `tail` where it last stopped.
+    transcript: Option<PathBuf>,
+    tail: Option<Tail>,
     /// Whether the last read of the transcript stopped at its budget.
     behind: bool,
     /// Whether a turn started and has not ended.
@@ -647,9 +649,9 @@ impl Claude {
         self.procs.insert(path.to_owned(), proc);
         let id = process.session_id;
         out.push(self.started(k, &id, process.cwd));
-        let transcript = self
-            .find(&id)
-            .and_then(|path| Some((path.clone(), open(&path, start).ok()?)));
+        let transcript = self.find(&id);
+        let tail = transcript.as_ref().and_then(|path| open(path, start).ok());
+        let transcript = tail.as_ref().and(transcript);
         self.sessions.insert(
             id.clone(),
             Session {
@@ -659,6 +661,7 @@ impl Claude {
                 dialog: status.is_none(),
                 request,
                 transcript,
+                tail,
                 behind: false,
                 open: false,
                 turn: None,
@@ -744,44 +747,27 @@ impl Claude {
         let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
-        if let Some((known, tail)) = &mut session.transcript
+        if let (Some(known), Some(tail)) = (&session.transcript, &mut session.tail)
             && known != path
-        {
             // The session moved to another folder: its transcript was copied
             // there and is written on there. Another file of the same name
             // that holds less than was read is not that copy.
-            if !tail.moved(path).unwrap_or(false) {
-                return;
-            }
-            *known = path.to_owned();
+            && !tail.moved(path).unwrap_or(false)
+        {
+            return;
         }
-        if session.transcript.is_none() {
-            let Ok(tail) = open(path, session.start) else {
-                return;
-            };
-            session.transcript = Some((path.to_owned(), tail));
+        if session.tail.is_none() {
+            session.tail = open(path, session.start).ok();
         }
-        let (_, tail) = session.transcript.as_mut().expect("opened");
-        let lines = match tail.read(path) {
-            Ok(Lines::Read { lines, more }) => {
-                session.behind = more;
-                lines
-            }
-            Ok(Lines::Replaced) => {
-                session.transcript = Tail::at_end(path).ok().map(|tail| (path.to_owned(), tail));
-                session.behind = false;
-                return;
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                session.transcript = None;
-                session.behind = false;
-                return;
-            }
-            // Read again at its next change, not over and over now.
-            Err(_) => {
-                session.behind = false;
-                return;
-            }
+        let read = tail::follow(
+            &mut session.tail,
+            path,
+            &mut session.behind,
+            &mut self.strange,
+        );
+        session.transcript = session.tail.as_ref().map(|_| path.to_owned());
+        let Ok(lines) = read else {
+            return;
         };
         for line in lines {
             self.line(id, &line, out);
@@ -887,7 +873,7 @@ impl Claude {
     fn seed_records(&mut self, id: &str, path: &Path) -> io::Result<()> {
         let start = self.sessions[id].start;
         let anchors = |record: &Record| record.is_prompt() || record.before(start);
-        let (lines, tail) = tail::tail_back(path, |line| {
+        let (lines, tail) = tail::tail_back(path, &mut self.strange, |line| {
             Record::read(line).is_some_and(|record| anchors(&record))
         })?;
         let strange = &mut self.strange;
@@ -896,7 +882,8 @@ impl Claude {
             .filter_map(|line| Record::counted(line, strange))
             .collect();
         let session = self.sessions.get_mut(id).expect("started");
-        session.transcript = Some((path.to_owned(), tail));
+        session.transcript = Some(path.to_owned());
+        session.tail = Some(tail);
         let mut history = Vec::new();
         // A turn's work without its start: the turn began further back.
         let work = |record: &Record| record.is_model() || record.is_tool_result();
@@ -1020,9 +1007,8 @@ impl Source for Claude {
                 // The session is still followed, from what it writes next.
                 unread.push(Unread::new(&transcript, error));
                 let session = self.sessions.get_mut(&id).expect("just started");
-                session.transcript = Tail::at_end(&transcript)
-                    .ok()
-                    .map(|tail| (transcript, tail));
+                session.tail = Tail::at_end(&transcript).ok();
+                session.transcript = session.tail.as_ref().map(|_| transcript);
             }
             for (id, from, to) in edges {
                 self.edge(&id, from, to, &mut Vec::new());
@@ -1079,7 +1065,7 @@ impl Source for Claude {
                 .iter()
                 .filter_map(|(id, session)| {
                     let path = match &session.transcript {
-                        Some((path, _)) => path.clone(),
+                        Some(path) => path.clone(),
                         None => self.find(id)?,
                     };
                     Some((id.clone(), path))
@@ -1090,7 +1076,7 @@ impl Source for Claude {
         for o in &out {
             if let Event::Started(_) = o.event
                 && let Some(session) = self.sessions.get(&o.key.id)
-                && let Some((path, _)) = &session.transcript
+                && let Some(path) = &session.transcript
                 && !transcripts.iter().any(|(_, known)| known == path)
             {
                 transcripts.push((o.key.id.clone(), path.clone()));

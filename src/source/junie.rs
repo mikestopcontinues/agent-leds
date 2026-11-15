@@ -30,7 +30,7 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 
-use super::tail::{self, Lines, Tail};
+use super::tail::{self, Tail};
 use super::{Event, Hook, Observation, Seed, Source, Start, Strange, Told, Unread};
 use crate::config;
 use crate::coverage::{Declared, Evidence};
@@ -579,7 +579,7 @@ impl Junie {
         since: Option<u64>,
         out: &mut Vec<Observation>,
     ) -> io::Result<()> {
-        let (lines, tail) = tail::tail_back(path, |line| {
+        let (lines, tail) = tail::tail_back(path, &mut self.strange, |line| {
             Record::read(line).is_some_and(|record| record.starts_turn())
         })?;
         let strange = &mut self.strange;
@@ -624,27 +624,14 @@ impl Junie {
             };
             session.log = Some(tail);
         }
-        let tail = session.log.as_mut().expect("opened");
-        let lines = match tail.read(&path) {
-            Ok(Lines::Read { lines, more }) => {
-                session.behind = more;
-                lines
-            }
-            Ok(Lines::Replaced) => {
-                session.log = Tail::at_end(&path).ok();
-                session.behind = false;
-                return;
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                session.log = None;
-                session.behind = false;
-                return;
-            }
-            // Read again at its next change, not over and over now.
-            Err(_) => {
-                session.behind = false;
-                return;
-            }
+        let read = tail::follow(
+            &mut session.log,
+            &path,
+            &mut session.behind,
+            &mut self.strange,
+        );
+        let Ok(lines) = read else {
+            return;
         };
         for line in lines {
             if let Some(record) = Record::counted(&line, &mut self.strange) {

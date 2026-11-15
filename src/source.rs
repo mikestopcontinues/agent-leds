@@ -147,12 +147,13 @@ impl Unread {
 }
 
 /// What a source's reads could not make sense of: lines that are not
-/// records it can read, and records of kinds its harness was not seen to
-/// write, by kind. A harness that writes otherwise after an update shows up
-/// here first.
+/// records it can read, lines too long to read at all, and records of kinds
+/// its harness was not seen to write, by kind. A harness that writes
+/// otherwise after an update shows up here first.
 #[derive(Debug, Default, PartialEq)]
 pub struct Strange {
     pub unparsed: usize,
+    pub oversized: usize,
     pub kinds: BTreeMap<String, usize>,
 }
 
@@ -182,14 +183,23 @@ impl Strange {
         (!said.is_empty()).then(|| said.join("; "))
     }
 
-    /// The lines that are not records, if any. A crash or a rewrite leaves
-    /// a line cut short, so they are no sign of a new format by themselves.
+    /// The lines that are not records, and those too long to read, if
+    /// any. A crash or a rewrite leaves a line cut short, and the longest
+    /// lines are images and terminal output, so they are no sign of a new
+    /// format by themselves.
     pub fn lines(&self) -> Option<String> {
-        match self.unparsed {
+        let unparsed = match self.unparsed {
             0 => None,
             1 => Some("1 line is not a record it reads".to_owned()),
             n => Some(format!("{n} lines are not records it reads")),
-        }
+        };
+        let oversized = match self.oversized {
+            0 => None,
+            1 => Some("1 line is too long to read".to_owned()),
+            n => Some(format!("{n} lines are too long to read")),
+        };
+        let said: Vec<String> = unparsed.into_iter().chain(oversized).collect();
+        (!said.is_empty()).then(|| said.join("; "))
     }
 
     /// The records of kinds `harness` was not seen to write, if any.
@@ -551,7 +561,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use super::tail::{Lines, Tail};
+    use super::tail::{self, Tail};
     use super::*;
     use crate::files;
 
@@ -615,8 +625,8 @@ mod tests {
                     if self.log.is_none() {
                         self.log = Tail::at_start(path).ok();
                     }
-                    if let Some(Ok(Lines::Read { lines, .. })) =
-                        self.log.as_mut().map(|log| log.read(path))
+                    let (mut behind, mut strange) = (false, Strange::default());
+                    if let Ok(lines) = tail::follow(&mut self.log, path, &mut behind, &mut strange)
                     {
                         seen.lines += lines.len();
                     }
