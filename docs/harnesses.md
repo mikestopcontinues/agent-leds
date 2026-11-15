@@ -2,7 +2,7 @@
 
 What each agent harness reports to the service and where it falls short. [design.md](design.md) covers what the service does with the reports.
 
-The service reads Claude Code's and Codex's own files, and registers no hooks with Claude Code and one with Codex, for the one moment its files do not record. With each other harness, `agent-leds install` registers `agent-leds hook <harness>` for the events listed below; OpenCode and Pi load a plugin of ours that runs it. The hook passes the event to the daemon with the processes it runs under, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked. Whatever the hooks say, a session leaves when the process running it ends.
+The service reads Claude Code's own files, and registers no hooks with it. It reads Codex's and Grok's files too, and keeps one hook with each for what they do not record. With each other harness, `agent-leds install` registers `agent-leds hook <harness>` for the events listed below; OpenCode and Pi load a plugin of ours that runs it. The hook passes the event to the daemon with the processes it runs under, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked. Whatever the hooks say, a session leaves when the process running it ends.
 
 The harnesses took their hook events from Claude Code, so most of the names agree. Each harness reads only its own spelling. [coverage.md](coverage.md) lists every signal each harness gives, how each is known, and the moves each cannot make.
 
@@ -55,21 +55,29 @@ A thread whose `session_meta` names a subagent, by its `source` or its `thread_s
 
 ## Grok
 
-Hooks are a file of their own, `~/.grok/hooks/agent-leds.json`.
+`~/.grok/active_sessions.json` lists each running Grok session with its process's pid and the microsecond that process started. Each session keeps a folder, `~/.grok/sessions/<cwd folder>/<session>/`, with two logs: `events.jsonl` says when a turn starts, waits and ends, and `updates.jsonl` holds what the agent wrote and the subagents it started. The daemon reads all three as they change. The events decide every move; the updates are read to their end when a turn ends, for its last message and the subagents still running. One hook remains, `StopFailure` in `~/.grok/hooks/agent-leds.json`, because no file was seen to record a turn that ends on an API error.
 
-| Hook event | Session becomes |
+| What Grok writes | Session becomes |
 | --- | --- |
-| `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure` | working |
-| `Notification` of a `permission_prompt`, `PreToolUse` for `ask_user_question` | question |
-| `Stop` whose last line ends in a question mark | question, as a weak signal |
-| `Stop` otherwise, or `StopCancelled` when Grok gave the turn up by itself | stopped |
-| `StopFailure` | error |
-| `SessionEnd`, or `StopCancelled` by the user | removed |
+| A row in `active_sessions.json` whose process runs | tracked |
+| `turn_started` in the events, typed or after a background subagent finishes | working |
+| `permission_requested` still unresolved 250 ms after it was written | question |
+| `tool_started` for `ask_user_question` | question |
+| `permission_resolved` after such a prompt, or `tool_completed` for `ask_user_question` | working |
+| `turn_ended` completed, whose last message's last line ends in a question mark | question, as a weak signal |
+| `turn_ended` while the updates hold a subagent spawned and not finished | working, in the background |
+| `turn_ended` otherwise, including a cancel Grok made itself such as `max_turns` | stopped |
+| The `StopFailure` hook, for the newest turn | error |
+| `turn_ended` cancelled by Ctrl-C, the stop button or the dashboard, or by rejecting or cancelling a permission | removed |
+| The row gone from `active_sessions.json`, as `/quit` leaves it even mid-turn, or its process gone | removed |
 
-Grok fires `Stop` again when the session closes; only the one with reason `end_turn` counts. A subagent reports as a session of its own, with nothing that names the session that started it, so its events are ignored. The gaps:
+Every tool, read-only ones too, writes a permission request, and Grok writes each request and its answer as separate lines. One Grok approves by itself is answered within 7 ms; one the user answers waits seconds. So a request counts only once it has gone 250 ms unanswered, and the light turns to question that much later. The question tool's own approval is never a wait. A row left by a process that was killed stays in the registry until another session starts, so a row counts only while its pid runs with the start it records. A subagent runs in a session folder of its own, beside its parent's, under an id the registry never lists, so it is never followed; the parent shows its work. The files are undocumented; the fixtures in `tests/fixtures/grok/`, recorded from Grok 1.0.77, pin what the daemon expects of them. The gaps:
 
-- Grok reports a cancelled turn off to the side, so the report can arrive after the next prompt and remove a session that is working again. Its next tool call brings it back.
-- A turn that reports nothing, such as one you rewind, stays green until the next prompt, or until its process ends.
+- A turn that fails is known only from the hook, so a daemon started after it shows what the files say: working, or stopped once the turn's end is written. A request that cannot connect retries without end and never ends the turn, so the session stays green.
+- Grok sends `StopFailure` off the turn, so the hook can arrive after the turn's end is written, which shows stopped and then error, or after the next turn has started. The hook names its turn's `promptId`, and so do the agent's records in `updates.jsonl`, so a report on a turn the next one has replaced is dropped. A turn that fails before the agent writes anything has no such record: if the next turn has not written anything either when the report arrives, the next turn shows error until it writes something, and its own end still counts.
+- A run with `grok -p` gets no row, so it is not shown.
+- A subagent that finishes after its parent's turn without waking it should show the session as stopped. That was never seen: the one that finished after its turn woke its parent, which started a turn, and the ones that did not wake it finished inside the turn.
+- Plan approval, the leader process (`use_leader`) and several windows on one session have not been tried.
 
 ## Cursor
 

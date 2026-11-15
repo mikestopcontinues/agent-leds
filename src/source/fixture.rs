@@ -6,7 +6,9 @@
 //! and each line after is one step:
 //!
 //! - `{"append": "<path under home>", "line": ...}` adds a line to a file,
-//!   `"times": <n>` times over if it says so;
+//!   `"times": <n>` times over if it says so, and `"lines": [...]` in place
+//!   of `"line"` adds several in one write, as a burst the watcher reports
+//!   once;
 //! - `{"write": "<path>", "text": ...}` rewrites a file in place;
 //! - `{"delete": "<path>"}`;
 //! - `{"hook": <payload>, "ancestry": [<proc>, ...]}` delivers a hook;
@@ -17,6 +19,9 @@
 //! - `{"alive": <pid>, "started_us": <n>}` and `{"exit": <pid>}` start and
 //!   end a process, and `{"unlock": "<path>"}` drops a lock as a killed
 //!   process does, for the fake kernel the source and the sweep ask;
+//! - `{"now": "<ISO 8601 time>"}` sets the clock the source reads, which
+//!   otherwise stands after every record, and reads a source whose hold has
+//!   run out by then, as the daemon does;
 //! - `{"expect": [["<signal>", "<channel>"], ...]}` says what every step
 //!   since the last `expect` yielded, in order, one observation each; an
 //!   observation of several signals is `[["<signal>", ...], "<channel>"]`.
@@ -45,11 +50,13 @@ use crate::harness::{self, Harness};
 use crate::liveness::{self, Kernel, Liveness, Proc};
 use crate::queue::{Key, Queue};
 
-/// Processes and locks as a test says they are.
+/// Processes, locks and the clock as a test says they are.
 #[derive(Default)]
 pub struct FakeKernel {
     starts: HashMap<i32, u64>,
     locks: HashSet<PathBuf>,
+    /// The clock in Unix milliseconds, or None for after every record.
+    now: Option<u64>,
 }
 
 impl Kernel for FakeKernel {
@@ -60,6 +67,10 @@ impl Kernel for FakeKernel {
     fn locked(&self, path: &Path) -> io::Result<bool> {
         fs::metadata(path)?;
         Ok(self.locks.contains(path))
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.now.unwrap_or(u64::MAX)
     }
 }
 
@@ -81,7 +92,9 @@ struct Header {
 enum Step {
     Append {
         append: String,
-        line: Value,
+        line: Option<Value>,
+        #[serde(default)]
+        lines: Vec<Value>,
         times: Option<usize>,
     },
     Write {
@@ -109,6 +122,9 @@ enum Step {
     },
     Unlock {
         unlock: String,
+    },
+    Now {
+        now: String,
     },
     Expect {
         expect: Vec<(Told, Channel)>,
@@ -234,16 +250,21 @@ impl Replay {
         let path = self.home.path().join(step.file().expect("a file step"));
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         match step {
-            Step::Append { line, times, .. } => {
+            Step::Append {
+                line, lines, times, ..
+            } => {
                 let mut file = OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(&path)
                     .unwrap();
-                let line = text(line);
-                for _ in 0..times.unwrap_or(1) {
-                    writeln!(file, "{line}").unwrap();
+                let mut burst = String::new();
+                for line in line.iter().chain(lines) {
+                    burst.push_str(&text(line));
+                    burst.push('\n');
                 }
+                file.write_all(burst.repeat(times.unwrap_or(1)).as_bytes())
+                    .unwrap();
             }
             Step::Write { text: value, .. } => fs::write(&path, text(value)).unwrap(),
             Step::Delete { .. } => fs::remove_file(&path).unwrap(),
@@ -321,10 +342,22 @@ impl Replay {
     }
 }
 
+/// Sets the clock, and reads the source again if a hold it keeps has run
+/// out by then, as the daemon does.
+fn clock(source: &mut dyn Source, k: &mut FakeKernel, now: &str) -> Vec<Observation> {
+    let now = liveness::iso_ms(now).unwrap_or_else(|| panic!("{now} is no time"));
+    k.now = Some(now);
+    if source.due().is_some_and(|due| due <= now) {
+        changed(source, k, None)
+    } else {
+        Vec::new()
+    }
+}
+
 /// What a source reads of files that changed, and then of whatever its
 /// budget left unread, as the daemon reads it.
-fn changed(source: &mut dyn Source, k: &dyn Kernel, paths: &[PathBuf]) -> Vec<Observation> {
-    let mut observations = source.changed(k, Some(paths));
+fn changed(source: &mut dyn Source, k: &dyn Kernel, paths: Option<&[PathBuf]>) -> Vec<Observation> {
+    let mut observations = source.changed(k, paths);
     while source.behind() {
         observations.extend(source.changed(k, None));
     }
@@ -377,8 +410,9 @@ pub fn replay(harness: Harness, name: &str) -> Replay {
             ),
             step if step.file().is_some() => {
                 let path = replay.write(step);
-                changed(source.as_mut(), &replay.kernel, &[path])
+                changed(source.as_mut(), &replay.kernel, Some(&[path]))
             }
+            Step::Now { now } => clock(source.as_mut(), &mut replay.kernel, now),
             step => {
                 replay.kernel(step);
                 replay.sweep()
@@ -437,18 +471,19 @@ fn coalesce(harness: Harness, name: &str, fixture: &Fixture) -> BTreeMap<Key, Ph
         if step.file().is_some() {
             pending.push(replay.write(step));
             if pending.len() == 2 {
-                let observations = changed(source.as_mut(), &replay.kernel, &pending);
+                let observations = changed(source.as_mut(), &replay.kernel, Some(&pending));
                 replay.take(observations, number);
                 pending.clear();
             }
             continue;
         }
         if !pending.is_empty() {
-            let observations = changed(source.as_mut(), &replay.kernel, &pending);
+            let observations = changed(source.as_mut(), &replay.kernel, Some(&pending));
             replay.take(observations, number);
             pending.clear();
         }
         let observations = match step {
+            Step::Now { now } => clock(source.as_mut(), &mut replay.kernel, now),
             Step::Hook { hook, ancestry } => source.hook(
                 &replay.kernel,
                 &Hook {
@@ -465,7 +500,7 @@ fn coalesce(harness: Harness, name: &str, fixture: &Fixture) -> BTreeMap<Key, Ph
         replay.take(observations, number);
     }
     if !pending.is_empty() {
-        let observations = changed(source.as_mut(), &replay.kernel, &pending);
+        let observations = changed(source.as_mut(), &replay.kernel, Some(&pending));
         replay.take(observations, fixture.steps.len());
     }
     replay.phases()

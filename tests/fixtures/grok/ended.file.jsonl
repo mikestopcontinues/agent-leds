@@ -1,0 +1,7 @@
+{"cite":"probe-grok run j","evidence":"observed"}
+{"alive":7670,"started_us":1794693969646642}
+{"expect":[]}
+{"write":".grok/active_sessions.json","text":"[\n  {\n    \"session_id\": \"01a1dc18-b9ac-7e91-9258-b4be17760a2e\",\n    \"pid\": 7670,\n    \"pid_start\": 1794693969646642,\n    \"cwd\": \"/Users/me/Code/app\",\n    \"opened_at\": \"2026-11-14T22:06:09.646Z\"\n  }\n]"}
+{"expect":[["started","file"]]}
+{"write":".grok/active_sessions.json","text":"[]"}
+{"expect":[["ended","file"]]}

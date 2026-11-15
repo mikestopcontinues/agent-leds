@@ -1,0 +1,23 @@
+{"cite":"probe-grok interrupted, run h","evidence":"observed"}
+{"alive":3633,"started_us":1794693818120127}
+{"expect":[]}
+{"write":".grok/active_sessions.json","text":"[\n  {\n    \"session_id\": \"9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac\",\n    \"pid\": 3633,\n    \"pid_start\": 1794693818120127,\n    \"cwd\": \"/Users/me/Code/app\",\n    \"opened_at\": \"2026-11-14T22:03:38.120Z\"\n  }\n]"}
+{"expect":[["started","file"]]}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac/updates.jsonl","line":{"timestamp":1794693819,"method":"session/update","params":{"sessionId":"9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"Delete the build folder."}},"_meta":{"eventId":"9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac-3","agentTimestampMs":1794693819728}}}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac/events.jsonl","line":{"ts":"2026-11-14T22:03:39.551Z","type":"turn_started","session_id":"9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac","turn_number":0,"model_id":"grok-4.7","yolo_mode":false,"conversation_message_count":3,"session_relationship":"primary","schema_version":"1.0"}}
+{"expect":[["prompted","file"]]}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac/events.jsonl","line":{"ts":"2026-11-14T22:03:39.817Z","type":"loop_started","loop_index":0}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac/events.jsonl","line":{"ts":"2026-11-14T22:03:39.860Z","type":"phase_changed","phase":"waiting_for_model"}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac/updates.jsonl","line":{"timestamp":1794693822,"method":"session/update","params":{"sessionId":"9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"I'll delete it now."}},"_meta":{"totalTokens":1431,"requestTrimmedTokens":0,"eventId":"9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac-17","agentTimestampMs":1794693822193,"promptId":"266cd8dd-7c62-43a0-b9a5-2c08cda3d869","streamStartMs":1794693820751,"turnStartMs":1794693819538,"updateType":"AgentMessageChunk","chunkId":13}}}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac/events.jsonl","line":{"ts":"2026-11-14T22:03:42.216Z","type":"phase_changed","phase":"tool_execution"}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac/events.jsonl","line":{"ts":"2026-11-14T22:03:42.217Z","type":"tool_started","tool_name":"run_terminal_command"}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac/events.jsonl","line":{"ts":"2026-11-14T22:03:42.301Z","type":"phase_changed","phase":"permission_prompt"}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac/events.jsonl","line":{"ts":"2026-11-14T22:03:42.301Z","type":"permission_requested","tool_name":"run_terminal_command"}}
+{"expect":[["permission_asked","file"]]}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac/events.jsonl","line":{"ts":"2026-11-14T22:03:46.883Z","type":"permission_resolved","tool_name":"run_terminal_command","decision":"deny","wait_ms":4582}}
+{"expect":[["answered","file"]]}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac/events.jsonl","line":{"ts":"2026-11-14T22:03:46.883Z","type":"phase_changed","phase":"tool_execution"}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac/events.jsonl","line":{"ts":"2026-11-14T22:03:46.966Z","type":"turn_ended","outcome":"cancelled","cancellation_category":"permission_rejected","cancellation_context":{"tool_name":"run_terminal_command","reason":"User rejected the execution"}}}
+{"expect":[[["interrupted","turn_ended"],"file"]]}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac/updates.jsonl","line":{"timestamp":1794693827,"method":"_x.ai/session/update","params":{"sessionId":"9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac","update":{"sessionUpdate":"turn_completed","prompt_id":"266cd8dd-7c62-43a0-b9a5-2c08cda3d869","stop_reason":"cancelled","elapsed_ms":7466},"_meta":{"eventId":"9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac-24","agentTimestampMs":1794693827004,"cancellationCategory":"PermissionRejected","cancellationContext":{"tool_name":"run_terminal_command","reason":"User rejected the execution"}}}}}
+{"expect":[]}

@@ -808,6 +808,10 @@ impl Source for Codex {
     fn behind(&self) -> bool {
         self.threads.values().any(|thread| thread.behind)
     }
+
+    fn due(&self) -> Option<u64> {
+        None
+    }
 }
 
 #[cfg(test)]
