@@ -19,8 +19,8 @@
 {"hook": {"event": "permission.asked", "session": "ses_e202904f4ffegKoZPcGV7jVtmD"}, "ancestry": [{"pid": 86551, "started_us": 1794756470000000}, {"pid": 1, "started_us": 1794600000000000}]}
 {"expect": [["permission_asked", "hook"]]}
 {"hook": {"event": "permission.replied", "session": "ses_e202904f4ffegKoZPcGV7jVtmD"}, "ancestry": [{"pid": 86551, "started_us": 1794756470000000}, {"pid": 1, "started_us": 1794600000000000}]}
-{"expect": [["answered", "hook"]], "restart": "background"}
+{"expect": [["answered", "hook"], [["backgrounded", "turn_ended"], "file"], ["looked", "file"]]}
 {"hook": {"event": "permission.replied", "session": "ses_e202904f4ffegKoZPcGV7jVtmD"}, "ancestry": [{"pid": 86551, "started_us": 1794756470000000}, {"pid": 1, "started_us": 1794600000000000}]}
-{"expect": [["answered", "hook"]], "restart": "background"}
+{"expect": [["answered", "hook"], [["backgrounded", "turn_ended"], "file"], ["looked", "file"]]}
 {"exit": 86551}
 {"expect": [["ended", "hook"]]}

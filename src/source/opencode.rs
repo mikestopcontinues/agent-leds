@@ -267,6 +267,20 @@ impl Level {
     fn viewed(&self) -> bool {
         matches!(self, Level::Ended { viewed: true, .. })
     }
+
+    /// What the level says, record by record: how the turn stands; after an
+    /// end, which lets go of any question, one a subagent still asks; and
+    /// that the user saw it.
+    fn told(&self) -> Vec<BTreeSet<Signal>> {
+        let mut told = vec![self.signals()];
+        if matches!(self, Level::Ended { .. }) && self.question() {
+            told.push(BTreeSet::from([Signal::QuestionAsked]));
+        }
+        if self.viewed() {
+            told.push(BTreeSet::from([Signal::Looked]));
+        }
+        told
+    }
 }
 
 /// A session a busy from the plugin named, followed in the database.
@@ -820,6 +834,34 @@ impl OpenCode {
         (cwd, unread)
     }
 
+    /// Where the database leaves a session just followed, as the signals
+    /// that take it there from Idle.
+    fn current(&self, id: &str) -> Vec<Observation> {
+        let session = &self.sessions[id];
+        let mut told = Told::default();
+        for signals in session.level.told() {
+            told.tell(&signals);
+        }
+        // The shortest signals do not say what the user saw.
+        let mut signals = told.current();
+        if session.level.viewed() {
+            signals.push(Signal::Looked);
+        }
+        let turn = session.level.turn();
+        signals
+            .into_iter()
+            .map(|signal| {
+                Observation::new(
+                    Harness::OpenCode,
+                    id,
+                    Channel::File,
+                    Event::one(signal),
+                    turn.clone(),
+                )
+            })
+            .collect()
+    }
+
     fn turn(&self, id: &str) -> Option<TurnKey> {
         self.sessions
             .get(id)
@@ -859,59 +901,78 @@ fn read_session(
     Ok(true)
 }
 
+/// Tells `signals` of a session the database leaves at `level`. An answer
+/// to a background subagent lets go of the wait that held off how the run
+/// ended, which is then told again.
+fn tell(
+    id: &str,
+    level: &Level,
+    channel: Channel,
+    signals: BTreeSet<Signal>,
+    out: &mut Vec<Observation>,
+) {
+    let answered = signals.contains(&Signal::Answered);
+    out.push(Observation::new(
+        Harness::OpenCode,
+        id,
+        channel,
+        Event::Signals(signals),
+        level.turn(),
+    ));
+    if answered && level.signals().contains(&Signal::Backgrounded) {
+        for signals in level.told() {
+            out.push(Observation::new(
+                Harness::OpenCode,
+                id,
+                Channel::File,
+                Event::Signals(signals),
+                level.turn(),
+            ));
+        }
+    }
+}
+
 /// What a session's level moving from `from` to `to` tells.
 fn moved(id: &str, from: &Level, to: &Level, out: &mut Vec<Observation>) {
-    let turn = to.turn();
-    let tell = |signals: BTreeSet<Signal>, out: &mut Vec<Observation>| {
-        out.push(Observation::new(
-            Harness::OpenCode,
-            id,
-            Channel::File,
-            Event::Signals(signals),
-            turn.clone(),
-        ));
-    };
-    let one = |signal: Signal, out: &mut Vec<Observation>| tell(BTreeSet::from([signal]), out);
-    let held = |before: bool, now: bool, out: &mut Vec<Observation>| match (before, now) {
-        (false, true) => one(Signal::QuestionAsked, out),
-        (true, false) => one(Signal::Answered, out),
-        _ => {}
+    let mut say = |signals: BTreeSet<Signal>| tell(id, to, Channel::File, signals, out);
+    let wait = match (from.question(), to.question()) {
+        (false, true) => Some(Signal::QuestionAsked),
+        (true, false) => Some(Signal::Answered),
+        _ => None,
     };
     let new = to.turn().is_some() && to.turn() != from.turn();
     match (from, to) {
         (_, Level::None) => {}
         // A turn starts, or one that looked ended goes on.
-        (_, Level::Open { .. }) if new || matches!(from, Level::Ended { .. }) => {
-            tell(to.signals(), out)
+        (_, Level::Open { .. }) if new || matches!(from, Level::Ended { .. }) => say(to.signals()),
+        (_, Level::Open { .. }) => {
+            if let Some(wait) = wait {
+                say(BTreeSet::from([wait]));
+            }
         }
-        (_, Level::Open { .. }) => held(from.question(), to.question(), out),
         // The same end, written again, tells only what changed since.
         (
             Level::Ended {
                 end: before,
-                signals: told,
+                signals: was,
                 ..
             },
             Level::Ended { end, signals, .. },
-        ) if !new && before == end && told == signals => {
-            held(from.question(), to.question(), out);
+        ) if !new && before == end && was == signals => {
+            if let Some(wait) = wait {
+                say(BTreeSet::from([wait]));
+            }
             if !from.viewed() && to.viewed() {
-                one(Signal::Looked, out);
+                say(BTreeSet::from([Signal::Looked]));
             }
         }
         // Each end is told once, however often its rows are written again.
         (_, Level::Ended { .. }) => {
             if new {
-                one(Signal::Prompted, out);
+                say(BTreeSet::from([Signal::Prompted]));
             }
-            tell(to.signals(), out);
-            // The end lets go of any question, and one a subagent still
-            // asks holds the session up again.
-            if to.question() {
-                one(Signal::QuestionAsked, out);
-            }
-            if to.viewed() {
-                one(Signal::Looked, out);
+            for signals in to.told() {
+                say(signals);
             }
         }
     }
@@ -953,7 +1014,6 @@ impl Source for OpenCode {
             }
             let (cwd, error) = self.follow(id, liveness.clone(), String::new());
             unread.extend(error);
-            let turn = self.turn(id);
             seeded.push(Observation::new(
                 Harness::OpenCode,
                 id,
@@ -962,29 +1022,11 @@ impl Source for OpenCode {
                     cwd,
                     liveness: liveness.clone(),
                 }),
-                turn.clone(),
+                self.turn(id),
             ));
             // What only the plugin told, a permission or an error before the
             // turn's loop, is not in the database.
-            let level = &self.sessions[id].level;
-            let mut told = Told::default();
-            told.tell(&level.signals());
-            if matches!(level, Level::Ended { .. }) && level.question() {
-                told.tell(&BTreeSet::from([Signal::QuestionAsked]));
-            }
-            let mut signals = told.current();
-            if level.viewed() {
-                signals.push(Signal::Looked);
-            }
-            for signal in signals {
-                seeded.push(Observation::new(
-                    Harness::OpenCode,
-                    id,
-                    Channel::File,
-                    Event::one(signal),
-                    turn.clone(),
-                ));
-            }
+            seeded.extend(self.current(id));
         }
         if let Some(db) = &mut self.db {
             db.version = db
@@ -1063,17 +1105,12 @@ impl Source for OpenCode {
                     && self.schema(&id) == Some(Schema::V2)
                 {
                     if !followed {
-                        out.push(Observation::new(
-                            Harness::OpenCode,
-                            &id,
-                            Channel::Hook,
-                            Event::one(Signal::Prompted),
-                            level.turn(),
-                        ));
                         let open = Level::Open {
                             turn: turn.clone(),
                             question: false,
                         };
+                        let prompted = BTreeSet::from([Signal::Prompted]);
+                        tell(&id, &open, Channel::Hook, prompted, &mut out);
                         moved(&id, &open, &level, &mut out);
                     }
                     return out;
@@ -1091,13 +1128,14 @@ impl Source for OpenCode {
             }
             _ => return out,
         };
-        out.push(Observation::new(
-            Harness::OpenCode,
+        let level = self.sessions.get(&id).map(|session| &session.level);
+        tell(
             &id,
+            level.unwrap_or(&Level::None),
             Channel::Hook,
-            Event::Signals(signals),
-            self.turn(&id),
-        ));
+            signals,
+            &mut out,
+        );
         out
     }
 
@@ -1271,6 +1309,34 @@ mod tests {
         ] {
             assert_eq!(phase(&replay(name)), Phase::StoppedRead, "{name}");
         }
+    }
+
+    /// The phase each step of the replay left its session in, by the step.
+    fn steps(replay: &Replay) -> BTreeMap<usize, Phase> {
+        let mut phase = Phase::Gone;
+        let mut steps = BTreeMap::new();
+        for (o, step) in &replay.yielded {
+            if let Some(rule) = crate::fsm::next(phase, &o.event.signals()) {
+                phase = rule.to;
+            }
+            steps.insert(*step, phase);
+        }
+        steps
+    }
+
+    /// The subagent's permission held the session up after its run ended,
+    /// so the answer leaves it working in the background, as the files say.
+    #[test]
+    fn an_answer_to_a_background_subagent_leaves_its_session_in_the_background() {
+        let replay = replay("a_background_subagent_s_permission_holds_the_session");
+        let steps = steps(&replay);
+        let replied: Vec<Phase> = replay
+            .yielded
+            .iter()
+            .filter(|(o, _)| o.event.signals().contains(&Signal::Answered))
+            .map(|(_, step)| steps[step])
+            .collect();
+        assert_eq!(replied, [Phase::Background, Phase::Background]);
     }
 
     #[test]

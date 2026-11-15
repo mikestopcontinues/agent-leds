@@ -144,7 +144,7 @@ The database names no process and records no permission request, so the install 
 | The plugin's `busy`; in 1.x a new user message as the session's latest; in 2.x a new run, as when a finished background job wakes the session | working |
 | A `question` tool running in the turn (1.x) or in the latest assistant message (2.x), in the session or a subagent's | question |
 | The plugin's `permission.asked`, for the session or a subagent's | question |
-| The question tool done, or the plugin's `permission.replied` | working |
+| The question tool done, or the plugin's `permission.replied` | working; in 2.x, working in the background again when the run had ended with a job left |
 | 1.x: the latest assistant message completed, other than a step that finished on `tool-calls` or `unknown` with no error and no tool the user refused or dismissed; 2.x: the session idle since its latest run started | stopped |
 | The same, its last text part ending in a question mark | question, as a weak signal |
 | 2.x: the same, with a job of the session's left in `job` | working, in the background |
