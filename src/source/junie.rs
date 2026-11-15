@@ -620,20 +620,16 @@ impl Junie {
         since: Option<u64>,
         out: &mut Vec<Observation>,
     ) -> io::Result<Strange> {
-        let anchors = |record: &Record| match since {
-            Some(start) => record.before(start),
-            None => record.starts_turn(),
-        };
-        let (lines, tail) =
-            tail::tail_back(path, |line| Record::read(line).is_some_and(|r| anchors(&r)))?;
+        let (lines, tail) = tail::tail_back(path, |line| {
+            Record::read(line).is_some_and(|record| record.starts_turn())
+        })?;
         let mut strange = Strange::default();
         let mut records: Vec<Record> = lines.iter().filter_map(|line| strange.read(line)).collect();
         // What came before the first task the process began is a dead
-        // process's; a block's stamp goes backwards, a task start's does not.
-        // A read that stopped short of the resume holds only the process's.
-        if let Some(start) = since
-            && records.iter().any(|record| record.before(start))
-        {
+        // process's. A task start's stamp tells whose it is; a block's does
+        // not, since a task's end writes its blocks again with their first
+        // stamps, a dead process's among them.
+        if let Some(start) = since {
             let first = records
                 .iter()
                 .position(|record| record.starts_turn() && !record.before(start));
