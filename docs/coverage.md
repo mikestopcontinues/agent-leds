@@ -36,19 +36,19 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 | Signal | Claude Code | Codex | Grok | Cursor | Junie | OpenCode | Pi |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| [Started](#started) | file | file | file | hook | file* | hook | hook |
-| [Prompted](#prompted) | file | file | file | file+hook | file* | file+hook | file+hook |
-| [PermissionAsked](#permissionasked) | file | hook | file | — | file* | hook | — |
-| [QuestionAsked](#questionasked) | file | file | file | — | file* | file | hook |
-| [Answered](#answered) | file | file | file | — | file* | file+hook | file*+hook |
+| [Started](#started) | file | file | file | hook | file | hook | hook |
+| [Prompted](#prompted) | file | file | file | file+hook | file | file+hook | file+hook |
+| [PermissionAsked](#permissionasked) | file | hook | file | — | file | hook | — |
+| [QuestionAsked](#questionasked) | file | file | file | — | file | file | hook |
+| [Answered](#answered) | file | file | file | — | file | file+hook | file*+hook |
 | [Released](#released) | file* | — | — | — | — | — | — |
-| [TurnEnded](#turnended) | file | file | file | file | file* | file | file |
-| [TurnEndedAsking](#turnendedasking) | file | file | file | file | file* | file | file |
-| [TurnFailed](#turnfailed) | file | file | file | file+hook | file* | file+hook* | hook |
-| [Interrupted](#interrupted) | file | file | file | file+hook | file* | file+hook | file+hook |
+| [TurnEnded](#turnended) | file | file | file | file | file | file | file |
+| [TurnEndedAsking](#turnendedasking) | file | file | file | file | file | file | file |
+| [TurnFailed](#turnfailed) | file | file | file | file+hook | file | file+hook* | hook |
+| [Interrupted](#interrupted) | file | file | file | file+hook | file | file+hook | file+hook |
 | [Backgrounded](#backgrounded) | file | file | file | — | — | file | — |
 | [BackgroundDone](#backgrounddone) | file | file | file* | — | — | — | — |
-| [Ended](#ended) | file | file | file | file+hook | file* | file+hook | hook |
+| [Ended](#ended) | file | file | file | file+hook | file | file+hook | hook |
 | [Looked](#looked) | daemon | — | — | — | — | file | — |
 
 ### Started
@@ -57,7 +57,8 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Codex, file, observed: a thread's lock held, with a rollout whose session_meta is not a subagent's: neither its source nor its thread_source names one (probe-codex runA, runB, runD; desktop rollouts 0.162)
 - Grok, file, observed: a new row in active_sessions.json whose process started at its pid_start, to the microsecond; a headless run and a subagent get none (probe-grok session_start, runs a, j)
 - Cursor, hook, observed: beforeSubmitPrompt, run under a process Cursor marked running in .running with the second it started, the outermost of the marked processes in a row, so the CLI and not its node worker (probe-cursor runs A–I (markers, lsof); the bundle's install-in-use-marker; 0.5.0 hooks)
-- Junie, file, inferred: a sidecar in processes/ that is the newest for its pid, whose process started no later than the millisecond of its startedAt; or a CurrentDirectoryUpdatedEvent naming a new folder (probe-junie session_start; Irrlicht pid.go)
+- Junie, file, observed: a sidecar in processes/ whose startedAt is the newest read for its pid, whose process started no later than the millisecond of startedAt, as a launch, /new and a resume write one (probe-junie 4020.10 s1-s8)
+- Junie, file, inferred: a CurrentDirectoryUpdatedEvent naming a new folder; 4020.10's name the project or nothing (probe-junie session_start; Irrlicht parser_test.go cwdUpdateLine)
 - OpenCode, hook, observed: the plugin's busy, as a session goes busy (1.x) or starts a run (2.x), or as 2.x first steps or asks in a process, as a run the service resumes does, from the OpenCode process whose pid it names: 2.x's background service, or the server a terminal interface runs; a subagent's starts the session it works for when that is not followed (probe-opencode T3–T16 (session.status busy, in serve and the TUI); gaps oc8 (2.3.0 session.execution.started, in the service, in `--standalone` and in `run`; session.step.started first after the service restarted), oc9 (one plugin file whose `server` 1.18.25 runs and `setup` 2.3.0 runs), oc10 (the shipped plugin's busy from 1.18.25 `run`, on a new database and on oc9's migrated one))
 - Pi, hook, observed: session_start or agent_start from a Pi with a UI, naming its own pid, which is the hook's parent, and its session file (probe-pi ext084, ext152, extfork, extdir, extresume)
 
@@ -69,7 +70,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Grok, file, observed: events.jsonl turn_started, keyed by its turn_number, including the turn a session starts by itself when a background subagent finishes (probe-grok prompt_submitted, runs a, e)
 - Cursor, hook, observed: beforeSubmitPrompt, for a chat bound to its process; the only word of a text-only turn until it ends (probe-cursor run F; 0.5.0 hooks)
 - Cursor, file, observed: a finished transcript whose last record is a user or assistant record, after the turn's end or with more user records than before, as after a background job (probe-cursor runs A, B, D, G, H)
-- Junie, file, inferred: a UserPromptEvent, or a TaskStartedEvent, keyed by its taskId (probe-junie prompt_submitted; Irrlicht real-lifecycle-session)
+- Junie, file, observed: a UserPromptEvent, a follow-up's with a RealtimeFollowUpAttachment and a retry's with a ContinueTaskAttachment among them, or a TaskStartedEvent, which alone starts a follow-up's task or a run of junie <task>, keyed by its taskId (probe-junie 4020.10 s1 turns 1-9, s4, s8)
 - OpenCode, hook, observed: the plugin's busy (probe-opencode T3–T16 (session.status busy, in serve and the TUI); gaps oc8 (2.3.0 session.execution.started), oc10 (1.18.25 `run`))
 - OpenCode, file, observed: 1.x: the session's latest message a user message, or an assistant message answering one, other than the turn last read; 2.x: a run started after the session last went idle, other than the run last read (probe-opencode T2–T16; gaps oc8 (2.3.0 time_busy))
 - Pi, file, observed: a message entry with role user, keyed by its entry id; or an assistant entry after the run ended, as when a background subagent's report wakes the agent, keyed by the custom_message entry of customType subagent-notify before it (probe-pi ext152, rpc1, rpc8, rpcsa, extsa)
@@ -80,7 +81,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Claude Code, file, observed: the session file going to status waiting, for anything but input needed or dialog open; or a prompt read while the session file waits (probe-claude cc1, cc4, cc10)
 - Codex, hook, observed: PermissionRequest naming the turn the rollout has open (0.5.0 hooks during probe-codex runA PROMPT4 and codex2)
 - Grok, file, observed: plan_mode.json awaiting_plan_approval true while a turn is open, as exit_plan_mode's plan card waits on the user; not for a tool's approval card (gaps p3)
-- Junie, file, inferred: a SessionA2uxEvent in state INPUT_REQUIRED whose block carries an approvalRequest and is not COMPLETED, once per stepId (probe-junie permission_pending; Irrlicht real-terminal-approval)
+- Junie, file, observed: a SessionA2uxEvent in state INPUT_REQUIRED whose block carries an approvalRequest and is not COMPLETED, once per stepId; by default 4020.10 asks only to edit a hidden, config or build file, or one outside the project (probe-junie 4020.10 s5 (FileChangesBlockUpdatedEvent, ApproveEditFileData))
 - OpenCode, hook, observed: permission.asked, for the session or a subagent's session under it, which 2.x does not write either (probe-opencode T3, T4, T7, T8, T12; gaps oc8 (2.3.0, a subagent's included))
 
 ### QuestionAsked
@@ -88,7 +89,8 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Claude Code, file, observed: the session file going to status waiting for input needed; or a prompt read while the session file says so (probe-claude cc2, cc9)
 - Codex, file, observed: a function_call to request_user_input, which blocks; not request_user_input_async, which does not (probe-codex runA PROMPT2; desktop rollouts 0.162)
 - Grok, file, observed: events.jsonl tool_started for ask_user_question (probe-grok question_pending, grok5)
-- Junie, file, inferred: a SessionA2uxEvent in state INPUT_REQUIRED whose block is an AskAsyncRequestUpdatedEvent or ChoiceRequestUpdatedEvent and is not COMPLETED, once per stepId (probe-junie question_pending; Irrlicht real-lifecycle-session)
+- Junie, file, observed: a SessionA2uxEvent in state INPUT_REQUIRED whose block is an AskAsyncRequestUpdatedEvent and is not COMPLETED, once per stepId (probe-junie 4020.10 s1 turns 5, 6)
+- Junie, file, inferred: the same of a ChoiceRequestUpdatedEvent, which 4020.10 never wrote (Irrlicht parser.go parseInputRequest)
 - OpenCode, file, observed: a question tool part running in the turn (1.x) or in the latest assistant message (2.x), in the session or a subagent's session under it (probe-opencode T5, T6, T16; gaps oc8 (2.3.0 question tool))
 - Pi, hook, observed: ui_prompt_start during a run: an extension's dialog holds it up, and nothing is written while it is open (probe-pi ext084, ext152, rpc1, tui1)
 
@@ -97,7 +99,8 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Claude Code, file, observed: the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt (probe-claude cc1, cc2)
 - Codex, file, observed: the output for the pending question's call_id; or, after the approval hook or a daemon start inside a turn, the next call output, completed item that is not a subagent's, or task_complete (probe-codex runA PROMPT2, DENY-ESC; codex2 (approved))
 - Grok, file, observed: events.jsonl tool_completed for ask_user_question, or plan_mode.json awaiting_plan_approval false again while the turn goes on (probe-grok question_pending, grok5; gaps p3)
-- Junie, file, inferred: the last waiting step written again as COMPLETED or in a state other than INPUT_REQUIRED, or a UserAsyncResponseEvent, UserResponseEvent or CancelAgentEvent while a step waits (probe-junie permission_resolved, question_answered, interrupted; Irrlicht real-terminal-approval, real-lifecycle-session, parser_test.go)
+- Junie, file, observed: the last waiting step written again as COMPLETED or in a state other than INPUT_REQUIRED, as an approval, a denial and an Esc on an approval do, or a UserAsyncResponseEvent or CancelAgentEvent while a step waits (probe-junie 4020.10 s1 turns 5, 6, s5)
+- Junie, file, inferred: a UserResponseEvent while a step waits, which 4020.10 never wrote (Irrlicht parser.go parseUserResponse)
 - OpenCode, hook, observed: permission.replied, for the session or a subagent's session under it, that leaves no request asked since the turn began unreplied (probe-opencode T3, T7, T12; gaps oc8 (2.3.0, two requests of a subagent's at once))
 - OpenCode, file, observed: no question tool part running in the turn any more, while it runs (probe-opencode T5; gaps oc8 (2.3.0 question answered))
 - Pi, file, inferred: the first message entry after a dialog the extension reported, such as the tool result its answer gave, when the file is read before ui_prompt_end is handled; Pi itself runs ui_prompt_end first (probe-pi ext084, ext152, where each ui_prompt_end ran before the tool result was written)
@@ -113,7 +116,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Codex, file, observed: event_msg task_complete (probe-codex runA, runB)
 - Grok, file, observed: events.jsonl turn_ended, completed or cancelled (probe-grok turn_completed, runs a, e, h)
 - Cursor, file, observed: a finished transcript whose last record is turn_ended, once for each count of user records and status (probe-cursor runs A–H)
-- Junie, file, inferred: TaskState, in any state, after a task started (probe-junie turn_completed; Irrlicht real-lifecycle-session, parser.go)
+- Junie, file, observed: TaskState after a task started, COMPLETED or CANCELED, unless it completes a task that has not taken a follow-up; or a SessionA2uxEvent in state FAILED during a task (probe-junie 4020.10 s1-s8)
 - OpenCode, file, observed: 1.x: the turn's latest assistant message completed, unless it is a step that finished on tool-calls or unknown with no error and no tool the user refused or dismissed; 2.x: the session went idle after its latest run started (probe-opencode T2–T10, T15, T16; gaps oc8 (2.3.0 time_idle))
 - Pi, file, observed: an assistant message entry with stopReason stop or length and no toolCall block (probe-pi ext084, rpc1, tui1)
 
@@ -123,7 +126,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Codex, file, observed: task_complete whose last_agent_message's last line ends in a question mark, or that holds a <proposed_plan> block, which no rollout has shown yet; or while an item of a request_user_input_async call has no answer since the last prompt the user typed, or the thread's goal in goals_1.sqlite went blocked, usage_limited or budget_limited at or after the turn's started_at (probe-codex runA PROMPT6; desktop rollouts 0.162 and goals_1.sqlite, 2026-10-14 and 2026-10-15)
 - Grok, file, observed: a completed turn_ended whose final text, the last agent_message_chunk in updates.jsonl after the latest user_message_chunk, has a last line ending in a question mark (probe-grok run a)
 - Cursor, file, observed: turn_ended after an assistant text whose last line ends in a question mark; a reasoning model's reasoning follows its reply in that text, so its last line is tested instead (probe-cursor runs A, B)
-- Junie, file, inferred: TaskState after a task started whose last ResultBlockUpdatedEvent result ends its last line in a question mark (probe-junie turn_completed; Irrlicht real-lifecycle-session)
+- Junie, file, observed: TaskState after a task started whose last ResultBlockUpdatedEvent result ends its last line in a question mark (probe-junie 4020.10 s1 turns 2, 4)
 - OpenCode, file, observed: the last text part, ending on a question mark, of that message, not synthetic (1.x), or of the run's last assistant message (2.x) (probe-opencode T2; gaps oc8 (2.3.0 run))
 - Pi, file, observed: that entry, when the last line of its joined text blocks ends in a question mark (probe-pi ext084, rpc1, tui1)
 
@@ -134,7 +137,8 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Grok, file, observed: events.jsonl turn_ended with outcome error, written as a turn ends on an API error, before Grok runs StopFailure for it; whether a refusal or a max_output_tokens end writes it is unverified, and a request that cannot connect retries without end (gaps p2; probe-grok runs c, k)
 - Cursor, file, observed: turn_ended with status error, the transcript rewritten whole as it was before the turn with the error after (gaps cursor fail run (interactive) and -p runs on a model the plan does not include)
 - Cursor, hook, observed: stop with status error, for a bound chat whose transcript ends in turn_ended error: a failure after one the same rewrites the same bytes; after an interrupt the transcript ends aborted, so it says nothing (gaps cursor fail run, turns 1 and 2; gaps int-run turn 1; bundle 2986.index.js, the catch path)
-- Junie, file, inferred: TaskState after a task started, when it is FAILED, which only Irrlicht's parser reads, or the task had an AgentFailureEvent or an AgentTaskFailedEvent (probe-junie turn_error; Irrlicht real-failed-session)
+- Junie, file, observed: a SessionA2uxEvent in state FAILED during a task, as its AgentFailureEvent is; a run of junie <task> writes no TaskState after it, and an interactive run's says COMPLETED and tells nothing (probe-junie 4020.10 s4 (dead proxy), s8 (network cut mid-task))
+- Junie, file, inferred: TaskState FAILED, which 4020.10 never wrote, or a TaskState after an AgentTaskFailedEvent with no block in state FAILED before it, which 4020.10 always wrote first (Irrlicht parser.go parseTaskState, parseAgentTaskFailed)
 - OpenCode, file, observed: 1.x: that message carrying an error, a MessageAbortedError included; 2.x: the run's outcome failed, an error before its first step included (probe-opencode T7–T9; gaps oc8 (2.3.0, an unknown model))
 - OpenCode, hook, inferred: 1.x's session.error, for the session itself, while it is busy, other than a ContextOverflowError (OpenCode 1.19.5's SessionPrompt.run, which sets the session busy before getModel publishes session.error UnknownError; probe-opencode T11 (a user message and no reply))
 - Pi, hook, observed: agent_settled whose last assistant message has stopReason error; an error entry in the file may be retried, and settles nothing (probe-pi ext084, ext152 fail400, fail500always)
@@ -146,7 +150,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Grok, file, observed: a cancelled turn_ended triggered by ctrl_c, the stop button, the dashboard or send_now (the user's next prompt, whose turn_started follows at once), or cancelled as permission_rejected or permission_cancelled (probe-grok interrupted, runs a, h; gaps grok-x a)
 - Cursor, hook, observed: stop with status aborted, for a chat bound to its process; that it runs on an interrupt that writes nothing is from the bundle's code (gaps int-run turn 1 (err-hooks.log); probe-cursor run B, turn 3 (no write); bundle 2986.index.js, the abort path)
 - Cursor, file, observed: turn_ended with status aborted, including the previous turn's end rewritten to aborted (probe-cursor runs B, H)
-- Junie, file, inferred: TaskState after a task started that had a CancelAgentEvent (probe-junie interrupted; Irrlicht parser_test.go)
+- Junie, file, observed: TaskState after a task started that had a CancelAgentEvent, as Esc writes; or TaskState CANCELED, which a process resuming the session writes for the task a killed one left (probe-junie 4020.10 s1 turns 6, 9, s3)
 - OpenCode, file, observed: 1.x: that message's error a MessageAbortedError, or the message with neither finish nor error; 2.x: the run's outcome interrupted (probe-opencode T7, T8, T10; gaps oc8 (2.3.0 escape during a shell))
 - OpenCode, hook, observed: 1.x's session.error with a MessageAbortedError (probe-opencode T7, T8)
 - Pi, file, observed: an assistant message entry with stopReason aborted, or error with errorMessage exactly Operation aborted, Request was aborted or This operation was aborted (probe-pi ext084, ext152, rpc1, tui1)
@@ -173,7 +177,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Grok, file, observed: the session's row gone from active_sessions.json, as /quit leaves it even mid-turn, or its process gone (probe-grok quit/crash, runs a, b, c)
 - Cursor, file, observed: the .running marker of the process the chat is bound to deleted, as a quit does; or the chat's store.db-wal, once seen or once the daemon starts to find store.db made, gone while the process runs on, as /new and resuming another chat leave it (probe-cursor runs A, C, D, G, I; gaps cursor pty and /new runs)
 - Cursor, hook, observed: the process the hook bound the chat to gone, as after kill -9, which leaves its marker (probe-cursor runs B, H)
-- Junie, file, inferred: a newer sidecar for the pid naming another session, the sidecar deleted, or its process gone (probe-junie session_start notes, quit/crash; Irrlicht pid.go)
+- Junie, file, observed: a newer sidecar for the pid naming another session, as /new writes; the sidecar deleted, as /quit does; or its process gone, as after kill -9 or SIGTERM (probe-junie 4020.10 s1, s2, s3, s5)
 - OpenCode, file, observed: the session's row deleted or archived (probe-opencode T13; gaps oc8 (2.3.0 session delete))
 - OpenCode, hook, observed: the process the plugin's busy named gone (probe-opencode T14, T17; gaps oc8 (2.3.0 terminal interface quit, service stopped))
 - Pi, hook, observed: session_shutdown other than for a reload, as at quit and /new, or the Pi process gone; no file records an exit; inferred: another session's session_start or agent_start from the same Pi process, which runs one session at a time, as after a /new whose session_shutdown was lost (probe-pi ext084, ext152, extfork, tq1–tq6, rpc5–rpc7; inferred from gaps-pi sig084 with its session_shutdown removed)

@@ -1,0 +1,14 @@
+{"cite": "probe-junie session_start; Irrlicht pid_test.go, parser_test.go cwdUpdateLine", "evidence": "inferred"}
+{"alive": 64871, "started_us": 1787586099500000}
+{"write": ".junie/sessions/session-260824-174155-sm5c/transcript.md", "text": ""}
+{"expect": []}
+{"write": ".junie/processes/64871-session-260824-174155-sm5c-7fd7cf992cf8.json", "text": {"pid": 64871, "sessionId": "session-260824-174155-sm5c", "projectPath": "", "startedAt": 1787586100000}}
+{"expect": [["started", "file"]]}
+{"append": ".junie/sessions/session-260824-174155-sm5c/events.jsonl", "line": {"kind": "UserPromptEvent", "requestId": "prompt-260824-174155-sm5c", "prompt": "PROBE prompt", "presentablePrompt": "PROBE prompt", "requiresConfirmation": true, "timestampMs": 1787586115220}}
+{"expect": [["prompted", "file"]]}
+{"append": ".junie/sessions/session-260824-174155-sm5c/events.jsonl", "line": {"kind": "SessionA2uxEvent", "event": {"state": "IN_PROGRESS", "agentEvent": {"kind": "CurrentDirectoryUpdatedEvent", "agent": {"kind": "MainAgent", "id": "main", "name": "main", "type": "LINEAR"}, "currentDirectory": ""}}, "taskId": "task-260824-174155-3ua6", "timestampMs": 1787586115230}}
+{"expect": []}
+{"append": ".junie/sessions/session-260824-174155-sm5c/events.jsonl", "line": {"kind": "SessionA2uxEvent", "event": {"state": "IN_PROGRESS", "agentEvent": {"kind": "CurrentDirectoryUpdatedEvent", "agent": {"kind": "MainAgent", "id": "main", "name": "main", "type": "LINEAR"}, "currentDirectory": "/Users/me/Code/app"}}, "taskId": "task-260824-174155-3ua6", "timestampMs": 1787586115240}}
+{"expect": [["started", "file"]]}
+{"append": ".junie/sessions/session-260824-174155-sm5c/events.jsonl", "line": {"kind": "SessionA2uxEvent", "event": {"state": "IN_PROGRESS", "agentEvent": {"kind": "CurrentDirectoryUpdatedEvent", "agent": {"kind": "MainAgent", "id": "main", "name": "main", "type": "LINEAR"}, "currentDirectory": "/Users/me/Code/app"}}, "taskId": "task-260824-174155-3ua6", "timestampMs": 1787586115250}}
+{"expect": []}

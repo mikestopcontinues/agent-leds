@@ -1,20 +1,22 @@
 //! Junie, from its own files. Each process writes a sidecar,
 //! `processes/<pid>-<session>-<hash>.json`, naming the session it takes and
-//! when it took it, and never removes it: one process can take session after
-//! session, so the sidecar with the newest `startedAt` for a pid names the one
-//! it runs. Each session appends its events to
-//! `sessions/<session>/events.jsonl`, which its first prompt creates: the
-//! prompt, the task it starts, the waits on the user, a failure or a cancel,
-//! the result, and the task's end. No hook is needed.
+//! when it took it. One process can take session after session, as `/new`
+//! does, and keeps every sidecar it wrote until `/quit` removes them all,
+//! oldest first; a process killed leaves them behind. So the sidecar with
+//! the newest `startedAt` for a pid names the session it runs. Each session
+//! appends its events to `sessions/<session>/events.jsonl`, which its first
+//! prompt creates: the prompt, the task it starts, the waits on the user, a
+//! failure or a cancel, the result, and the task's end. No hook is needed.
 //!
 //! Junie keeps its folder at `$JUNIE_HOME`, or at `.junie` in the account's
 //! home directory, which it takes from the system and never from `$HOME`.
 //!
-//! Junie was not installed for the probe. What its files say was taken from
-//! captures of Junie CLI 26.8.24 that others published, Irrlicht's recorded
-//! sessions above all, so every signal is inferred. An events log has reached
-//! hundreds of gigabytes, as Junie writes terminal output into it, so it is
-//! only ever read from its end or from where it began after its session did.
+//! What its files say was seen in real sessions of Junie CLI 26.11.1
+//! (4020.10). The rules no real session reached were taken from captures of
+//! 26.8.24 that others published, and Irrlicht's parser above all, and are
+//! declared inferred. An events log has reached hundreds of gigabytes, as
+//! Junie writes terminal output into it, so it is only ever read from its
+//! end or from where it began after its session did.
 
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{CStr, OsStr};
@@ -40,67 +42,85 @@ use crate::liveness::{self, Kernel, Liveness, StartCheck};
 use crate::queue::TurnKey;
 
 const fn file(signal: Signal, record: &'static str, cite: &'static str) -> Declared {
-    Declared {
-        signal,
-        channel: Channel::File,
-        evidence: Evidence::Inferred,
-        record,
-        cite,
-        untold: None,
-    }
+    Declared::new(signal, Channel::File, Evidence::Observed, record, cite)
 }
 
-/// What Junie's files tell, all of it from others' captures.
+const fn inferred(signal: Signal, record: &'static str, cite: &'static str) -> Declared {
+    Declared::new(signal, Channel::File, Evidence::Inferred, record, cite)
+}
+
+/// What Junie's files tell: as 4020.10 was seen to write them, and what
+/// others' captures and parsers say of what it was not.
 pub const SIGNALS: &[Declared] = &[
     file(
         Signal::Started,
-        "a sidecar in processes/ that is the newest for its pid, whose process started no later than the millisecond of its startedAt; or a CurrentDirectoryUpdatedEvent naming a new folder",
-        "probe-junie session_start; Irrlicht pid.go",
+        "a sidecar in processes/ whose startedAt is the newest read for its pid, whose process started no later than the millisecond of startedAt, as a launch, /new and a resume write one",
+        "probe-junie 4020.10 s1-s8",
+    ),
+    inferred(
+        Signal::Started,
+        "a CurrentDirectoryUpdatedEvent naming a new folder; 4020.10's name the project or nothing",
+        "probe-junie session_start; Irrlicht parser_test.go cwdUpdateLine",
     ),
     file(
         Signal::Prompted,
-        "a UserPromptEvent, or a TaskStartedEvent, keyed by its taskId",
-        "probe-junie prompt_submitted; Irrlicht real-lifecycle-session",
+        "a UserPromptEvent, a follow-up's with a RealtimeFollowUpAttachment and a retry's with a ContinueTaskAttachment among them, or a TaskStartedEvent, which alone starts a follow-up's task or a run of junie <task>, keyed by its taskId",
+        "probe-junie 4020.10 s1 turns 1-9, s4, s8",
     ),
     file(
         Signal::PermissionAsked,
-        "a SessionA2uxEvent in state INPUT_REQUIRED whose block carries an approvalRequest and is not COMPLETED, once per stepId",
-        "probe-junie permission_pending; Irrlicht real-terminal-approval",
+        "a SessionA2uxEvent in state INPUT_REQUIRED whose block carries an approvalRequest and is not COMPLETED, once per stepId; by default 4020.10 asks only to edit a hidden, config or build file, or one outside the project",
+        "probe-junie 4020.10 s5 (FileChangesBlockUpdatedEvent, ApproveEditFileData)",
     ),
     file(
         Signal::QuestionAsked,
-        "a SessionA2uxEvent in state INPUT_REQUIRED whose block is an AskAsyncRequestUpdatedEvent or ChoiceRequestUpdatedEvent and is not COMPLETED, once per stepId",
-        "probe-junie question_pending; Irrlicht real-lifecycle-session",
+        "a SessionA2uxEvent in state INPUT_REQUIRED whose block is an AskAsyncRequestUpdatedEvent and is not COMPLETED, once per stepId",
+        "probe-junie 4020.10 s1 turns 5, 6",
+    ),
+    inferred(
+        Signal::QuestionAsked,
+        "the same of a ChoiceRequestUpdatedEvent, which 4020.10 never wrote",
+        "Irrlicht parser.go parseInputRequest",
     ),
     file(
         Signal::Answered,
-        "the last waiting step written again as COMPLETED or in a state other than INPUT_REQUIRED, or a UserAsyncResponseEvent, UserResponseEvent or CancelAgentEvent while a step waits",
-        "probe-junie permission_resolved, question_answered, interrupted; Irrlicht real-terminal-approval, real-lifecycle-session, parser_test.go",
+        "the last waiting step written again as COMPLETED or in a state other than INPUT_REQUIRED, as an approval, a denial and an Esc on an approval do, or a UserAsyncResponseEvent or CancelAgentEvent while a step waits",
+        "probe-junie 4020.10 s1 turns 5, 6, s5",
+    ),
+    inferred(
+        Signal::Answered,
+        "a UserResponseEvent while a step waits, which 4020.10 never wrote",
+        "Irrlicht parser.go parseUserResponse",
     ),
     file(
         Signal::TurnEnded,
-        "TaskState, in any state, after a task started",
-        "probe-junie turn_completed; Irrlicht real-lifecycle-session, parser.go",
+        "TaskState after a task started, COMPLETED or CANCELED, unless it completes a task that has not taken a follow-up; or a SessionA2uxEvent in state FAILED during a task",
+        "probe-junie 4020.10 s1-s8",
     ),
     file(
         Signal::TurnEndedAsking,
         "TaskState after a task started whose last ResultBlockUpdatedEvent result ends its last line in a question mark",
-        "probe-junie turn_completed; Irrlicht real-lifecycle-session",
+        "probe-junie 4020.10 s1 turns 2, 4",
     ),
     file(
         Signal::TurnFailed,
-        "TaskState after a task started, when it is FAILED, which only Irrlicht's parser reads, or the task had an AgentFailureEvent or an AgentTaskFailedEvent",
-        "probe-junie turn_error; Irrlicht real-failed-session",
+        "a SessionA2uxEvent in state FAILED during a task, as its AgentFailureEvent is; a run of junie <task> writes no TaskState after it, and an interactive run's says COMPLETED and tells nothing",
+        "probe-junie 4020.10 s4 (dead proxy), s8 (network cut mid-task)",
+    ),
+    inferred(
+        Signal::TurnFailed,
+        "TaskState FAILED, which 4020.10 never wrote, or a TaskState after an AgentTaskFailedEvent with no block in state FAILED before it, which 4020.10 always wrote first",
+        "Irrlicht parser.go parseTaskState, parseAgentTaskFailed",
     ),
     file(
         Signal::Interrupted,
-        "TaskState after a task started that had a CancelAgentEvent",
-        "probe-junie interrupted; Irrlicht parser_test.go",
+        "TaskState after a task started that had a CancelAgentEvent, as Esc writes; or TaskState CANCELED, which a process resuming the session writes for the task a killed one left",
+        "probe-junie 4020.10 s1 turns 6, 9, s3",
     ),
     file(
         Signal::Ended,
-        "a newer sidecar for the pid naming another session, the sidecar deleted, or its process gone",
-        "probe-junie session_start notes, quit/crash; Irrlicht pid.go",
+        "a newer sidecar for the pid naming another session, as /new writes; the sidecar deleted, as /quit does; or its process gone, as after kill -9 or SIGTERM",
+        "probe-junie 4020.10 s1, s2, s3, s5",
     ),
 ];
 
@@ -797,11 +817,6 @@ fn update(id: &str, session: &mut Session, record: &Record, out: &mut Vec<Observ
         return;
     }
     match block.kind.as_str() {
-        "AgentFailureEvent" => {
-            if let Some(task) = &mut session.task {
-                task.failed = true;
-            }
-        }
         "ResultBlockUpdatedEvent" => {
             if let (Some(task), Some(result)) = (&mut session.task, &block.result) {
                 task.result = result.clone();
@@ -1112,7 +1127,7 @@ mod tests {
         let session = &replay.queue.sessions()[0];
         assert_eq!(
             session.turn,
-            Some(TurnKey("task-260824-174155-3ua6".to_owned()))
+            Some(TurnKey("task-261115-104335-7yae".to_owned()))
         );
     }
 
@@ -1151,11 +1166,11 @@ mod tests {
 
     #[test]
     fn a_task_whose_start_is_beyond_the_seed_s_window_seeds_working() {
-        let replay = replay("prompted.file");
+        let replay = replay("turn_ended.file");
         let log = replay
             .home
             .path()
-            .join(".junie/sessions/session-260824-174155-sm5c/events.jsonl");
+            .join(".junie/sessions/session-261115-104243-j37r/events.jsonl");
         let line = serde_json::json!({
             "kind": "SessionA2uxEvent",
             "event": {
@@ -1167,7 +1182,7 @@ mod tests {
                     "output": "x".repeat(1 << 20)
                 }
             },
-            "taskId": "task-260824-174337-1avu"
+            "taskId": "task-261115-104412-x9q2"
         });
         let mut file = fs::OpenOptions::new().append(true).open(&log).unwrap();
         for _ in 0..17 {
@@ -1178,7 +1193,7 @@ mod tests {
         assert_eq!(session.phase, Phase::Working);
         assert_eq!(
             session.turn,
-            Some(TurnKey("task-260824-174337-1avu".to_owned()))
+            Some(TurnKey("task-261115-104412-x9q2".to_owned()))
         );
     }
 
@@ -1186,7 +1201,7 @@ mod tests {
     fn a_log_left_partly_read_stays_behind_until_it_is_read_to_its_end() {
         let replay = replay("turn_ended.file");
         let home = replay.home.path();
-        let log = home.join(".junie/sessions/session-260824-174155-sm5c/events.jsonl");
+        let log = home.join(".junie/sessions/session-261115-104243-j37r/events.jsonl");
         let mut source = replay.source();
         source.seed(&replay.kernel, &[]).unwrap();
         let line = format!(
@@ -1209,7 +1224,7 @@ mod tests {
         let log = replay
             .home
             .path()
-            .join(".junie/sessions/session-260824-174155-sm5c/events.jsonl");
+            .join(".junie/sessions/session-261115-104243-j37r/events.jsonl");
         assert!(fixture::unread(&replay).is_empty());
         let lines = [
             r#"{"kind": "TaskPausedEvent", "timestampMs": 1787586140000}"#,
@@ -1240,7 +1255,7 @@ mod tests {
     fn a_file_that_cannot_be_read_leaves_nothing_behind() {
         fixture::a_read_that_fails_leaves_nothing_behind(
             &replay("turn_ended.file"),
-            ".junie/sessions/session-260824-174155-sm5c/events.jsonl",
+            ".junie/sessions/session-261115-104243-j37r/events.jsonl",
         );
     }
 }

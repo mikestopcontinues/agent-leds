@@ -18,7 +18,7 @@ It is done when:
 - Visible behaviour that is not about detection stays: queue order, weak and blocked questions, reading through the desktop app, the announce animation, `keep_read_minutes`, `abandon_days`, dismiss, status and doctor.
 - New dependencies: `notify` (FSEvents) for watching, and `rusqlite` against the system SQLite for OpenCode's database.
 
-What each harness's files record was established with real sessions on 2026-11-14 (Claude Code 2.1.325, Codex 0.153.2, Grok 1.0.77, Cursor 2026.11.13, OpenCode 1.19.5, Pi 0.84.4 and 1.5.2). Junie is not installed here, so its source rests on third-party captures and is marked inferred. The hooks that remain:
+What each harness's files record was established with real sessions on 2026-11-14 (Claude Code 2.1.325, Codex 0.153.2, Grok 1.0.77, Cursor 2026.11.13, OpenCode 1.19.5, Pi 0.84.4 and 1.5.2). Junie 26.11.1 (4020.10) followed on 2026-11-15; the rules none of its sessions reached rest on third-party captures and are marked inferred. The hooks that remain:
 
 | Harness | Kept | Why no file serves |
 | --- | --- | --- |
@@ -48,7 +48,6 @@ What each harness's files record was established with real sessions on 2026-11-1
 
 These need a real session to settle, and each would change a declared signal:
 
-- Junie's whole file format, which needs Junie installed.
 - Whether turns that retry after a failed request should show as something other than working.
 
 Whether a permission prompt in the Claude desktop app sets the session file's `waiting` status, as the CLI's does, is settled as far as a run without the app can settle it: the stream-json permission prompt the app answers, recorded from `claude -p` with the app's entrypoint, sets it (`tests/fixtures/claude/a_desktop_permission_prompt_shows_a_question.jsonl`, marked inferred), so Claude Code keeps no hook.

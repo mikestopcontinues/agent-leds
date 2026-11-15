@@ -94,7 +94,7 @@ Each module owns one concern; the ones that touch the system are thin.
 ## Open questions
 
 - Installing with Homebrew has been checked on Apple silicon. On Intel, CI builds and tests every push, but no install has been run.
-- What each harness writes was studied in real sessions of Claude Code 2.1.325, Codex 0.153.2, Grok 1.0.77, Cursor 2026.11.13, OpenCode 1.19.5 and Pi 0.84.4 and 1.5.2. Junie was not installed, so its files are taken from captures others published. [harnesses.md](harnesses.md) lists what each run left untried, and [coverage.md](coverage.md) marks each signal known only from code, docs or captures.
+- What each harness writes was studied in real sessions of Claude Code 2.1.325, Codex 0.153.2, Grok 1.0.77, Cursor 2026.11.13, Junie 26.11.1 (4020.10), OpenCode 1.19.5 and Pi 0.84.4 and 1.5.2. [harnesses.md](harnesses.md) lists what each run left untried, and [coverage.md](coverage.md) marks each signal known only from code, docs or captures.
 - Refusing an eject has been checked with `diskutil eject`: the eject fails and the card is mounted again within 5 seconds. A wake from hibernation with the screen locked has not been seen, nor has a restart of Disk Arbitration.
 - Input in the Claude app with a session open is taken as having looked at it. Typing in a second window, or in the Chat tab, would count too.
 - How the snake looks on the card. Each program is written when the one before it should end, so a slow write shows as a short pause in the snake.
