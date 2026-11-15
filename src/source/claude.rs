@@ -1100,8 +1100,11 @@ impl Source for Claude {
         Vec::new()
     }
 
-    fn behind(&self) -> bool {
-        self.sessions.values().any(|session| session.behind)
+    fn behind(&self) -> Vec<PathBuf> {
+        let behind = self.sessions.values().filter(|session| session.behind);
+        let mut paths: Vec<PathBuf> = behind.filter_map(|s| s.transcript.clone()).collect();
+        paths.sort();
+        paths
     }
 
     fn strange(&mut self) -> Strange {
@@ -1575,13 +1578,14 @@ mod tests {
         for _ in 0..9 {
             std::io::Write::write_all(&mut file, line.as_bytes()).unwrap();
         }
-        source.changed(&replay.kernel, Some(&[transcript]));
-        assert!(source.behind());
+        source.changed(&replay.kernel, Some(std::slice::from_ref(&transcript)));
+        assert_eq!(source.behind(), std::slice::from_ref(&transcript));
         // Another file changing first leaves what is unread to read.
         source.changed(&replay.kernel, Some(&[session_file]));
-        assert!(source.behind());
-        source.changed(&replay.kernel, None);
-        assert!(!source.behind());
+        assert_eq!(source.behind(), [transcript]);
+        let behind = source.behind();
+        source.changed(&replay.kernel, Some(&behind));
+        assert!(source.behind().is_empty());
     }
 
     /// The phase and turn the replay left its only session in.

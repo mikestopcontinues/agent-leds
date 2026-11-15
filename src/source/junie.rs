@@ -851,8 +851,11 @@ impl Source for Junie {
         Vec::new()
     }
 
-    fn behind(&self) -> bool {
-        self.sessions.values().any(|session| session.behind)
+    fn behind(&self) -> Vec<PathBuf> {
+        let behind = self.sessions.iter().filter(|(_, session)| session.behind);
+        let mut paths: Vec<PathBuf> = behind.map(|(id, _)| self.log(id)).collect();
+        paths.sort();
+        paths
     }
 
     fn strange(&mut self) -> Strange {
@@ -1091,9 +1094,9 @@ mod tests {
             std::io::Write::write_all(&mut file, line.as_bytes()).unwrap();
         }
         source.changed(&replay.kernel, Some(&[log]));
-        assert!(source.behind());
+        assert!(!source.behind().is_empty());
         source.changed(&replay.kernel, None);
-        assert!(!source.behind());
+        assert!(source.behind().is_empty());
     }
 
     #[test]

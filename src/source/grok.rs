@@ -869,9 +869,23 @@ impl Source for Grok {
         Vec::new()
     }
 
-    fn behind(&self) -> bool {
-        let behind = |session: &Session| session.events.behind || session.updates.behind;
-        self.sessions.values().any(behind)
+    fn behind(&self) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        for session in self.sessions.values() {
+            let Some(dir) = &session.dir else {
+                continue;
+            };
+            for (log, reader) in [
+                (Log::Events, &session.events),
+                (Log::Updates, &session.updates),
+            ] {
+                if reader.behind {
+                    paths.push(dir.join(log.name()));
+                }
+            }
+        }
+        paths.sort();
+        paths
     }
 
     fn strange(&mut self) -> Strange {

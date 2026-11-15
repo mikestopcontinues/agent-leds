@@ -795,8 +795,11 @@ impl Source for Pi {
         out
     }
 
-    fn behind(&self) -> bool {
-        self.sessions.values().any(|session| session.behind)
+    fn behind(&self) -> Vec<PathBuf> {
+        let behind = self.sessions.values().filter(|session| session.behind);
+        let mut paths: Vec<PathBuf> = behind.filter_map(|s| s.file.clone()).collect();
+        paths.sort();
+        paths
     }
 
     fn strange(&mut self) -> Strange {

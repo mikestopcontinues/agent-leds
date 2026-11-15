@@ -791,8 +791,8 @@ impl Source for Cursor {
     }
 
     /// Never: a transcript is read whole.
-    fn behind(&self) -> bool {
-        false
+    fn behind(&self) -> Vec<PathBuf> {
+        Vec::new()
     }
 
     fn strange(&mut self) -> Strange {

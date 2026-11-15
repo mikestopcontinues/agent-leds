@@ -242,8 +242,10 @@ pub trait Source {
     fn changed(&mut self, k: &dyn Kernel, paths: Option<&[PathBuf]>) -> Vec<Observation>;
     /// Catches up on the session's files, then translates the hook.
     fn hook(&mut self, k: &dyn Kernel, hook: &Hook) -> Vec<Observation>;
-    /// Whether a read stopped at its budget and left bytes to read.
-    fn behind(&self) -> bool;
+    /// The files whose last read stopped at its budget and left bytes to
+    /// read, which `changed` given them reads on from there, and nothing
+    /// else, in sorted order.
+    fn behind(&self) -> Vec<PathBuf>;
     /// What its reads since it was last asked could not make sense of.
     fn strange(&mut self) -> Strange;
 }
@@ -478,11 +480,15 @@ impl Sources {
                     }
                 }
                 let mut changed = Vec::new();
-                for (source, paths) in self.sources.iter_mut().zip(routed) {
-                    // Reading everything reads the changed files too.
-                    if source.behind() {
-                        changed.extend(source.changed(kernel, None));
-                    } else if !paths.is_empty() {
+                for (source, mut paths) in self.sources.iter_mut().zip(routed) {
+                    // What a read left behind is read on with what changed,
+                    // each once.
+                    for behind in source.behind() {
+                        if !paths.contains(&behind) {
+                            paths.push(behind);
+                        }
+                    }
+                    if !paths.is_empty() {
                         changed.extend(source.changed(kernel, Some(&paths)));
                     }
                 }
@@ -504,12 +510,16 @@ impl Sources {
                 told.extend(self.gather(Read::Roots));
                 told
             }
-            Read::Behind => self
-                .sources
-                .iter_mut()
-                .filter(|source| source.behind())
-                .flat_map(|source| source.changed(kernel, None))
-                .collect(),
+            Read::Behind => {
+                let mut changed = Vec::new();
+                for source in &mut self.sources {
+                    let behind = source.behind();
+                    if !behind.is_empty() {
+                        changed.extend(source.changed(kernel, Some(&behind)));
+                    }
+                }
+                changed
+            }
             // Watching a new root restarts the watcher's stream for every
             // root, which drops what changed under any of them meanwhile.
             Read::Roots if self.watch() => self.gather(Read::All),
@@ -519,7 +529,9 @@ impl Sources {
 
     /// Whether any source left bytes unread.
     pub fn behind(&self) -> bool {
-        self.sources.iter().any(|source| source.behind())
+        self.sources
+            .iter()
+            .any(|source| !source.behind().is_empty())
     }
 
     /// Starts watching each root that exists and is not watched yet, and
@@ -585,7 +597,8 @@ mod tests {
         shallow: bool,
         seen: Arc<Mutex<Seen>>,
         log: Option<Tail>,
-        behind: bool,
+        /// A file it says a read left behind.
+        behind: Option<PathBuf>,
     }
 
     impl Source for Folder {
@@ -641,8 +654,8 @@ mod tests {
             Vec::new()
         }
 
-        fn behind(&self) -> bool {
-            self.behind
+        fn behind(&self) -> Vec<PathBuf> {
+            self.behind.iter().cloned().collect()
         }
 
         fn strange(&mut self) -> Strange {
@@ -689,7 +702,7 @@ mod tests {
             shallow: false,
             seen: seen.clone(),
             log: None,
-            behind: false,
+            behind: None,
         };
         let (sender, inputs) = mpsc::channel();
         let mut sources = Sources::start(vec![Box::new(source)], sender).unwrap();
@@ -740,7 +753,7 @@ mod tests {
             shallow: true,
             seen: seen.clone(),
             log: None,
-            behind: false,
+            behind: None,
         };
         let (sender, inputs) = mpsc::channel();
         let mut sources = Sources::start(vec![Box::new(source)], sender).unwrap();
@@ -769,7 +782,7 @@ mod tests {
             shallow: false,
             seen: seen.clone(),
             log: None,
-            behind: false,
+            behind: None,
         };
         let (sender, _inputs) = mpsc::channel();
         let mut sources = Sources::start(vec![Box::new(source)], sender).unwrap();
@@ -801,7 +814,7 @@ mod tests {
             shallow: false,
             seen: Arc::new(Mutex::new(Seen::default())),
             log: None,
-            behind: false,
+            behind: None,
         });
         let seen: Vec<Arc<Mutex<Seen>>> = folders.iter().map(|f| f.seen.clone()).collect();
         let (sender, _inputs) = mpsc::channel();
@@ -820,21 +833,27 @@ mod tests {
     }
 
     #[test]
-    fn a_source_left_behind_reads_everything_when_its_files_change() {
+    fn a_source_left_behind_reads_on_with_what_changed_and_nothing_else() {
         let folder = tempfile::tempdir().unwrap();
         let seen = Arc::new(Mutex::new(Seen::default()));
+        let behind = folder.path().join("log.jsonl");
         let source = Folder {
             root: folder.path().to_owned(),
             shallow: false,
             seen: seen.clone(),
             log: None,
-            behind: true,
+            behind: Some(behind.clone()),
         };
         let (sender, _inputs) = mpsc::channel();
         let mut sources = Sources::start(vec![Box::new(source)], sender).unwrap();
         let changed = folder.path().canonicalize().unwrap().join("1.json");
         sources.read(Read::Paths(&[changed]));
+        sources.read(Read::Behind);
         let seen = seen.lock().unwrap();
-        assert_eq!((seen.rescans, seen.paths.len()), (1, 0));
+        assert_eq!(seen.rescans, 0);
+        assert_eq!(
+            seen.paths,
+            [folder.path().join("1.json"), behind.clone(), behind]
+        );
     }
 }

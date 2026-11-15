@@ -389,10 +389,13 @@ impl Replay {
 /// budget left unread, as the daemon reads it.
 fn changed(source: &mut dyn Source, k: &dyn Kernel, paths: Option<&[PathBuf]>) -> Vec<Observation> {
     let mut observations = source.changed(k, paths);
-    while source.behind() {
-        observations.extend(source.changed(k, None));
+    loop {
+        let behind = source.behind();
+        if behind.is_empty() {
+            return observations;
+        }
+        observations.extend(source.changed(k, Some(&behind)));
     }
-    observations
 }
 
 /// Replays a fixture, checking its expectations and the three properties.
@@ -681,12 +684,20 @@ pub fn a_read_that_fails_leaves_nothing_behind(replay: &Replay, file: &str) {
     let mut log = OpenOptions::new().append(true).open(&file).unwrap();
     log.write_all(line.repeat(9).as_bytes()).unwrap();
     source.changed(&replay.kernel, Some(std::slice::from_ref(&file)));
-    assert!(source.behind(), "{}: read all at once", replay.name);
+    assert!(
+        !source.behind().is_empty(),
+        "{}: read all at once",
+        replay.name
+    );
     fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
     source.changed(&replay.kernel, Some(std::slice::from_ref(&file)));
     let behind = source.behind();
     fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(!behind, "{}: behind on a file it cannot read", replay.name);
+    assert!(
+        behind.is_empty(),
+        "{}: behind on a file it cannot read",
+        replay.name
+    );
 }
 
 /// The queue a daemon starting now would show.

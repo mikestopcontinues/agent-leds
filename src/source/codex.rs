@@ -1244,8 +1244,11 @@ impl Source for Codex {
         out
     }
 
-    fn behind(&self) -> bool {
-        self.threads.values().any(|thread| thread.behind)
+    fn behind(&self) -> Vec<PathBuf> {
+        let behind = self.threads.values().filter(|thread| thread.behind);
+        let mut paths: Vec<PathBuf> = behind.map(|thread| thread.rollout.clone()).collect();
+        paths.sort();
+        paths
     }
 
     fn strange(&mut self) -> Strange {
@@ -1401,7 +1404,7 @@ mod tests {
                 ..
             }]
         ));
-        assert!(!source.behind());
+        assert!(source.behind().is_empty());
     }
 
     #[test]
@@ -1679,9 +1682,9 @@ mod tests {
             std::io::Write::write_all(&mut file, line.as_bytes()).unwrap();
         }
         source.changed(&replay.kernel, Some(&[rollout]));
-        assert!(source.behind());
+        assert!(!source.behind().is_empty());
         // The lock changing first leaves what is unread to read.
         source.changed(&replay.kernel, Some(&[lock]));
-        assert!(!source.behind());
+        assert!(source.behind().is_empty());
     }
 }

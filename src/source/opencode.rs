@@ -1237,8 +1237,8 @@ impl Source for OpenCode {
         out
     }
 
-    fn behind(&self) -> bool {
-        false
+    fn behind(&self) -> Vec<PathBuf> {
+        Vec::new()
     }
 
     fn strange(&mut self) -> Strange {
