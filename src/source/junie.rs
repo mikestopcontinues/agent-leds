@@ -31,7 +31,7 @@ use serde::Deserialize;
 use serde::de::IgnoredAny;
 
 use super::tail::{self, Lines, Tail};
-use super::{Event, Hook, Observation, Source, Start, Told};
+use super::{Event, Hook, Observation, Seed, Source, Start, Told, Unread};
 use crate::config;
 use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
@@ -338,18 +338,18 @@ impl Junie {
 
     /// Reads one sidecar again. One that cannot be read or is half written
     /// keeps what it said before; the write that finishes it is another event.
-    fn read_sidecar(&mut self, path: &Path) {
+    fn read_sidecar(&mut self, path: &Path) -> Result<(), Unread> {
         match fs::read(path) {
             Ok(bytes) => {
-                if let Ok(sidecar) = serde_json::from_slice(&bytes) {
-                    self.sidecars.insert(path.to_owned(), sidecar);
-                }
+                let sidecar = serde_json::from_slice(&bytes).map_err(|e| Unread::new(path, e))?;
+                self.sidecars.insert(path.to_owned(), sidecar);
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 self.sidecars.remove(path);
             }
-            Err(_) => {}
+            Err(error) => return Err(Unread::new(path, error)),
         }
+        Ok(())
     }
 
     /// The session each process runs, by the newest sidecar for its pid,
@@ -426,7 +426,13 @@ impl Junie {
             }
         }
         for (id, path, sidecar) in taken {
-            self.start(&id, path, &sidecar, false, out);
+            if let Err(unread) = self.start(&id, path, &sidecar, false, out) {
+                eprintln!(
+                    "agent-leds: reading {}: {}",
+                    unread.path.display(),
+                    unread.error
+                );
+            }
         }
     }
 
@@ -435,7 +441,8 @@ impl Junie {
     /// session is told after its start. Otherwise the session begins idle: of
     /// a log begun before the process took the session, as for a resume, only
     /// what the process wrote counts; a log the process began is read from
-    /// its first line.
+    /// its first line. A log that cannot be read is followed from what is
+    /// written to it next.
     fn start(
         &mut self,
         id: &str,
@@ -443,7 +450,7 @@ impl Junie {
         sidecar: &Sidecar,
         seeding: bool,
         out: &mut Vec<Observation>,
-    ) {
+    ) -> Result<(), Unread> {
         self.sessions.insert(
             id.to_owned(),
             Session {
@@ -460,12 +467,12 @@ impl Junie {
         );
         let log = self.log(id);
         let created = created_ms(&log);
+        let mut unread = None;
         if seeding
             && created.is_ok()
             && let Err(error) = self.seed_log(id, &log)
         {
-            // The session is still followed, from what it writes next.
-            eprintln!("agent-leds: reading {}: {error}", log.display());
+            unread = Some(Unread::new(&log, error));
             let session = self.sessions.get_mut(id).expect("just started");
             session.log = Tail::at_end(&log).ok();
         }
@@ -493,10 +500,11 @@ impl Junie {
         } else if created.is_ok_and(|created| created < sidecar.started_at)
             && let Err(error) = self.resume_log(id, &log, sidecar.started_at, out)
         {
-            eprintln!("agent-leds: reading {}: {error}", log.display());
+            unread = Some(Unread::new(&log, error));
             let session = self.sessions.get_mut(id).expect("just started");
             session.log = Tail::at_end(&log).ok();
         }
+        unread.map_or(Ok(()), Err)
     }
 
     /// Opens the log of a session a process resumed, at its end, and tells
@@ -731,20 +739,24 @@ impl Source for Junie {
         vec![self.processes_dir.clone(), self.sessions_dir.clone()]
     }
 
-    fn seed(&mut self, k: &dyn Kernel, _bound: &[(String, Liveness)]) -> Result<Vec<Observation>> {
+    fn seed(&mut self, k: &dyn Kernel, _bound: &[(String, Liveness)]) -> Result<Seed> {
+        let mut unread = Vec::new();
         for path in self.sidecar_files() {
-            self.read_sidecar(&path);
+            unread.extend(self.read_sidecar(&path).err());
         }
         let mut seeded = Vec::new();
         for (id, path, sidecar) in self.running() {
             if liveness::alive(k, &sidecar.liveness()) {
-                self.start(&id, path, &sidecar, true, &mut seeded);
+                unread.extend(self.start(&id, path, &sidecar, true, &mut seeded).err());
             }
         }
         for o in &mut seeded {
             o.quiet = true;
         }
-        Ok(seeded)
+        Ok(Seed {
+            observations: seeded,
+            unread,
+        })
     }
 
     fn changed(&mut self, k: &dyn Kernel, paths: Option<&[PathBuf]>) -> Vec<Observation> {
@@ -758,7 +770,8 @@ impl Source for Junie {
             None => self.sidecar_files(),
         };
         for path in &sidecars {
-            self.read_sidecar(path);
+            // Read again at its next change.
+            let _ = self.read_sidecar(path);
         }
         if paths.is_none() || !sidecars.is_empty() {
             self.sync(k, &mut out);
@@ -823,7 +836,7 @@ mod tests {
         println!("Junie's folder: {}", root.display());
         let mut junie = Junie::new(&root);
         let mut queue = crate::queue::Queue::default();
-        for o in junie.seed(&liveness::System, &[]).unwrap() {
+        for o in fixture::printed(junie.seed(&liveness::System, &[]).unwrap()) {
             assert!(o.quiet);
             queue.apply(&o, 0);
         }

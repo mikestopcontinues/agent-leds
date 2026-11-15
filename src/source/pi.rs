@@ -19,7 +19,7 @@ use anyhow::Result;
 use serde::Deserialize;
 
 use super::tail::{self, Lines, Tail};
-use super::{Event, Hook, Observation, Source, Start, Told};
+use super::{Event, Hook, Observation, Seed, Source, Start, Told, Unread};
 use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
 use crate::harness::{self, Harness, ends_on_question};
@@ -623,8 +623,9 @@ impl Source for Pi {
     /// the tail of its file. No file says which sessions run. One whose file
     /// is not there yet, as 0.84.4 writes a new session's file only as its
     /// first reply ends, is read from the file's start once it is.
-    fn seed(&mut self, k: &dyn Kernel, bound: &[(String, Liveness)]) -> Result<Vec<Observation>> {
+    fn seed(&mut self, k: &dyn Kernel, bound: &[(String, Liveness)]) -> Result<Seed> {
         let mut seeded = Vec::new();
+        let mut unread = Vec::new();
         for (id, liveness) in bound {
             if !liveness::alive(k, liveness) {
                 continue;
@@ -636,7 +637,7 @@ impl Source for Pi {
                 && let Err(error) = self.seed_file(id, &file)
             {
                 // The session is still followed, from what it writes next.
-                eprintln!("agent-leds: reading {}: {error}", file.display());
+                unread.push(Unread::new(&file, error));
                 let session = self.sessions.get_mut(id).expect("seeded");
                 session.tail = Tail::at_end(&file).ok();
             }
@@ -669,7 +670,10 @@ impl Source for Pi {
         for o in &mut seeded {
             o.quiet = true;
         }
-        Ok(seeded)
+        Ok(Seed {
+            observations: seeded,
+            unread,
+        })
     }
 
     fn changed(&mut self, k: &dyn Kernel, paths: Option<&[PathBuf]>) -> Vec<Observation> {
@@ -842,7 +846,7 @@ mod tests {
             })
             .collect();
         let mut queue = crate::queue::Queue::default();
-        for o in pi.seed(&liveness::System, &bound).unwrap() {
+        for o in fixture::printed(pi.seed(&liveness::System, &bound).unwrap()) {
             assert!(o.quiet);
             queue.apply(&o, 0);
         }
@@ -1036,7 +1040,8 @@ mod tests {
         // agent_start bound it, and the daemon restarted before Pi 0.84.4
         // wrote the file, as its first reply ended.
         let seeded = pi.seed(&liveness::System, &[(id.into(), running)]).unwrap();
-        assert_eq!(seeded.len(), 1);
+        assert!(seeded.unread.is_empty());
+        assert_eq!(seeded.observations.len(), 1);
         let file = pi
             .sessions_dir
             .join("--Users-me-Code-app--")

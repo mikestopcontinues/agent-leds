@@ -49,7 +49,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{Hook, Observation, Source};
+use super::{Hook, Observation, Seed, Source};
 use crate::coverage::Evidence;
 use crate::fsm::{self, Channel, Phase, Signal};
 use crate::harness::{self, Harness};
@@ -397,7 +397,10 @@ pub fn replay(harness: Harness, name: &str) -> Replay {
     let name = &format!("{}/{name}", harness.name());
     let mut replay = Replay::new(harness, name);
     let mut source = replay.source();
-    let seeded = source.seed(&replay.kernel, &[]).unwrap();
+    let seeded = whole(
+        replay.name.as_str(),
+        source.seed(&replay.kernel, &[]).unwrap(),
+    );
     let mut since = replay.take(seeded, 0);
     // The steps since the last expect after which a restart shows another
     // phase, with the phase it shows.
@@ -483,7 +486,10 @@ fn resume(
 ) {
     let mut replay = Replay::new(harness, name);
     let mut source = replay.source();
-    let seeded = source.seed(&replay.kernel, &[]).unwrap();
+    let seeded = whole(
+        replay.name.as_str(),
+        source.seed(&replay.kernel, &[]).unwrap(),
+    );
     replay.take(seeded, 0);
     for (number, live) in shown {
         let step = &fixture.steps[number - 1];
@@ -534,7 +540,10 @@ fn at_home(payload: &Value, home: &Path) -> Value {
 fn coalesce(harness: Harness, name: &str, fixture: &Fixture) -> BTreeMap<Key, Phase> {
     let mut replay = Replay::new(harness, name);
     let mut source = replay.source();
-    let seeded = source.seed(&replay.kernel, &[]).unwrap();
+    let seeded = whole(
+        replay.name.as_str(),
+        source.seed(&replay.kernel, &[]).unwrap(),
+    );
     replay.take(seeded, 0);
     let mut pending: Vec<PathBuf> = Vec::new();
     let steps = fixture
@@ -581,11 +590,38 @@ fn coalesce(harness: Harness, name: &str, fixture: &Fixture) -> BTreeMap<Key, Ph
 fn seeded(replay: &Replay, bound: &[(Key, Liveness)]) -> (Box<dyn Source>, Queue) {
     let mut source = replay.source();
     let mut queue = Queue::default();
-    for o in super::seed(source.as_mut(), &replay.kernel, bound).unwrap() {
+    // What it could not read, `unread` says.
+    let seed = super::seed(source.as_mut(), &replay.kernel, bound).unwrap();
+    for o in seed.observations {
         assert!(o.quiet, "{}: a seed announced", replay.name);
         queue.apply(&o, 0);
     }
     (source, queue)
+}
+
+/// What a seed of a fixture told, which reads every file it finds.
+fn whole(name: &str, seed: Seed) -> Vec<Observation> {
+    assert!(
+        seed.unread.is_empty(),
+        "{name}: a seed could not read {:?}",
+        seed.unread
+    );
+    seed.observations
+}
+
+/// What a seed of the real home told, after printing what it could not read.
+pub fn printed(seed: Seed) -> Vec<Observation> {
+    for unread in &seed.unread {
+        println!("unread {}: {}", unread.path.display(), unread.error);
+    }
+    seed.observations
+}
+
+/// The files a fresh source could not read of what a replay left on disk.
+pub fn unread(replay: &Replay) -> Vec<PathBuf> {
+    let mut source = replay.source();
+    let seed = source.seed(&replay.kernel, &[]).unwrap();
+    seed.unread.into_iter().map(|unread| unread.path).collect()
 }
 
 /// The queue a fresh source seeds from what a replay left on disk alone.

@@ -26,7 +26,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{Event, Hook, Observation, Source, Start, Told};
+use super::{Event, Hook, Observation, Seed, Source, Start, Told, Unread};
 use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
 use crate::harness::{Harness, ends_on_question};
@@ -555,12 +555,20 @@ impl OpenCode {
     /// goes on following it if the same process still runs it. Says where it
     /// works: the database's folder for it, else `directory`. A session the
     /// database cannot be read for is followed from nothing, and read again
-    /// at the next change.
-    fn follow(&mut self, id: &str, liveness: Liveness, directory: String) -> String {
-        let read = self.look(id).unwrap_or_else(|error| {
-            eprintln!("agent-leds: reading OpenCode session {id}: {error:#}");
-            None
-        });
+    /// at the next change, and is said with where it works.
+    fn follow(
+        &mut self,
+        id: &str,
+        liveness: Liveness,
+        directory: String,
+    ) -> (String, Option<Unread>) {
+        let (read, unread) = match self.look(id) {
+            Ok(read) => (read, None),
+            Err(error) => (
+                None,
+                Some(Unread::new(&self.path, format!("session {id}: {error:#}"))),
+            ),
+        };
         let cwd = match &read {
             Some((row, _, _)) => row.directory.clone(),
             None => directory,
@@ -570,7 +578,7 @@ impl OpenCode {
             .get(id)
             .is_some_and(|session| session.liveness == liveness)
         {
-            return cwd;
+            return (cwd, unread);
         }
         let (known, stamp, level) = match read {
             Some((_, stamp, level)) => (true, stamp, level),
@@ -585,7 +593,7 @@ impl OpenCode {
                 level,
             },
         );
-        cwd
+        (cwd, unread)
     }
 
     fn turn(&self, id: &str) -> Option<TurnKey> {
@@ -674,8 +682,9 @@ impl Source for OpenCode {
     /// Each session a busy bound to a process that still runs, from where
     /// the database leaves it. The database names no process, so it starts
     /// no session by itself.
-    fn seed(&mut self, k: &dyn Kernel, bound: &[(String, Liveness)]) -> Result<Vec<Observation>> {
+    fn seed(&mut self, k: &dyn Kernel, bound: &[(String, Liveness)]) -> Result<Seed> {
         let mut seeded = Vec::new();
+        let mut unread = Vec::new();
         // A database that cannot be read is said so even with nothing to seed.
         self.open()?;
         for (id, liveness) in bound {
@@ -689,7 +698,8 @@ impl Source for OpenCode {
             {
                 continue;
             }
-            let cwd = self.follow(id, liveness.clone(), String::new());
+            let (cwd, error) = self.follow(id, liveness.clone(), String::new());
+            unread.extend(error);
             let turn = self.turn(id);
             seeded.push(Observation::new(
                 Harness::OpenCode,
@@ -724,7 +734,10 @@ impl Source for OpenCode {
         for o in &mut seeded {
             o.quiet = true;
         }
-        Ok(seeded)
+        Ok(Seed {
+            observations: seeded,
+            unread,
+        })
     }
 
     fn changed(&mut self, k: &dyn Kernel, paths: Option<&[PathBuf]>) -> Vec<Observation> {
@@ -761,7 +774,14 @@ impl Source for OpenCode {
                     return out;
                 };
                 let directory = payload.directory.unwrap_or_default();
-                let cwd = self.follow(&id, liveness.clone(), directory);
+                let (cwd, unread) = self.follow(&id, liveness.clone(), directory);
+                if let Some(unread) = unread {
+                    eprintln!(
+                        "agent-leds: reading {}: {}",
+                        unread.path.display(),
+                        unread.error
+                    );
+                }
                 out.push(Observation::new(
                     Harness::OpenCode,
                     &id,
@@ -822,7 +842,7 @@ mod tests {
     fn seeds_from_the_real_home() {
         let home = std::env::var_os("HOME").expect("a home");
         let mut opencode = OpenCode::new(Path::new(&home));
-        let seeded = opencode.seed(&liveness::System, &[]).unwrap();
+        let seeded = fixture::printed(opencode.seed(&liveness::System, &[]).unwrap());
         assert!(seeded.is_empty(), "no session is bound to a process");
         let db = opencode.open().unwrap().expect("a database");
         let mut roots = db

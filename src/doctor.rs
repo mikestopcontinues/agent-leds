@@ -198,12 +198,39 @@ fn files(source: &mut dyn Source, k: &dyn Kernel, saved: &Queue, home: &Path) ->
             Harness::OpenCode | Harness::Pi => "its plugin",
             _ => "its hooks",
         };
-        sessions(&seeded, saved, &format!("{by} reported still running"))?
+        sessions(
+            &seeded.observations,
+            saved,
+            &format!("{by} reported still running"),
+        )?
     } else {
-        sessions(&seeded, saved, "running")?
+        sessions(&seeded.observations, saved, "running")?
     };
-    Ok(format!("{sessions}, read from {}", roots.join(", ")))
+    let said = format!("{sessions}, read from {}", roots.join(", "));
+    // A file it could not make sense of may be a session it missed.
+    if seeded.unread.is_empty() {
+        return Ok(said);
+    }
+    let mut unread: Vec<String> = seeded
+        .unread
+        .iter()
+        .take(UNREAD_SHOWN)
+        .map(|unread| format!("{}: {}", tilde(&unread.path, home), unread.error))
+        .collect();
+    if seeded.unread.len() > UNREAD_SHOWN {
+        unread.push(format!(
+            "and {} more files",
+            seeded.unread.len() - UNREAD_SHOWN
+        ));
+    }
+    bail!(
+        "{said}; but could not read {}; the harness's format may have changed",
+        unread.join("; ")
+    )
 }
+
+/// How many of the files a seed could not read are named.
+const UNREAD_SHOWN: usize = 3;
 
 /// The sessions a seed started, restored against the saved queue, by the
 /// light each shows, or what the seed told that its harness does not
@@ -408,6 +435,23 @@ mod tests {
         assert_eq!(
             files(&Running(90859)).unwrap(),
             "1 session running (idle), read from ~/.claude/sessions"
+        );
+    }
+
+    #[test]
+    fn files_the_seed_cannot_make_sense_of_need_attention() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        write(home, ".claude/sessions/90859.json", CLAUDE_SESSION);
+        let renamed = CLAUDE_SESSION.replace("procStart", "processStart");
+        write(home, ".claude/sessions/90860.json", &renamed);
+        let mut claude = source_of(Harness::Claude, home);
+        let problem = files(claude.as_mut(), &Running(90859), &Queue::default(), home);
+        assert_eq!(
+            problem.unwrap_err().to_string(),
+            "1 session running (idle), read from ~/.claude/sessions; but could not read \
+             ~/.claude/sessions/90860.json: procStart None is not a start time; the \
+             harness's format may have changed"
         );
     }
 

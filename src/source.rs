@@ -120,6 +120,32 @@ pub struct Hook {
     pub ancestry: Vec<Proc>,
 }
 
+/// What a seed read: where each running session's files leave it, and
+/// each file it found but could not read or make sense of.
+#[derive(Debug, Default)]
+pub struct Seed {
+    pub observations: Vec<Observation>,
+    pub unread: Vec<Unread>,
+}
+
+/// A file a source found but could not read or make sense of, and why. A
+/// file read as it changes may be caught half written, and is read again at
+/// its next change; at a seed it is not, so the seed says so.
+#[derive(Debug)]
+pub struct Unread {
+    pub path: PathBuf,
+    pub error: String,
+}
+
+impl Unread {
+    pub fn new(path: &Path, error: impl std::fmt::Display) -> Unread {
+        Unread {
+            path: path.to_owned(),
+            error: format!("{error:#}"),
+        }
+    }
+}
+
 /// What one harness's files and hooks say about its sessions.
 pub trait Source {
     fn harness(&self) -> Harness;
@@ -129,8 +155,9 @@ pub trait Source {
     /// At daemon start: for each session its files show running, and each
     /// hook-bound session in `bound` that is still alive, a quiet Started
     /// and then the signals `Told::current` gives of where its files leave
-    /// it, leaving every reader at the end of its file.
-    fn seed(&mut self, k: &dyn Kernel, bound: &[(String, Liveness)]) -> Result<Vec<Observation>>;
+    /// it, leaving every reader at the end of its file; and each file of a
+    /// running session it could not read or make sense of.
+    fn seed(&mut self, k: &dyn Kernel, bound: &[(String, Liveness)]) -> Result<Seed>;
     /// What changed under `paths`, or under every root when None, as after
     /// dropped events.
     fn changed(&mut self, k: &dyn Kernel, paths: Option<&[PathBuf]>) -> Vec<Observation>;
@@ -223,11 +250,7 @@ pub fn of(harness: Harness, home: &Path, junie: &Path) -> Box<dyn Source> {
 
 /// Seeds one source as the daemon does at start, handing it the hook-bound
 /// sessions in `bound` that are its harness's.
-pub fn seed(
-    source: &mut dyn Source,
-    k: &dyn Kernel,
-    bound: &[(Key, Liveness)],
-) -> Result<Vec<Observation>> {
+pub fn seed(source: &mut dyn Source, k: &dyn Kernel, bound: &[(Key, Liveness)]) -> Result<Seed> {
     let harness = source.harness();
     let bound: Vec<(String, Liveness)> = bound
         .iter()
@@ -292,11 +315,19 @@ impl Sources {
             Read::Seed(bound) => {
                 let mut seeded = Vec::new();
                 for source in &mut self.sources {
+                    let title = source.harness().title();
                     match seed(source.as_mut(), kernel, bound) {
-                        Ok(observations) => seeded.extend(observations),
-                        Err(error) => {
-                            eprintln!("agent-leds: {}: {error:#}", source.harness().title())
+                        Ok(seed) => {
+                            for unread in seed.unread {
+                                eprintln!(
+                                    "agent-leds: {title}: reading {}: {}",
+                                    unread.path.display(),
+                                    unread.error
+                                );
+                            }
+                            seeded.extend(seed.observations);
                         }
+                        Err(error) => eprintln!("agent-leds: {title}: {error:#}"),
                     }
                 }
                 seeded
@@ -426,12 +457,8 @@ mod tests {
             vec![self.root.clone()]
         }
 
-        fn seed(
-            &mut self,
-            _k: &dyn Kernel,
-            _bound: &[(String, Liveness)],
-        ) -> Result<Vec<Observation>> {
-            Ok(Vec::new())
+        fn seed(&mut self, _k: &dyn Kernel, _bound: &[(String, Liveness)]) -> Result<Seed> {
+            Ok(Seed::default())
         }
 
         fn changed(&mut self, _k: &dyn Kernel, paths: Option<&[PathBuf]>) -> Vec<Observation> {

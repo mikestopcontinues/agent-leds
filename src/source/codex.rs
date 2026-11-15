@@ -21,7 +21,7 @@ use serde::de::IgnoredAny;
 use serde_json::Value;
 
 use super::tail::{self, Lines, MAX_LINE, Tail};
-use super::{Event, Hook, Observation, Source, Start, Told};
+use super::{Event, Hook, Observation, Seed, Source, Start, Told, Unread};
 use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
 use crate::harness::{Harness, ends_on_question};
@@ -378,14 +378,15 @@ impl Codex {
     /// Looks at a thread's lock again: a process that took it, quit, or
     /// handed it to another. A rollout the caller knows of is `found`.
     /// True when it starts following the thread, whose rollout is then to
-    /// be read back.
+    /// be read back; the rollout of a running thread that cannot be read
+    /// is not followed, and is looked at again at its next change.
     fn look(
         &mut self,
         k: &dyn Kernel,
         id: &str,
         found: Option<&Path>,
         out: &mut Vec<Observation>,
-    ) -> bool {
+    ) -> Result<bool, Unread> {
         let lock = self.lock(id);
         let taken = fs::metadata(&lock).and_then(|metadata| metadata.modified());
         if let Some(thread) = self.threads.get(id) {
@@ -394,7 +395,7 @@ impl Codex {
                 Err(_) => {}
                 // Still the process that took it. A killed process leaves
                 // its lock unlocked, which the sweep finds.
-                Ok(taken) if *taken == thread.taken => return false,
+                Ok(taken) if *taken == thread.taken => return Ok(false),
                 // Taken by another process, as a resume after a crash does:
                 // the one before is gone.
                 Ok(_) => {}
@@ -410,35 +411,33 @@ impl Codex {
         }
         let Ok(taken) = taken else {
             self.others.remove(id);
-            return false;
+            return Ok(false);
         };
         if self.others.contains(id) {
-            return false;
+            return Ok(false);
         }
         let liveness = Liveness::Lock { path: lock };
         // Left behind by a process that was killed.
         if !liveness::alive(k, &liveness) {
-            return false;
+            return Ok(false);
         }
         // A thread opened in the TUI has no rollout until its first prompt.
         let Some(rollout) = found.map(Path::to_owned).or_else(|| self.find(id)) else {
-            return false;
+            return Ok(false);
         };
         // A first line caught half written is read again at the next event.
-        let Ok(Some(meta)) = meta(&rollout) else {
-            return false;
+        let Some(meta) = meta(&rollout).map_err(|error| Unread::new(&rollout, error))? else {
+            return Ok(false);
         };
         if !meta.users() {
             self.others.insert(id.to_owned());
-            return false;
+            return Ok(false);
         }
         let start = taken
             .duration_since(UNIX_EPOCH)
             .map_or(0, |since| since.as_secs() as i64);
         // At the end until the rollout is read back.
-        let Ok(tail) = Tail::at_end(&rollout) else {
-            return false;
-        };
+        let tail = Tail::at_end(&rollout).map_err(|error| Unread::new(&rollout, error))?;
         out.push(Observation::new(
             Harness::Codex,
             id,
@@ -467,7 +466,7 @@ impl Codex {
                 told: Told::default(),
             },
         );
-        true
+        Ok(true)
     }
 
     /// Follows a thread: its lock, then what its rollout says.
@@ -478,8 +477,19 @@ impl Codex {
         found: Option<&Path>,
         out: &mut Vec<Observation>,
     ) {
-        if self.look(k, id, found, out) {
-            self.read_back(id, out);
+        match self.look(k, id, found, out) {
+            Ok(true) => {
+                if let Err(unread) = self.read_back(id, out) {
+                    eprintln!(
+                        "agent-leds: reading {}: {}",
+                        unread.path.display(),
+                        unread.error
+                    );
+                }
+            }
+            Ok(false) => {}
+            // Looked at again at its next change.
+            Err(_) => return,
         }
         self.read(id, out);
     }
@@ -519,7 +529,7 @@ impl Codex {
     /// which can be gigabytes long. What was written before
     /// the lock was taken is history of a process before this one, as after
     /// a resume or a crash, and says nothing.
-    fn read_back(&mut self, id: &str, out: &mut Vec<Observation>) {
+    fn read_back(&mut self, id: &str, out: &mut Vec<Observation>) -> Result<(), Unread> {
         let thread = self.threads.get_mut(id).expect("started");
         let start = thread.start;
         // Back to the last turn's start, or to what an earlier process wrote.
@@ -531,11 +541,8 @@ impl Codex {
                 thread.tail = tail;
                 lines
             }
-            Err(error) => {
-                // The thread is still followed, from what it writes next.
-                eprintln!("agent-leds: reading {}: {error}", thread.rollout.display());
-                return;
-            }
+            // The thread is still followed, from what it writes next.
+            Err(error) => return Err(Unread::new(&thread.rollout, error)),
         };
         let read = |line: &Vec<u8>| Record::read(line).filter(|record| !record.before(start));
         let records: Vec<Record> = lines.iter().filter_map(read).collect();
@@ -549,6 +556,7 @@ impl Codex {
         for record in &records {
             says(id, thread, record, out);
         }
+        Ok(())
     }
 }
 
@@ -568,7 +576,10 @@ fn meta(path: &Path) -> io::Result<Option<Meta>> {
     if line.last() != Some(&b'\n') {
         return Ok(None);
     }
-    Ok(serde_json::from_slice(&line).ok())
+    // A whole first line that is not one is a format it does not know.
+    serde_json::from_slice(&line)
+        .map(Some)
+        .map_err(io::Error::other)
 }
 
 /// The Unix second of a record's time, "2026-11-14T21:58:34.284Z"; a record
@@ -694,15 +705,23 @@ impl Source for Codex {
         vec![self.locks_dir.clone(), self.sessions_dir.clone()]
     }
 
-    fn seed(&mut self, k: &dyn Kernel, _bound: &[(String, Liveness)]) -> Result<Vec<Observation>> {
+    fn seed(&mut self, k: &dyn Kernel, _bound: &[(String, Liveness)]) -> Result<Seed> {
         let mut seeded = Vec::new();
+        let mut unread = Vec::new();
         for id in self.locked_ids() {
             let mut started = Vec::new();
-            if !self.look(k, &id, None, &mut started) {
-                continue;
+            match self.look(k, &id, None, &mut started) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => {
+                    unread.push(error);
+                    continue;
+                }
             }
             // Only where the rollout leaves the thread is told.
-            self.read_back(&id, &mut Vec::new());
+            if let Err(error) = self.read_back(&id, &mut Vec::new()) {
+                unread.push(error);
+            }
             let thread = self.threads.get_mut(&id).expect("followed");
             // Nothing is written while an approval waits, so one the hook
             // told before the daemon started may wait still: the first
@@ -726,7 +745,10 @@ impl Source for Codex {
         for o in &mut seeded {
             o.quiet = true;
         }
-        Ok(seeded)
+        Ok(Seed {
+            observations: seeded,
+            unread,
+        })
     }
 
     fn changed(&mut self, k: &dyn Kernel, paths: Option<&[PathBuf]>) -> Vec<Observation> {
@@ -842,7 +864,7 @@ mod tests {
         let home = std::env::var_os("HOME").expect("a home");
         let mut codex = Codex::new(Path::new(&home));
         let mut queue = crate::queue::Queue::default();
-        for o in codex.seed(&liveness::System, &[]).unwrap() {
+        for o in fixture::printed(codex.seed(&liveness::System, &[]).unwrap()) {
             assert!(o.quiet);
             queue.apply(&o, 0);
         }

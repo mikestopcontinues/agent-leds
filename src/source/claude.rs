@@ -20,7 +20,7 @@ use serde::de::IgnoredAny;
 use serde_json::Value;
 
 use super::tail::{self, Lines, Tail};
-use super::{Event, Hook, Observation, Source, Start, Told};
+use super::{Event, Hook, Observation, Seed, Source, Start, Told, Unread};
 use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
 use crate::harness::{Harness, ends_on_question};
@@ -398,27 +398,26 @@ impl Claude {
         if process.spare || process.kind.as_deref() == Some("bg") {
             return Ok(None);
         }
+        // A start it cannot read is a format it does not know.
         let Some(start) = process.proc_start.as_deref().and_then(liveness::lstart) else {
-            return Ok(None);
+            let error = format!("procStart {:?} is not a start time", process.proc_start);
+            return Err(io::Error::new(io::ErrorKind::InvalidData, error));
         };
         Ok(Some((process, start)))
     }
 
     /// Reads one session file again: a process that started or changed
     /// session, one that ended, or a new status, which `edges` collects to
-    /// tell after the transcripts are read.
+    /// tell after the transcripts are read. One that cannot be read or is
+    /// half written keeps what it said before.
     fn session_file(
         &mut self,
         k: &dyn Kernel,
         path: &Path,
         out: &mut Vec<Observation>,
         edges: &mut Vec<(String, Status, Status)>,
-    ) {
-        let read = match Claude::process(path) {
-            Ok(read) => read,
-            // Unreadable or half written: keep what it said before.
-            Err(_) => return,
-        };
+    ) -> io::Result<()> {
+        let read = Claude::process(path)?;
         let known = self.procs.get(path);
         if let (Some(known), Some((process, start))) = (known, &read)
             && known.session == process.session_id
@@ -426,14 +425,14 @@ impl Claude {
             && known.start == *start
         {
             match self.sessions.get_mut(&known.session) {
-                Some(session) if session.owner != path => return,
+                Some(session) if session.owner != path => return Ok(()),
                 Some(session) => {
                     let status = process.status();
                     if session.status != status {
                         edges.push((known.session.clone(), session.status, status));
                         session.status = status;
                     }
-                    return;
+                    return Ok(());
                 }
                 // Ended with the file of another process that ran it, while
                 // this one still does: started again below.
@@ -445,7 +444,7 @@ impl Claude {
             self.end(k, &gone.session, path, out);
         }
         let Some((process, start)) = read else {
-            return;
+            return Ok(());
         };
         let liveness = Liveness::Process {
             pid: process.pid,
@@ -453,7 +452,7 @@ impl Claude {
         };
         // A file left behind by a process that was killed.
         if !liveness::alive(k, &liveness) {
-            return;
+            return Ok(());
         }
         let status = process.status();
         self.procs.insert(
@@ -497,6 +496,7 @@ impl Claude {
             edges.push((id.clone(), Status::Starting, status));
             self.sessions.get_mut(&id).expect("just added").status = status;
         }
+        Ok(())
     }
 
     /// Ends the session the file at `path` named, if that file's process
@@ -780,12 +780,16 @@ impl Source for Claude {
         vec![self.sessions_dir.clone(), self.projects_dir.clone()]
     }
 
-    fn seed(&mut self, k: &dyn Kernel, _bound: &[(String, Liveness)]) -> Result<Vec<Observation>> {
+    fn seed(&mut self, k: &dyn Kernel, _bound: &[(String, Liveness)]) -> Result<Seed> {
         let mut seeded = Vec::new();
+        let mut unread = Vec::new();
         for path in self.session_files() {
             let mut started = Vec::new();
             let mut edges = Vec::new();
-            self.session_file(k, &path, &mut started, &mut edges);
+            if let Err(error) = self.session_file(k, &path, &mut started, &mut edges) {
+                unread.push(Unread::new(&path, error));
+                continue;
+            }
             let Some(Event::Started(_)) = started.first().map(|o| &o.event) else {
                 continue;
             };
@@ -794,7 +798,7 @@ impl Source for Claude {
                 && let Err(error) = self.seed_transcript(&id, &transcript)
             {
                 // The session is still followed, from what it writes next.
-                eprintln!("agent-leds: reading {}: {error}", transcript.display());
+                unread.push(Unread::new(&transcript, error));
                 let session = self.sessions.get_mut(&id).expect("just started");
                 session.transcript = Tail::at_end(&transcript)
                     .ok()
@@ -822,7 +826,10 @@ impl Source for Claude {
         for o in &mut seeded {
             o.quiet = true;
         }
-        Ok(seeded)
+        Ok(Seed {
+            observations: seeded,
+            unread,
+        })
     }
 
     fn changed(&mut self, k: &dyn Kernel, paths: Option<&[PathBuf]>) -> Vec<Observation> {
@@ -837,7 +844,8 @@ impl Source for Claude {
             None => self.session_files(),
         };
         for path in files {
-            self.session_file(k, &path, &mut out, &mut edges);
+            // Read again at its next change.
+            let _ = self.session_file(k, &path, &mut out, &mut edges);
         }
         // The transcripts are read against the session files as they are
         // now, and the status changes told after them.
@@ -912,7 +920,7 @@ mod tests {
         let home = std::env::var_os("HOME").expect("a home");
         let mut claude = Claude::new(Path::new(&home));
         let mut queue = crate::queue::Queue::default();
-        for o in claude.seed(&liveness::System, &[]).unwrap() {
+        for o in fixture::printed(claude.seed(&liveness::System, &[]).unwrap()) {
             assert!(o.quiet);
             queue.apply(&o, 0);
         }
@@ -1090,9 +1098,30 @@ mod tests {
         let unreadable = fs::Permissions::from_mode(0o000);
         fs::set_permissions(&transcript, unreadable).unwrap();
         let seeded = fixture::seed(&replay);
+        let unread = fixture::unread(&replay);
         fs::set_permissions(&transcript, fs::Permissions::from_mode(0o600)).unwrap();
         let phases: Vec<Phase> = seeded.sessions().iter().map(|s| s.phase).collect();
         assert_eq!(phases, [Phase::Idle]);
+        // The seed says what it could not read.
+        assert_eq!(unread, [transcript]);
+    }
+
+    #[test]
+    fn a_session_file_the_seed_cannot_make_sense_of_is_said() {
+        let replay = replay("turn_ended.file");
+        let session_file = replay.home.path().join(".claude/sessions/90859.json");
+        let text = fs::read_to_string(&session_file).unwrap();
+        // A start time in a format it does not know, and a file that is not JSON.
+        for changed in [text.replace("procStart", "processStart"), "{\"pid\"".into()] {
+            crate::files::replace(&session_file, &changed).unwrap();
+            assert!(!fixture::seed(&replay).tracked());
+            assert_eq!(
+                fixture::unread(&replay),
+                std::slice::from_ref(&session_file)
+            );
+        }
+        crate::files::replace(&session_file, &text).unwrap();
+        assert!(fixture::unread(&replay).is_empty());
     }
 
     #[test]

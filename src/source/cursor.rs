@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::Deserialize;
 
-use super::{Event, Hook, Observation, Source, Start, Told, tail};
+use super::{Event, Hook, Observation, Seed, Source, Start, Told, Unread, tail};
 use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
 use crate::harness::{Harness, ends_on_question};
@@ -411,18 +411,21 @@ impl Cursor {
     }
 
     /// Reads the chat's transcript whole and tells what it says that the
-    /// last read taken did not.
-    fn read(&mut self, id: &str, out: &mut Vec<Observation>) {
+    /// last read taken did not. One changing while it was read, gone, or
+    /// that cannot be read is read again at its next change.
+    fn read(&mut self, id: &str, out: &mut Vec<Observation>) -> Result<(), Unread> {
         let Some(path) = self.find(id) else {
-            return;
+            return Ok(());
         };
-        // Changing while it was read, or gone: read again at the next change.
-        let Ok(Some(bytes)) = tail::stable(&path) else {
-            return;
+        let bytes = match tail::stable(&path) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(Unread::new(&path, error)),
         };
         let session = self.sessions.get_mut(id).expect("bound");
         if !finished(&bytes, session.taken.as_deref()) {
-            return;
+            return Ok(());
         }
         let level = Level::read(&bytes);
         let signals = level.since(session.level.as_ref());
@@ -431,6 +434,7 @@ impl Cursor {
         if !signals.is_empty() {
             tell(id, session, Channel::File, signals, out);
         }
+        Ok(())
     }
 
     /// Ends every chat bound to the process whose marker is at `path`, if
@@ -463,7 +467,7 @@ impl Cursor {
         let mut out = Vec::new();
         let known = self.sessions.contains_key(&id);
         if known {
-            self.read(&id, &mut out);
+            let _ = self.read(&id, &mut out);
         }
         match self.process(ancestry) {
             Some((pid, start, marker)) => {
@@ -474,7 +478,7 @@ impl Cursor {
                 // Resumed in another process.
                 (session.pid, session.start, session.marker) = (pid, start, marker);
                 if !known {
-                    self.read(&id, &mut Vec::new());
+                    let _ = self.read(&id, &mut Vec::new());
                 }
                 let session = &self.sessions[&id];
                 let start = Start {
@@ -516,7 +520,7 @@ impl Cursor {
         if !self.sessions.contains_key(id) {
             return out;
         }
-        self.read(id, &mut out);
+        let _ = self.read(id, &mut out);
         let session = self.sessions.get_mut(id).expect("bound");
         let signals = BTreeSet::from([Signal::Interrupted]);
         tell(id, session, Channel::Hook, signals, &mut out);
@@ -556,8 +560,9 @@ impl Source for Cursor {
     /// Each chat a hook bound before the daemon started, whose process still
     /// runs, as its transcript leaves it. A chat no hook bound names no
     /// process, so it shows from its next prompt.
-    fn seed(&mut self, k: &dyn Kernel, bound: &[(String, Liveness)]) -> Result<Vec<Observation>> {
+    fn seed(&mut self, k: &dyn Kernel, bound: &[(String, Liveness)]) -> Result<Seed> {
         let mut seeded = Vec::new();
+        let mut unread = Vec::new();
         for (id, liveness) in bound {
             let &Liveness::Process {
                 pid,
@@ -574,7 +579,10 @@ impl Source for Cursor {
             };
             self.sessions
                 .insert(id.clone(), Session::new(pid, start, marker));
-            self.read(id, &mut Vec::new());
+            // The chat is still followed, from its next read.
+            if let Err(error) = self.read(id, &mut Vec::new()) {
+                unread.push(error);
+            }
             let turn = self.sessions[id].turn();
             let start = Start {
                 cwd: self.folder(id),
@@ -600,7 +608,10 @@ impl Source for Cursor {
         for o in &mut seeded {
             o.quiet = true;
         }
-        Ok(seeded)
+        Ok(Seed {
+            observations: seeded,
+            unread,
+        })
     }
 
     fn changed(&mut self, _k: &dyn Kernel, paths: Option<&[PathBuf]>) -> Vec<Observation> {
@@ -626,7 +637,7 @@ impl Source for Cursor {
         // The last checkpoint is written before the process unlinks its marker.
         for id in chats {
             if self.sessions.contains_key(&id) {
-                self.read(&id, &mut out);
+                let _ = self.read(&id, &mut out);
             }
         }
         for marker in markers {
@@ -752,7 +763,9 @@ mod tests {
             .filter(|(key, _)| key.harness == Harness::Cursor);
         println!("{} chats the saved queue binds", ours.count());
         let mut queue = crate::queue::Queue::default();
-        for o in super::super::seed(&mut cursor, &liveness::System, &bound).unwrap() {
+        for o in
+            fixture::printed(super::super::seed(&mut cursor, &liveness::System, &bound).unwrap())
+        {
             assert!(o.quiet);
             queue.apply(&o, 0);
         }

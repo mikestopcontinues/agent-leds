@@ -25,7 +25,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::tail::{self, Lines, Tail};
-use super::{Event, Hook, Observation, Source, Start, Told};
+use super::{Event, Hook, Observation, Seed, Source, Start, Told, Unread};
 use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
 use crate::harness::{Harness, ends_on_question};
@@ -388,21 +388,23 @@ impl Grok {
                 }
                 None => {}
             }
-            self.start(k, row, out);
+            // Read again at its next change.
+            let _ = self.start(k, row, out);
         }
         gone
     }
 
     /// Starts following the session a row names, if its process runs, and
-    /// reads what that process has written of it so far.
-    fn start(&mut self, k: &dyn Kernel, row: &Row, out: &mut Vec<Observation>) {
+    /// reads what that process has written of it so far, saying which of
+    /// its logs it could not read.
+    fn start(&mut self, k: &dyn Kernel, row: &Row, out: &mut Vec<Observation>) -> Vec<Unread> {
         let liveness = Liveness::Process {
             pid: row.pid,
             start: StartCheck::ExactUs(row.pid_start),
         };
         // A row left behind by a process that was killed.
         if !liveness::alive(k, &liveness) {
-            return;
+            return Vec::new();
         }
         let id = row.session_id.clone();
         out.push(Observation::new(
@@ -436,8 +438,12 @@ impl Grok {
             },
         );
         // The updates first, so a turn end in the events has its text.
-        self.read(&id, Log::Updates, out);
-        self.read(&id, Log::Events, out);
+        let updates = self.read(&id, Log::Updates, out);
+        let events = self.read(&id, Log::Events, out);
+        [updates, events]
+            .into_iter()
+            .filter_map(Result::err)
+            .collect()
     }
 
     /// The session's folder, found by its name under any cwd folder: that
@@ -466,13 +472,14 @@ impl Grok {
 
     /// Reads what was appended to one of a session's logs. A log read for
     /// the first time is read back to where the session's last turn began,
-    /// counting only what its own process wrote.
-    fn read(&mut self, id: &str, log: Log, out: &mut Vec<Observation>) {
+    /// counting only what its own process wrote. A log that cannot be read
+    /// is read again at its next change.
+    fn read(&mut self, id: &str, log: Log, out: &mut Vec<Observation>) -> Result<(), Unread> {
         let Some(session) = self.sessions.get_mut(id) else {
-            return;
+            return Ok(());
         };
         let Some(dir) = &session.dir else {
-            return;
+            return Ok(());
         };
         let path = dir.join(log.name());
         let start = session.start;
@@ -486,8 +493,11 @@ impl Grok {
                     Log::Updates => Update::read(line)
                         .is_some_and(|update| update.is_prompt() || update.before(start)),
                 };
-                let Ok((lines, tail)) = tail::tail_back(&path, anchors) else {
-                    return;
+                let (lines, tail) = match tail::tail_back(&path, anchors) {
+                    Ok(read) => read,
+                    // Not written yet.
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+                    Err(error) => return Err(Unread::new(&path, error)),
                 };
                 reader.tail = Some(tail);
                 lines
@@ -500,17 +510,17 @@ impl Grok {
                 Ok(Lines::Replaced) => {
                     reader.tail = Tail::at_end(&path).ok();
                     reader.behind = false;
-                    return;
+                    return Ok(());
                 }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
                     reader.tail = None;
                     reader.behind = false;
-                    return;
+                    return Ok(());
                 }
                 // Read again at its next change, not over and over now.
-                Err(_) => {
+                Err(error) => {
                     reader.behind = false;
-                    return;
+                    return Err(Unread::new(&path, error));
                 }
             },
         };
@@ -520,6 +530,7 @@ impl Grok {
                 Log::Updates => self.update(id, &line, out),
             }
         }
+        Ok(())
     }
 
     /// What one events record says.
@@ -558,7 +569,8 @@ impl Grok {
     /// for the turn's final text and the subagents it leaves running.
     fn end(&mut self, id: &str, record: &Record, out: &mut Vec<Observation>) {
         loop {
-            self.read(id, Log::Updates, out);
+            // What cannot be read now is read at its next change.
+            let _ = self.read(id, Log::Updates, out);
             if !self.sessions[id].updates.behind {
                 break;
             }
@@ -662,14 +674,15 @@ impl Source for Grok {
         vec![self.root.clone()]
     }
 
-    fn seed(&mut self, k: &dyn Kernel, _bound: &[(String, Liveness)]) -> Result<Vec<Observation>> {
+    fn seed(&mut self, k: &dyn Kernel, _bound: &[(String, Liveness)]) -> Result<Seed> {
         let rows = self.rows()?;
         let mut ids: Vec<&String> = rows.keys().collect();
         ids.sort();
         let mut seeded = Vec::new();
+        let mut unread = Vec::new();
         for id in ids {
             let mut started = Vec::new();
-            self.start(k, &rows[id], &mut started);
+            unread.extend(self.start(k, &rows[id], &mut started));
             let Some(mut started) = started.into_iter().next() else {
                 continue;
             };
@@ -689,7 +702,10 @@ impl Source for Grok {
         for o in &mut seeded {
             o.quiet = true;
         }
-        Ok(seeded)
+        Ok(Seed {
+            observations: seeded,
+            unread,
+        })
     }
 
     fn changed(&mut self, k: &dyn Kernel, paths: Option<&[PathBuf]>) -> Vec<Observation> {
@@ -718,7 +734,8 @@ impl Source for Grok {
             if let Some(dir) = found {
                 self.sessions.get_mut(&id).expect("tracked").dir = Some(dir);
             }
-            self.read(&id, log, &mut out);
+            // Read again at its next change.
+            let _ = self.read(&id, log, &mut out);
         }
         for id in gone {
             self.sessions.remove(&id);
@@ -795,7 +812,7 @@ mod tests {
         let home = std::env::var_os("HOME").expect("a home");
         let mut grok = Grok::new(Path::new(&home));
         let mut queue = crate::queue::Queue::default();
-        for o in grok.seed(&liveness::System, &[]).unwrap() {
+        for o in fixture::printed(grok.seed(&liveness::System, &[]).unwrap()) {
             assert!(o.quiet);
             queue.apply(&o, 0);
         }
