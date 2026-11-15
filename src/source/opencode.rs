@@ -137,9 +137,10 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Backgrounded,
-        "2.x: the run ended while a job of the session's is left, a shell moved to the background or a subagent, at work or not yet reported to it",
-        "gaps oc8 (2.3.0 ctrl+b on a shell, a background shell, a task subagent)",
-    ),
+        "2.x: the run ended while a subagent's job of the session's is left, at work or not yet reported to it",
+        "gaps oc8 (2.3.0 a task subagent run in the background)",
+    )
+    .untold("a shell moved to the background, which wakes the session with a run of its own when it finishes; nothing says whether it ever will, as a dev server never does"),
     file(
         Signal::Looked,
         "2.x: the session seen idle since it last went idle, as the terminal interface writes once it shows the session while its terminal has focus",
@@ -367,7 +368,7 @@ const STAMP2: &str = "with recursive tree(id) as \
      select tree.id, (select seq from event_sequence where aggregate_id = tree.id) from tree \
      union all select 'job ' || notification_id, time_updated from job where session_id = ?1 order by 1";
 const RUN2: &str = "select time_busy, time_idle, idle_outcome, time_viewed, \
-     exists(select 1 from job where session_id = ?1) from session_v2 where id = ?1";
+     exists(select 1 from job where session_id = ?1 and kind = 'subagent') from session_v2 where id = ?1";
 /// The text parts of the last assistant message written since `?2`.
 const TEXTS2: &str = "with last as (select id, data from session_message where session_id = ?1 \
      and type = 'assistant' and time_created >= ?2 order by seq desc limit 1) \
@@ -599,15 +600,16 @@ fn text1(db: &Connection, message: &str) -> Result<String> {
 /// how it ended; a run cut short by OpenCode shutting down writes no end,
 /// and is resumed when it starts again.
 fn level2(db: &Connection, id: &str, strange: &mut Strange) -> Result<Level> {
-    let (busy, idle, outcome, viewed, jobs) = db.prepare_cached(RUN2)?.query_row([id], |row| {
-        Ok((
-            row.get::<_, Option<i64>>(0)?,
-            row.get::<_, Option<i64>>(1)?,
-            row.get::<_, Option<String>>(2)?,
-            row.get::<_, Option<i64>>(3)?,
-            row.get::<_, bool>(4)?,
-        ))
-    })?;
+    let (busy, idle, outcome, viewed, subagents) =
+        db.prepare_cached(RUN2)?.query_row([id], |row| {
+            Ok((
+                row.get::<_, Option<i64>>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+                row.get::<_, bool>(4)?,
+            ))
+        })?;
     let Some(busy) = busy else {
         return Ok(Level::None);
     };
@@ -627,7 +629,8 @@ fn level2(db: &Connection, id: &str, strange: &mut Strange) -> Result<Level> {
         Some("interrupted") => signals.insert(Signal::Interrupted),
         _ => false,
     };
-    if jobs {
+    // A shell may never exit, so only a subagent is work the run goes on with.
+    if subagents {
         signals.insert(Signal::Backgrounded);
     }
     if ends_on_question(&text2(db, id, busy)?) {
@@ -1368,7 +1371,7 @@ mod tests {
     fn a_2x_run_s_end_the_user_saw_is_read() {
         for name in [
             "a_2x_question_holds_the_run_until_answered",
-            "backgrounded.file",
+            "a_background_shell_ends_its_run_stopped",
         ] {
             assert_eq!(phase(&replay(name)), Phase::StoppedRead, "{name}");
         }

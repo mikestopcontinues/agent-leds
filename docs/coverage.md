@@ -155,14 +155,14 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 - Claude Code, file, observed: an end_turn record while the session file is busy with delegated work, not while it says a dialog is open; or waiting to busy after the turn closed (probe-claude cc3, cc4, cc5)
 - Codex, file, observed: task_complete while a subagent the turn started, or gave a followup_task, has not completed, or while the thread's goal in goals_1.sqlite is active with no continuation deferral, which Codex goes on with by itself (probe-codex runA PROMPT5; desktop rollouts 2026-10-13 and 2026-10-15)
-- Grok, file, observed: a turn_ended while updates.jsonl has a subagent_spawned with no subagent_finished, or its last background_tasks lists a command running that no task_completed has ended since; a command that never exits, such as a dev server, keeps every later turn end in the background, unannounced, since nothing says at its start whether it will wake the session (probe-grok subagent, run e; gaps grok-x a)
-- OpenCode, file, observed: 2.x: the run ended while a job of the session's is left, a shell moved to the background or a subagent, at work or not yet reported to it (gaps oc8 (2.3.0 ctrl+b on a shell, a background shell, a task subagent))
+- Grok, file, observed: a turn_ended while updates.jsonl has a subagent_spawned with no subagent_finished; not for a background command left running, which wakes the session with a turn of its own when it finishes; nothing at its start says whether it ever will, as a dev server never does (probe-grok subagent, run e)
+- OpenCode, file, observed: 2.x: the run ended while a subagent's job of the session's is left, at work or not yet reported to it; not for a shell moved to the background, which wakes the session with a run of its own when it finishes; nothing says whether it ever will, as a dev server never does (gaps oc8 (2.3.0 a task subagent run in the background))
 
 ### BackgroundDone
 
 - Claude Code, file, observed: the session file going from busy to idle after a backgrounded turn (probe-claude cc3)
 - Codex, file, observed: after the turn ended, the last such subagent's SubAgentActivity completed or interrupted, or the goal no longer active, with neither left (probe-codex runA PROMPT5; desktop rollout 2026-10-13; the goal from Codex 0.162's statements on goals_1.sqlite, unseen)
-- Grok, file, inferred: updates.jsonl subagent_finished or task_completed with will_wake false, leaving nothing running; will_wake false was seen only for work that finished inside the turn, a subagent and a background command killed with kill_command_or_subagent, and work that finished after its turn ended had will_wake true and started a turn, so this may never fire (probe-grok subagent, run e; session 01a1db59-934f; gaps grok-x a)
+- Grok, file, inferred: updates.jsonl subagent_finished with will_wake false, leaving no subagent running; will_wake false was seen only for subagents that finished inside the turn, and the one that finished after its turn ended had will_wake true and started a turn, so this may never fire (probe-grok subagent, run e; session 01a1db59-934f)
 
 ### Ended
 
@@ -203,8 +203,10 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 **Backgrounded**: a turn whose background work runs on shows as stopped while that work runs.
 
+- Grok, for a background command left running, which wakes the session with a turn of its own when it finishes; nothing at its start says whether it ever will, as a dev server never does
 - Cursor: Idle, Working, Stopped → Background
 - Junie: Idle, Working, Stopped → Background
+- OpenCode, for a shell moved to the background, which wakes the session with a run of its own when it finishes; nothing says whether it ever will, as a dev server never does
 - Pi: Idle, Working, Stopped → Background
 
 **BackgroundDone**: background work that finishes is never announced, and shows as working until the next turn.

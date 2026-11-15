@@ -3,8 +3,8 @@
 //! started, rewritten whole on every change. Each session keeps a folder,
 //! `~/.grok/sessions/<cwd folder>/<session>/`, with two logs appended a
 //! record at a time: `events.jsonl` says when a turn starts, waits and ends,
-//! and `updates.jsonl` holds what the agent wrote, the subagents it left
-//! running, and the whole list of its background commands at each change.
+//! and `updates.jsonl` holds what the agent wrote and the subagents it left
+//! running.
 //! The events own every boundary; the updates are read to their end when a
 //! turn ends, for its final text. Beside them `plan_mode.json`,
 //! replaced whole at each change, says whether a plan waits on the user's
@@ -112,14 +112,15 @@ pub const SIGNALS: &[Declared] = &[
     file(
         Signal::Backgrounded,
         Evidence::Observed,
-        "a turn_ended while updates.jsonl has a subagent_spawned with no subagent_finished, or its last background_tasks lists a command running that no task_completed has ended since; a command that never exits, such as a dev server, keeps every later turn end in the background, unannounced, since nothing says at its start whether it will wake the session",
-        "probe-grok subagent, run e; gaps grok-x a",
-    ),
+        "a turn_ended while updates.jsonl has a subagent_spawned with no subagent_finished",
+        "probe-grok subagent, run e",
+    )
+    .untold("a background command left running, which wakes the session with a turn of its own when it finishes; nothing at its start says whether it ever will, as a dev server never does"),
     file(
         Signal::BackgroundDone,
         Evidence::Inferred,
-        "updates.jsonl subagent_finished or task_completed with will_wake false, leaving nothing running; will_wake false was seen only for work that finished inside the turn, a subagent and a background command killed with kill_command_or_subagent, and work that finished after its turn ended had will_wake true and started a turn, so this may never fire",
-        "probe-grok subagent, run e; session 01a1db59-934f; gaps grok-x a",
+        "updates.jsonl subagent_finished with will_wake false, leaving no subagent running; will_wake false was seen only for subagents that finished inside the turn, and the one that finished after its turn ended had will_wake true and started a turn, so this may never fire",
+        "probe-grok subagent, run e; session 01a1db59-934f",
     ),
     file(
         Signal::Interrupted,
@@ -257,20 +258,8 @@ struct Change {
     kind: String,
     content: Option<Value>,
     child_session_id: Option<String>,
-    /// The background task a `task_completed` ended.
-    task_snapshot: Option<Task>,
-    /// Every background task of the session, as `background_tasks` lists
-    /// them at each change.
-    tasks: Option<Vec<Task>>,
     #[serde(default)]
     will_wake: bool,
-}
-
-#[derive(Deserialize)]
-struct Task {
-    task_id: String,
-    /// `running`, `completed` or `failed`, in a `background_tasks` list.
-    status: Option<String>,
 }
 
 impl Update {
@@ -293,10 +282,6 @@ impl Update {
             .and_then(|meta| meta.get("bash_command"))
             .is_some();
         change.kind == "user_message_chunk" && !shell
-    }
-
-    fn lists_tasks(&self) -> bool {
-        self.params.update.kind == "background_tasks"
     }
 }
 
@@ -370,19 +355,12 @@ struct Session {
     plan: bool,
     /// The subagents started and not finished.
     subagents: HashSet<String>,
-    /// The background tasks running, as Grok last listed them.
-    tasks: HashSet<String>,
     /// The last thing the agent wrote since the latest prompt.
     text: String,
     told: Told,
 }
 
 impl Session {
-    /// Whether work the session started still runs.
-    fn running(&self) -> bool {
-        !self.subagents.is_empty() || !self.tasks.is_empty()
-    }
-
     fn reader(&mut self, log: Log) -> &mut Reader {
         match log {
             Log::Events => &mut self.events,
@@ -507,7 +485,6 @@ impl Grok {
                 question: false,
                 plan: false,
                 subagents: HashSet::new(),
-                tasks: HashSet::new(),
                 text: String::new(),
                 told: Told::default(),
             },
@@ -552,9 +529,7 @@ impl Grok {
 
     /// Reads what was appended to one of a session's logs. A log read for
     /// the first time is read back to where the session's last turn began,
-    /// and the updates on back to Grok's last list of background tasks, which
-    /// a command started turns before may still be in; either way only as
-    /// far as its own process wrote.
+    /// only as far as its own process wrote.
     fn tail(&mut self, id: &str, log: Log, out: &mut Vec<Observation>) -> Result<(), Unread> {
         let Some(session) = self.sessions.get_mut(id) else {
             return Ok(());
@@ -567,17 +542,13 @@ impl Grok {
         let reader = session.reader(log);
         let lines = match &mut reader.tail {
             None => {
-                let (mut prompt, mut tasks) = (false, false);
                 let anchors = |line: &[u8]| match log {
                     Log::Events => {
                         Record::starts_turn(line)
                             || Record::read(line).is_some_and(|record| record.before(start))
                     }
-                    Log::Updates => Update::read(line).is_some_and(|update| {
-                        prompt |= update.is_prompt();
-                        tasks |= update.lists_tasks();
-                        (prompt && tasks) || update.before(start)
-                    }),
+                    Log::Updates => Update::read(line)
+                        .is_some_and(|update| update.is_prompt() || update.before(start)),
                 };
                 let (lines, tail) = match tail::tail_back(&path, anchors) {
                     Ok(read) => read,
@@ -715,7 +686,7 @@ impl Grok {
             }
             _ => {}
         }
-        if session.running() {
+        if !session.subagents.is_empty() {
             end.insert(Signal::Backgrounded);
         }
         tell(id, session, end, out);
@@ -744,22 +715,12 @@ impl Grok {
                 session.text = text.and_then(Value::as_str).unwrap_or_default().to_owned();
             }
             "subagent_spawned" => session.subagents.extend(change.child_session_id),
-            "background_tasks" => {
-                let tasks = change.tasks.into_iter().flatten();
-                session.tasks = tasks
-                    .filter(|task| task.status.as_deref() == Some("running"))
-                    .map(|task| task.task_id)
-                    .collect();
-            }
-            "subagent_finished" | "task_completed" => {
+            "subagent_finished" => {
                 if let Some(child) = change.child_session_id {
                     session.subagents.remove(&child);
                 }
-                if let Some(task) = change.task_snapshot {
-                    session.tasks.remove(&task.task_id);
-                }
-                // Work that wakes its parent starts a turn instead.
-                if !session.running() && !change.will_wake {
+                // A subagent that wakes its parent starts a turn instead.
+                if session.subagents.is_empty() && !change.will_wake {
                     tell(id, session, [Signal::BackgroundDone], out);
                 }
             }
@@ -1067,12 +1028,22 @@ mod tests {
         assert_eq!(phase(&replay), Phase::Stopped);
     }
 
+    /// A command left running is no work the turn goes on with: a server
+    /// may never exit. When one finishes, Grok wakes the session with a turn
+    /// of its own.
     #[test]
-    fn a_background_command_from_an_earlier_turn_outlives_a_restart() {
-        let replay = replay("a_background_command_from_an_earlier_turn_outlives_a_restart");
-        assert_eq!(phase(&replay), Phase::Background);
-        let seeded = fixture::seed(&replay);
-        assert_eq!(seeded.sessions()[0].phase, Phase::Background);
+    fn a_background_command_left_running_ends_its_turn_stopped() {
+        let replay = replay("a_background_command_left_running_ends_its_turn_stopped");
+        let told = told(&replay);
+        assert!(
+            told.iter()
+                .all(|told| !told.contains(&Signal::Backgrounded))
+        );
+        assert!(
+            told.iter()
+                .all(|told| !told.contains(&Signal::BackgroundDone))
+        );
+        assert_eq!(phase(&replay), Phase::Stopped);
     }
 
     #[test]
