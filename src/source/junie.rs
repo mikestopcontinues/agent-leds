@@ -97,6 +97,11 @@ pub const SIGNALS: &[Declared] = &[
         "TaskState after a task started, COMPLETED or CANCELED, unless it completes a task with a follow-up it has not taken; or a SessionA2uxEvent in state FAILED during a task",
         "probe-junie 4020.10 s1-s8",
     ),
+    inferred(
+        Signal::TurnEnded,
+        "TaskState COMPLETED for a task whose follow-up a UserMessagesCommittedToHistory named before it, as the task that took it; 4020.10 took every follow-up in a task of its own",
+        "probe-junie 4020.10 s1 turns 7-8, where each task commits the prompts it takes",
+    ),
     file(
         Signal::TurnEndedAsking,
         "TaskState after a task started whose last ResultBlockUpdatedEvent result ends its last line in a question mark",

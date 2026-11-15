@@ -117,6 +117,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Grok, file, observed: events.jsonl turn_ended, completed or cancelled (probe-grok turn_completed, runs a, e, h)
 - Cursor, file, observed: a finished transcript whose last record is turn_ended, once for each count of user records and status (probe-cursor runs A–H)
 - Junie, file, observed: TaskState after a task started, COMPLETED or CANCELED, unless it completes a task with a follow-up it has not taken; or a SessionA2uxEvent in state FAILED during a task (probe-junie 4020.10 s1-s8)
+- Junie, file, inferred: TaskState COMPLETED for a task whose follow-up a UserMessagesCommittedToHistory named before it, as the task that took it; 4020.10 took every follow-up in a task of its own (probe-junie 4020.10 s1 turns 7-8, where each task commits the prompts it takes)
 - OpenCode, file, observed: 1.x: the turn's latest assistant message completed, unless it is a step that finished on tool-calls or unknown with no error and no tool the user refused or dismissed; 2.x: the session went idle after its latest run started (probe-opencode T2–T10, T15, T16; gaps oc8 (2.3.0 time_idle))
 - Pi, file, observed: an assistant message entry with stopReason stop or length and no toolCall block (probe-pi ext084, rpc1, tui1)
 
