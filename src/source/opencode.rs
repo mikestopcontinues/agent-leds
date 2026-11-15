@@ -66,12 +66,12 @@ pub const SIGNALS: &[Declared] = &[
     hook(
         Signal::Started,
         "the plugin's busy, as a session goes busy (1.x) or starts a run (2.x), or as 2.x first steps or asks in a process, as a run the service resumes does, from the OpenCode process whose pid it names: 2.x's background service, or the server a terminal interface runs; a subagent's starts the session it works for when that is not followed",
-        "probe-opencode T3–T16 (session.status busy, in serve and the TUI); gaps oc8 (2.3.0 session.execution.started, in the service, in `--standalone` and in `run`; session.step.started first after the service restarted), oc9 (one plugin file in 1.18.25 and 2.3.0)",
+        "probe-opencode T3–T16 (session.status busy, in serve and the TUI); gaps oc8 (2.3.0 session.execution.started, in the service, in `--standalone` and in `run`; session.step.started first after the service restarted), oc9 (one plugin file whose `server` 1.18.25 runs and `setup` 2.3.0 runs), oc10 (the shipped plugin's busy from 1.18.25 `run`, on a new database and on oc9's migrated one)",
     ),
     hook(
         Signal::Prompted,
         "the plugin's busy",
-        "probe-opencode T3–T16 (session.status busy, in serve and the TUI); gaps oc8 (2.3.0 session.execution.started)",
+        "probe-opencode T3–T16 (session.status busy, in serve and the TUI); gaps oc8 (2.3.0 session.execution.started), oc10 (1.18.25 `run`)",
     ),
     file(
         Signal::Prompted,
