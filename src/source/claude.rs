@@ -481,8 +481,10 @@ impl Session {
 enum Said<'a> {
     /// The app started: no dialog of an earlier launch is open.
     Launched,
-    /// A dialog opened for a tool in the app's session `local`.
+    /// A dialog opened for a tool in the app's session `local`, at the
+    /// local time `at`.
     Opened {
+        at: &'a str,
         request: &'a str,
         tool: &'a str,
         local: &'a str,
@@ -508,6 +510,7 @@ impl Said<'_> {
             let (request, rest) = rest.split_once(" for ")?;
             let (tool, local) = rest.split_once(" in session ")?;
             return Some(Said::Opened {
+                at: &line[..19],
                 request,
                 tool,
                 local,
@@ -527,6 +530,10 @@ impl Said<'_> {
 /// A dialog the desktop app's log holds open.
 struct Dialog {
     request: String,
+    /// When it opened, as a Unix second. It holds up only the run of its
+    /// session that was running then: a run killed with a dialog open, or
+    /// one the app logged no close for, leaves it open in the log.
+    opened: i64,
     /// The app's session, and the Claude Code session it runs once the
     /// app's file for it has been read. A file caught half written is read
     /// again at the log's next change; an agent-mode session has none.
@@ -612,7 +619,7 @@ impl Claude {
     /// Reads the desktop app's log to its end at a seed: back to where the
     /// app last started, through the files it rotated the log to, at most
     /// four, for the dialogs still open. Only those are looked up.
-    fn seed_log(&mut self) -> io::Result<()> {
+    fn seed_log(&mut self, k: &dyn Kernel) -> io::Result<()> {
         let (path, rotated) = (self.log_path(), self.logs_dir.join("main1.log"));
         let mut files = Vec::new();
         match Tail::at_start(&path) {
@@ -659,7 +666,7 @@ impl Claude {
         self.dialogs.clear();
         for line in files.iter().rev().flatten() {
             if let Some(said) = Said::read(line) {
-                self.said(said);
+                self.said(k, said);
             }
         }
         self.resolve();
@@ -668,7 +675,7 @@ impl Claude {
 
     /// Reads what the desktop app's log got since it was last read, and
     /// collects in `edges` each session whose status that changes.
-    fn read_log(&mut self, edges: &mut Vec<(String, Status, Status)>) {
+    fn read_log(&mut self, k: &dyn Kernel, edges: &mut Vec<(String, Status, Status)>) {
         let (path, rotated) = (self.log_path(), self.logs_dir.join("main1.log"));
         // A log made since the seed holds nothing older.
         if self.log.is_none() {
@@ -685,7 +692,7 @@ impl Claude {
         let lines = read.unwrap_or_default();
         let mut held = Vec::new();
         for said in lines.iter().filter_map(|line| Said::read(line)) {
-            held.extend(self.said(said));
+            held.extend(self.said(k, said));
             held.extend(self.resolve());
             for id in held.drain(..) {
                 self.desktop(&id, edges);
@@ -699,20 +706,25 @@ impl Claude {
 
     /// Applies what a line of the log says to the dialogs it holds open, and
     /// says which sessions that changes.
-    fn said(&mut self, said: Said) -> Vec<String> {
+    fn said(&mut self, k: &dyn Kernel, said: Said) -> Vec<String> {
         let closed = match said {
             Said::Launched => mem::take(&mut self.dialogs),
             Said::Opened {
+                at,
                 request,
                 tool,
                 local,
             } => {
-                self.dialogs.push(Dialog {
-                    request: request.to_owned(),
-                    local: local.to_owned(),
-                    session: None,
-                    wait: wait(tool),
-                });
+                // A time that does not read is no line the app writes.
+                if let Some(opened) = k.local_second(at) {
+                    self.dialogs.push(Dialog {
+                        request: request.to_owned(),
+                        opened,
+                        local: local.to_owned(),
+                        session: None,
+                        wait: wait(tool),
+                    });
+                }
                 Vec::new()
             }
             Said::Closed { request } => {
@@ -740,8 +752,8 @@ impl Claude {
         found
     }
 
-    /// Sets what the log holds open for the session `id`, collecting the
-    /// edge in `edges` if its status changes.
+    /// Sets what the log holds open for the session `id` since its process
+    /// started, collecting the edge in `edges` if its status changes.
     fn desktop(&mut self, id: &str, edges: &mut Vec<(String, Status, Status)>) {
         let Some(session) = self.sessions.get_mut(id) else {
             return;
@@ -750,7 +762,7 @@ impl Claude {
         session.desktop = self
             .dialogs
             .iter()
-            .find(|dialog| dialog.session.as_deref() == Some(id))
+            .find(|dialog| dialog.session.as_deref() == Some(id) && dialog.opened >= session.start)
             .map(|dialog| dialog.wait);
         let after = session.status();
         if before != after {
@@ -968,9 +980,6 @@ impl Claude {
         });
         let Some((other, start)) = other else {
             self.sessions.remove(id);
-            // A dialog the app left open holds up no later run of the session.
-            self.dialogs
-                .retain(|dialog| dialog.session.as_deref() != Some(id));
             out.push(Observation::new(
                 Harness::Claude,
                 id,
@@ -1274,7 +1283,7 @@ impl Source for Claude {
         let mut seeded = Vec::new();
         let mut unread = Vec::new();
         // The dialogs open now, before the sessions they hold up.
-        if let Err(error) = self.seed_log() {
+        if let Err(error) = self.seed_log(k) {
             unread.push(Unread::new(&self.log_path(), error));
         }
         for path in self.session_files() {
@@ -1330,7 +1339,7 @@ impl Source for Claude {
         }
         // The desktop app's dialogs change the status as the session files do.
         if paths.is_none_or(|paths| paths.iter().any(|path| self.is_log(path))) {
-            self.read_log(&mut edges);
+            self.read_log(k, &mut edges);
         }
         // The transcripts are read against the session files as they are
         // now, and the status changes told after them.
@@ -1574,6 +1583,19 @@ mod tests {
         assert_eq!(phase(&replay), Phase::Working);
     }
 
+    /// Killed with the dialog open, then quit: neither later run is held up
+    /// by it, live or at a seed.
+    #[test]
+    fn a_dialog_an_earlier_run_of_the_session_left_open_holds_up_no_later_run() {
+        let replay =
+            replay("a_dialog_an_earlier_run_of_the_session_left_open_holds_up_no_later_run");
+        assert_eq!(told(&replay, Signal::PermissionAsked), 1);
+        assert_eq!(phase(&replay), Phase::Idle);
+        let seeded = fixture::seed(&replay);
+        let phases: Vec<Phase> = seeded.sessions().iter().map(|s| s.phase).collect();
+        assert_eq!(phases, [Phase::Idle]);
+    }
+
     #[test]
     fn the_log_s_lines_say_what_they_say_of_dialogs() {
         fn read(line: &str) -> Option<Said<'_>> {
@@ -1584,6 +1606,7 @@ mod tests {
                 "2026-11-15 10:43:43 [info] Emitted tool permission request r1 for browser:open_site in session local_a"
             ),
             Some(Said::Opened {
+                at: "2026-11-15 10:43:43",
                 request: "r1",
                 tool: "browser:open_site",
                 local: "local_a"
