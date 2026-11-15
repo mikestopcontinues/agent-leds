@@ -676,10 +676,10 @@ impl Claude {
     /// Where the tail of a session's transcript leaves it, read against the
     /// session file as it is now: back to where its last turn began, or to
     /// what an earlier process wrote.
-    fn seed_transcript(&mut self, id: &str, path: PathBuf) -> io::Result<()> {
+    fn seed_transcript(&mut self, id: &str, path: &Path) -> io::Result<()> {
         let start = self.sessions[id].start;
         let anchors = |record: &Record| record.is_prompt() || record.before(start);
-        let (lines, tail) = tail::tail_back(&path, |lines| {
+        let (lines, tail) = tail::tail_back(path, |lines| {
             let mut records = lines.iter().filter_map(|line| Record::read(line));
             records.any(|record| anchors(&record))
         })?;
@@ -687,7 +687,7 @@ impl Claude {
         // Nothing read back starts a turn: one began further back.
         let began_before = !records.iter().any(anchors);
         let session = self.sessions.get_mut(id).expect("started");
-        session.transcript = Some((path, tail));
+        session.transcript = Some((path.to_owned(), tail));
         session.open = began_before;
         let mut history = Vec::new();
         for record in &records {
@@ -743,8 +743,15 @@ impl Source for Claude {
                 continue;
             };
             let id = started[0].key.id.clone();
-            if let Some(transcript) = self.find(&id) {
-                self.seed_transcript(&id, transcript)?;
+            if let Some(transcript) = self.find(&id)
+                && let Err(error) = self.seed_transcript(&id, &transcript)
+            {
+                // The session is still followed, from what it writes next.
+                eprintln!("agent-leds: reading {}: {error}", transcript.display());
+                let session = self.sessions.get_mut(&id).expect("just started");
+                session.transcript = Tail::at_end(&transcript)
+                    .ok()
+                    .map(|tail| (transcript, tail));
             }
             for (id, from, to) in edges {
                 self.edge(&id, from, to, &mut Vec::new());
@@ -1013,6 +1020,22 @@ mod tests {
             phase(&replay("the_desktop_s_end_turn_tool_ends_the_turn")),
             Phase::Stopped
         );
+    }
+
+    #[test]
+    fn a_transcript_that_cannot_be_read_back_still_leaves_its_session_followed() {
+        use std::os::unix::fs::PermissionsExt;
+        let replay = replay("turn_ended.file");
+        let transcript = replay
+            .home
+            .path()
+            .join(".claude/projects/-Users-me-Code-app/e8f843a7-1f54-44e3-b14d-99f53e9cec7a.jsonl");
+        let unreadable = fs::Permissions::from_mode(0o000);
+        fs::set_permissions(&transcript, unreadable).unwrap();
+        let seeded = fixture::seed(&replay);
+        fs::set_permissions(&transcript, fs::Permissions::from_mode(0o600)).unwrap();
+        let phases: Vec<Phase> = seeded.sessions().iter().map(|s| s.phase).collect();
+        assert_eq!(phases, [Phase::Idle]);
     }
 
     #[test]
