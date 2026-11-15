@@ -18,7 +18,7 @@
 {"hook":{"event":"agent_settled","session":"01a1df28-8760-7cc5-95aa-023c234bc57e","aborted":false,"stop_reason":"stop"},"ancestry":[{"pid":90572,"started_us":1794745337524000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
 {"expect":[]}
 {"hook":{"event":"agent_start","session":"01a1df28-8760-7cc5-95aa-023c234bc57e","pid":90572,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-22-17-696Z_01a1df28-8760-7cc5-95aa-023c234bc57e.jsonl"},"ancestry":[{"pid":90572,"started_us":1794745337524000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
-{"expect":[["started","hook"],["prompted","hook"]],"restart":"stopped"}
+{"expect":[["started","hook"],["prompted","hook"]]}
 {"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-22-17-696Z_01a1df28-8760-7cc5-95aa-023c234bc57e.jsonl","line":{"type":"message","id":"d552257a","parentId":"fbdad335","timestamp":"2026-11-15T12:22:19.896Z","message":{"role":"user","content":[{"type":"text","text":"Reply: Should I keep going?"}],"timestamp":1794745339872}}}
 {"expect":[["prompted","file"]]}
 {"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-22-17-696Z_01a1df28-8760-7cc5-95aa-023c234bc57e.jsonl","line":{"type":"message","id":"f6ca4aa6","parentId":"d552257a","timestamp":"2026-11-15T12:22:19.898Z","message":{"role":"assistant","content":[{"type":"text","text":"Should I keep going?"}],"api":"openai-completions","provider":"fake","model":"fake","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1794745339896,"responseId":"c1","rawStopReason":"stop"}}}

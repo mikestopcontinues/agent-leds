@@ -34,7 +34,7 @@
 {"hook":{"event":"agent_settled","session":"01a1df28-c927-7d3a-a0e0-2f2e51d4ab67","aborted":false,"stop_reason":"stop"},"ancestry":[{"pid":90981,"started_us":1794745354364000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
 {"expect":[]}
 {"hook":{"event":"agent_start","session":"01a1df28-c927-7d3a-a0e0-2f2e51d4ab67","pid":90981,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-22-34-535Z_01a1df28-c927-7d3a-a0e0-2f2e51d4ab67.jsonl"},"ancestry":[{"pid":90981,"started_us":1794745354364000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
-{"expect":[["started","hook"],["prompted","hook"]],"restart":"stopped"}
+{"expect":[["started","hook"],["prompted","hook"]]}
 {"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-22-34-535Z_01a1df28-c927-7d3a-a0e0-2f2e51d4ab67.jsonl","line":{"type":"message","id":"aab33af0","parentId":"2da87a49","timestamp":"2026-11-15T12:22:37.872Z","message":{"role":"user","content":[{"type":"text","text":"Please subagent_bg"}],"timestamp":1794745357848}}}
 {"expect":[["prompted","file"]]}
 {"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-22-34-535Z_01a1df28-c927-7d3a-a0e0-2f2e51d4ab67.jsonl","line":{"type":"message","id":"0fbb35a1","parentId":"aab33af0","timestamp":"2026-11-15T12:22:37.875Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_1794745357875","name":"subagent","arguments":{"agent":"echo","task":"bash: sleep 6; echo bg","context":"fresh","async":true}}],"api":"openai-completions","provider":"fake","model":"fake","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":1794745357873,"responseId":"c1","rawStopReason":"tool_calls"}}}
@@ -58,9 +58,9 @@
 {"hook":{"event":"agent_settled","session":"01a1df28-c927-7d3a-a0e0-2f2e51d4ab67","aborted":false,"stop_reason":"stop"},"ancestry":[{"pid":90981,"started_us":1794745354364000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
 {"expect":[]}
 {"hook":{"event":"agent_start","session":"01a1df28-c927-7d3a-a0e0-2f2e51d4ab67","pid":90981,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-22-34-535Z_01a1df28-c927-7d3a-a0e0-2f2e51d4ab67.jsonl"},"ancestry":[{"pid":90981,"started_us":1794745354364000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
-{"expect":[["started","hook"],["prompted","hook"]],"restart":"stopped"}
+{"expect":[["started","hook"],["prompted","hook"]]}
 {"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-22-34-535Z_01a1df28-c927-7d3a-a0e0-2f2e51d4ab67.jsonl","line":{"type":"custom_message","customType":"subagent-notify","content":"Background task completed: **echo**\n\necho:\nready\n\nSession file: /Users/me/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-22-34-535Z_01a1df28-c927-7d3a-a0e0-2f2e51d4ab67/b4ca963a/run-0/session.jsonl","display":true,"id":"f85bbe4e","parentId":"96e1adb3","timestamp":"2026-11-15T12:22:38.917Z"}}
-{"expect":[],"restart":"stopped"}
+{"expect":[]}
 {"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-22-34-535Z_01a1df28-c927-7d3a-a0e0-2f2e51d4ab67.jsonl","line":{"type":"message","id":"20450156","parentId":"f85bbe4e","timestamp":"2026-11-15T12:22:38.921Z","message":{"role":"assistant","content":[{"type":"text","text":"ready"}],"api":"openai-completions","provider":"fake","model":"fake","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1794745358918,"responseId":"c1","rawStopReason":"stop"}}}
 {"expect":[["prompted","file"],["turn_ended","file"]]}
 {"hook":{"event":"agent_settled","session":"01a1df28-c927-7d3a-a0e0-2f2e51d4ab67","aborted":false,"stop_reason":"stop"},"ancestry":[{"pid":90981,"started_us":1794745354364000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}

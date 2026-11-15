@@ -133,7 +133,7 @@ An error entry in the file settles nothing, because Pi may retry it; only `agent
 
 What it cannot see:
 
-- A daemon started while a dialog is open or after a turn failed shows the session as working, since only the extension said so.
+- A dialog answered while the daemon was down still shows as a question when it starts, until that turn ends, since nothing written says the dialog closed.
 - A daemon started while a session writes to its own `sessionDir` cannot find the file, so the session shows nothing until its next prompt names the file again.
 - The hook does not wait for the daemon, which reads the file before each hook it handles. A reply written before the daemon handles that run's `agent_start` would leave the session working until its next event; no real provider answers that fast.
 - Pi has no permission prompts of its own; extensions that add them ask through dialogs, which show as a question. A session Pi keeps no file of, as with `--no-session`, is not shown.
