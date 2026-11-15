@@ -94,11 +94,72 @@ fn group_commands(group: &Table) -> Vec<&str> {
     }
 }
 
-/// Whether a group of handlers is the one an install wrote.
-fn is_ours(group: &Table) -> bool {
-    group_commands(group)
-        .into_iter()
-        .any(|command| Harness::Codex.owns(command))
+/// Whether each of a group's handlers, in order, is one an install wrote.
+fn owned(group: &Table) -> Vec<bool> {
+    let ours = |command: Option<&str>| command.is_some_and(|command| Harness::Codex.owns(command));
+    match group.get("hooks") {
+        Some(Item::Value(handlers)) => handlers
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|handler| {
+                ours(
+                    handler
+                        .as_inline_table()
+                        .and_then(|h| h.get("command")?.as_str()),
+                )
+            })
+            .collect(),
+        Some(Item::ArrayOfTables(handlers)) => handlers
+            .iter()
+            .map(|handler| ours(handler.get("command").and_then(Item::as_str)))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Keeps only the handlers of a group that `keep` marks, by their place.
+fn retain_handlers(group: &mut Table, keep: &[bool]) {
+    let mut place = 0;
+    let mut next = || {
+        place += 1;
+        keep.get(place - 1).copied().unwrap_or(true)
+    };
+    match group.get_mut("hooks") {
+        Some(Item::Value(toml_edit::Value::Array(handlers))) => {
+            handlers.retain(|_| next());
+            handlers.fmt();
+        }
+        Some(Item::ArrayOfTables(handlers)) => handlers.retain(|_| next()),
+        _ => {}
+    }
+}
+
+/// Makes the handler at `place` in a group the one an install writes for
+/// `command`, written inline or as a table as it was.
+fn set_handler(group: &mut Table, place: usize, command: &str) {
+    match group.get_mut("hooks") {
+        Some(Item::Value(toml_edit::Value::Array(handlers))) => {
+            handlers.replace(place, handler(command));
+        }
+        Some(Item::ArrayOfTables(handlers)) => {
+            let table = handlers.get_mut(place).expect("the handler is there");
+            table.clear();
+            for (key, field) in handler(command).iter() {
+                table[key] = value(field.clone());
+            }
+        }
+        _ => unreachable!("only a group with handlers holds ours"),
+    }
+}
+
+/// The handler an install writes.
+fn handler(command: &str) -> InlineTable {
+    let mut handler = InlineTable::new();
+    handler.insert("type", "command".into());
+    handler.insert("command", command.into());
+    handler.insert("timeout", 5.into());
+    handler
 }
 
 /// The config, parsed.
@@ -147,9 +208,11 @@ pub fn trusted(home: &Path) -> Result<()> {
 
 /// Registers `command` for every event in HOOKS and for no other, in the
 /// config at `path`. Codex trusts a hook by its place among the groups of
-/// its event, so a group that is there already keeps its place, and a new
-/// one goes after the others; a group of ours under any other event, as an
-/// older version registered, goes with its trust records.
+/// its event and the handlers of its group, so a handler of ours that is
+/// there already keeps its place, beside whatever else its group holds, and
+/// a new one goes in a group of its own after the others; a handler of ours
+/// under any other event, as an older version registered, goes with its
+/// trust records.
 fn register(config: &mut DocumentMut, path: &str, command: &str) -> Result<()> {
     unregister(config, path, &HOOKS);
     let hooks = hooks_table(config)?;
@@ -160,20 +223,19 @@ fn register(config: &mut DocumentMut, path: &str, command: &str) -> Result<()> {
         let Some(groups) = groups.as_array_of_tables_mut() else {
             bail!("hooks.{event} is not a list of tables")
         };
-        let mut handler = InlineTable::new();
-        handler.insert("type", "command".into());
-        handler.insert("command", command.into());
-        handler.insert("timeout", 5.into());
-        let handlers = value(Array::from_iter([handler]));
-        let ours = groups.iter().position(is_ours);
-        let ours = ours.unwrap_or_else(|| {
+        let ours = groups.iter().enumerate().find_map(|(index, group)| {
+            Some((index, owned(group).into_iter().position(|ours| ours)?))
+        });
+        if let Some((group, place)) = ours {
+            let group = groups.get_mut(group).expect("the group is there");
+            set_handler(group, place, command);
+        } else {
             let mut group = Table::new();
             // At the end of the file, clear of what other tools manage.
             group.set_position(Some(isize::MAX));
+            group["hooks"] = value(Array::from_iter([handler(command)]));
             groups.push(group);
-            groups.len() - 1
-        });
-        groups.get_mut(ours).expect("the group is there")["hooks"] = handlers;
+        }
     }
     Ok(())
 }
@@ -192,12 +254,14 @@ fn trust(config: &mut DocumentMut, hashes: &[(String, String)]) -> Result<()> {
     Ok(())
 }
 
-/// Removes the groups an install added under every event but those in
-/// `keep`, the events left with no group, and what was recorded about
-/// trusting them, and says whether there were any. Codex keys that record
-/// by a group's place among its event's groups, so the groups after a
-/// removed one take their records with them as they move up. A table left
-/// empty goes only if it has no header of its own, and so prints nothing.
+/// Removes the handlers an install added under every event, but for the
+/// first under each event in `keep`, with the groups and events that left
+/// with none and what was recorded about trusting them, and says whether
+/// there were any. Codex keys that record by a handler's place among its
+/// group's handlers and the group's among its event's groups, so the
+/// handlers and groups after a removed one take their records with them as
+/// they move up. A table left empty goes only if it has no header of its
+/// own, and so prints nothing.
 fn unregister(config: &mut DocumentMut, path: &str, keep: &[&str]) -> bool {
     let Some(hooks) = config.get_mut("hooks").and_then(Item::as_table_mut) else {
         return false;
@@ -206,23 +270,57 @@ fn unregister(config: &mut DocumentMut, path: &str, keep: &[&str]) -> bool {
     let events: Vec<String> = hooks
         .iter()
         .map(|(event, _)| event.to_owned())
-        .filter(|event| event != "state" && !keep.contains(&event.as_str()))
+        .filter(|event| event != "state")
         .collect();
     let mut moves = Vec::new();
     for event in &events {
         let Some(groups) = hooks.get_mut(event).and_then(Item::as_array_of_tables_mut) else {
             continue;
         };
-        let ours: Vec<bool> = groups.iter().map(is_ours).collect();
-        removed |= ours.contains(&true);
-        groups.retain(|group| !is_ours(group));
+        // Which handlers stay, by group, and which groups: those left with one.
+        let mut spare = keep.contains(&event.as_str());
+        let stays: Vec<Vec<bool>> = groups
+            .iter()
+            .map(|group| {
+                let owned = owned(group);
+                owned
+                    .into_iter()
+                    .map(|ours| !ours || std::mem::take(&mut spare))
+                    .collect()
+            })
+            .collect();
+        if stays.iter().flatten().all(|&stays| stays) {
+            continue;
+        }
+        removed = true;
+        let kept: Vec<bool> = stays
+            .iter()
+            .map(|handlers| handlers.contains(&true))
+            .collect();
+        let mut group_place = 0;
+        for (group, handlers) in stays.iter().enumerate() {
+            let mut place = 0;
+            for (handler, &stays) in handlers.iter().enumerate() {
+                let to = (kept[group] && stays).then_some((group_place, place));
+                if to != Some((group, handler)) {
+                    moves.push((snake_case(event), (group, handler), to));
+                }
+                place += usize::from(stays);
+            }
+            group_place += usize::from(kept[group]);
+        }
+        for (group, handlers) in groups.iter_mut().zip(&stays) {
+            if handlers.contains(&false) {
+                retain_handlers(group, handlers);
+            }
+        }
+        let mut group = 0;
+        groups.retain(|_| {
+            group += 1;
+            kept[group - 1]
+        });
         if groups.is_empty() {
             hooks.remove(event);
-        }
-        let mut place = 0;
-        for (index, ours) in ours.into_iter().enumerate() {
-            moves.push((snake_case(event), index, (!ours).then_some(place)));
-            place += usize::from(!ours);
         }
     }
     if let Some(state) = hooks.get_mut("state").and_then(Item::as_table_mut) {
@@ -242,39 +340,40 @@ fn unregister(config: &mut DocumentMut, path: &str, keep: &[&str]) -> bool {
     removed
 }
 
-/// Moves each group's trust records from its old place to its new one, and
-/// drops the records of groups that are gone. A record's key is
+/// A handler's trust record moving from its place, its group's and its own
+/// within the group, to another, or dropped.
+type Move = (String, (usize, usize), Option<(usize, usize)>);
+
+/// Moves each handler's trust records from its old place to its new one,
+/// and drops the records of handlers that are gone. A record's key is
 /// `<config path>:<event>:<group>:<handler>`.
-fn move_records(state: &mut Table, path: &str, moves: &[(String, usize, Option<usize>)]) {
+fn move_records(state: &mut Table, path: &str, moves: &[Move]) {
     let keys: Vec<String> = state.iter().map(|(key, _)| key.to_owned()).collect();
     let mut moved = Vec::new();
     for key in keys {
-        let Some((event, group, handler)) = key
+        let Some((event, from)) = key
             .strip_prefix(path)
             .and_then(|rest| rest.strip_prefix(':'))
             .and_then(|rest| {
                 let mut parts = rest.splitn(3, ':');
-                Some((
-                    parts.next()?,
-                    parts.next()?.parse::<usize>().ok()?,
-                    parts.next()?,
-                ))
+                let event = parts.next()?;
+                let group = parts.next()?.parse::<usize>().ok()?;
+                Some((event, (group, parts.next()?.parse::<usize>().ok()?)))
             })
         else {
             continue;
         };
         let Some((_, _, to)) = moves
             .iter()
-            .find(|(name, from, _)| name == event && *from == group)
+            .find(|(name, place, _)| name == event && *place == from)
         else {
             continue;
         };
-        let handler = handler.to_owned();
         let event = event.to_owned();
         if let Some(record) = state.remove(&key)
-            && let Some(to) = to
+            && let Some((group, handler)) = to
         {
-            moved.push((format!("{path}:{event}:{to}:{handler}"), record));
+            moved.push((format!("{path}:{event}:{group}:{handler}"), record));
         }
     }
     for (key, record) in moved {
@@ -629,6 +728,80 @@ trusted_hash = "sha256:5151"
         assert_eq!(hash(&config, "notification:0:0"), None);
         uninstall(&config);
         assert_eq!(fs::read_to_string(&config).unwrap(), THEIRS);
+    }
+
+    #[test]
+    fn another_tools_handler_in_a_group_of_ours_stays_trusted_where_it_is() {
+        let home = Home::new();
+        let config = home.join(CONFIG);
+        let shared = format!(
+            r#"[[hooks.PermissionRequest]]
+hooks = [{{ type = "command", command = "/opt/homebrew/bin/agent-leds hook codex", timeout = 5 }}, {{ type = "command", command = "notify-tool" }}]
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "/opt/homebrew/bin/agent-leds hook codex"
+[[hooks.Stop.hooks]]
+type = "command"
+command = "say done"
+
+[hooks.state."{PATH}:permission_request:0:0"]
+trusted_hash = "sha256:ours"
+
+[hooks.state."{PATH}:permission_request:0:1"]
+trusted_hash = "sha256:notify"
+
+[hooks.state."{PATH}:stop:0:0"]
+trusted_hash = "sha256:stop"
+
+[hooks.state."{PATH}:stop:0:1"]
+trusted_hash = "sha256:say"
+"#
+        );
+        home.write(CONFIG, &shared);
+        install(&config, 0);
+        let parsed = parse(&config);
+        let commands = |event: &str| -> Vec<String> {
+            parsed["hooks"][event].as_array().unwrap()[0]["hooks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|handler| handler["command"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        assert_eq!(
+            commands("PermissionRequest"),
+            ["/bin/agent-leds hook codex", "notify-tool"]
+        );
+        assert_eq!(commands("Stop"), ["say done"]);
+        let hash = |key| hash(&config, key);
+        assert_eq!(
+            hash("permission_request:0:0").as_deref(),
+            Some("sha256:0d1f")
+        );
+        assert_eq!(
+            hash("permission_request:0:1").as_deref(),
+            Some("sha256:notify")
+        );
+        assert_eq!(hash("stop:0:0").as_deref(), Some("sha256:say"));
+        assert_eq!(hash("stop:0:1"), None);
+
+        uninstall(&config);
+        let parsed = parse(&config);
+        let asked = parsed["hooks"]["PermissionRequest"].as_array().unwrap();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0]["hooks"].as_array().unwrap().len(), 1, "{asked:?}");
+        assert_eq!(
+            asked[0]["hooks"][0]["command"].as_str(),
+            Some("notify-tool")
+        );
+        assert_eq!(
+            hash("permission_request:0:0").as_deref(),
+            Some("sha256:notify")
+        );
+        assert_eq!(hash("permission_request:0:1"), None);
+        assert_eq!(hash("stop:0:0").as_deref(), Some("sha256:say"));
     }
 
     #[test]
