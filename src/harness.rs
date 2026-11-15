@@ -235,7 +235,8 @@ impl Harness {
         match self {
             Harness::Claude | Harness::Junie => "no hooks",
             Harness::Grok => {
-                "hook registered, so Grok asks once to trust each folder but the home folder"
+                "hook registered, so Grok asks once to trust each folder but the home folder; \
+                 it runs unless disabled in Grok's /hooks, which doctor cannot see"
             }
             Harness::OpenCode | Harness::Pi => "plugin installed",
             _ => "hooks registered",
