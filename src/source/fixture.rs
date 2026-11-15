@@ -14,12 +14,14 @@
 //!   end a process, and `{"lock": "<path>"}` and `{"unlock": "<path>"}` take
 //!   and drop a lock, for the fake kernel the source and the sweep ask;
 //! - `{"expect": [["<signal>", "<channel>"], ...]}` says what every step
-//!   since the last `expect` yielded, in order.
+//!   since the last `expect` yielded, in order, and with `"restart":
+//!   "<phase>"` that a daemon started after one of those steps shows that
+//!   phase instead: a moment its files cannot tell from another.
 //!
 //! A line or text that is not a string is written as compact JSON. After
 //! each step the replay also holds the source to three properties: a rescan
-//! yields nothing, `current()` rebuilds the phase the observations reached,
-//! and reading the file steps two at a time ends in the same phases.
+//! yields nothing, a daemon started then shows the phases the observations
+//! reached, and reading the file steps two at a time ends in the same phases.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -33,7 +35,7 @@ use super::{Hook, Observation, Source, all};
 use crate::coverage::Evidence;
 use crate::fsm::{self, Channel, Phase, Signal};
 use crate::harness::{self, Harness};
-use crate::liveness::{self, Kernel, Proc};
+use crate::liveness::{self, Kernel, Liveness, Proc};
 use crate::queue::{Key, Queue};
 
 /// Processes and locks as a test says they are.
@@ -102,6 +104,7 @@ enum Step {
     },
     Expect {
         expect: Vec<(Signal, Channel)>,
+        restart: Option<Phase>,
     },
 }
 
@@ -193,11 +196,7 @@ impl Replay {
 
     /// The phase of each session the queue tracks.
     pub fn phases(&self) -> BTreeMap<Key, Phase> {
-        self.queue
-            .sessions()
-            .iter()
-            .map(|session| (session.key.clone(), session.phase))
-            .collect()
+        phases(&self.queue)
     }
 
     /// Makes a file step's change on disk.
@@ -290,12 +289,27 @@ pub fn replay(harness: Harness, name: &str) -> Replay {
     let mut source = replay.source();
     let seeded = source.seed(&replay.kernel, &[]).unwrap();
     let mut since = replay.take(seeded, 0);
+    // The steps since the last expect after which a restart shows another
+    // phase, with the phase it shows.
+    let mut differs: Vec<(usize, Phase)> = Vec::new();
     for (index, step) in fixture.steps.iter().enumerate() {
         let number = index + 1;
         let observations = match step {
-            Step::Expect { expect } => {
+            Step::Expect { expect, restart } => {
                 assert_eq!(&since, expect, "{name}: what led to step {number}");
+                for (after, shown) in &differs {
+                    assert_eq!(
+                        Some(*shown),
+                        *restart,
+                        "{name}: a daemon started after step {after} shows {shown:?}"
+                    );
+                }
+                assert!(
+                    restart.is_none() || !differs.is_empty(),
+                    "{name}: step {number} says a restart shows {restart:?}, and none does"
+                );
                 since.clear();
+                differs.clear();
                 continue;
             }
             Step::Hook { hook, ancestry } => source.hook(
@@ -322,22 +336,20 @@ pub fn replay(harness: Harness, name: &str) -> Replay {
             "{name}: a rescan after step {number} yielded {:?}",
             again.iter().map(|o| o.event.signal()).collect::<Vec<_>>()
         );
-        for (key, phase) in replay.phases() {
-            let rebuilt = source
-                .current(&key.id)
-                .into_iter()
-                .fold(Phase::Idle, |phase, (signal, _)| {
-                    fsm::next(phase, signal).unwrap_or(phase)
-                });
-            assert_eq!(
-                rebuilt, phase,
-                "{name}: after step {number}, current() of {} rebuilds another phase",
-                key.id
-            );
+        let restarted = phases(&restart(&replay));
+        let live = replay.phases();
+        assert!(
+            restarted.keys().eq(live.keys()),
+            "{name}: a daemon started after step {number} follows {restarted:?}, not {live:?}"
+        );
+        for (key, phase) in restarted {
+            if phase != live[&key] {
+                differs.push((number, phase));
+            }
         }
     }
     assert!(
-        since.is_empty(),
+        since.is_empty() && differs.is_empty(),
         "{name}: the last steps yielded {since:?} with no expect after them"
     );
     let coalesced = coalesce(harness, name, &fixture);
@@ -401,15 +413,44 @@ fn coalesce(harness: Harness, name: &str, fixture: &Fixture) -> BTreeMap<Key, Ph
 }
 
 /// The queue a fresh source seeds from what a replay left on disk, as a
-/// daemon starting then would.
-pub fn seed(replay: &Replay) -> Queue {
+/// daemon starting then would, given the hook-bound sessions in `bound`.
+fn seeded(replay: &Replay, bound: &[(String, Liveness)]) -> Queue {
     let mut source = replay.source();
     let mut queue = Queue::default();
-    for o in source.seed(&replay.kernel, &[]).unwrap() {
+    for o in source.seed(&replay.kernel, bound).unwrap() {
         assert!(o.quiet, "{}: a seed announced", replay.name);
         queue.apply(&o, 0);
     }
     queue
+}
+
+/// The queue a fresh source seeds from what a replay left on disk alone.
+pub fn seed(replay: &Replay) -> Queue {
+    seeded(replay, &[])
+}
+
+/// The queue a daemon starting now would show: a fresh source's seed,
+/// given the hook-bound sessions the replay's queue holds, restored
+/// against that queue as saved.
+pub fn restart(replay: &Replay) -> Queue {
+    let saved: Queue =
+        serde_json::from_value(serde_json::to_value(&replay.queue).unwrap()).unwrap();
+    let bound: Vec<(String, Liveness)> = saved
+        .bound()
+        .into_iter()
+        .filter(|(key, _)| key.harness == replay.harness)
+        .map(|(key, liveness)| (key.id, liveness))
+        .collect();
+    Queue::restore(saved, seeded(replay, &bound))
+}
+
+/// The phase of each session a queue tracks.
+fn phases(queue: &Queue) -> BTreeMap<Key, Phase> {
+    queue
+        .sessions()
+        .iter()
+        .map(|session| (session.key.clone(), session.phase))
+        .collect()
 }
 
 #[cfg(test)]

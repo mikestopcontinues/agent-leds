@@ -660,6 +660,10 @@ impl Claude {
             (Status::Waiting(_), Status::Busy) if session.open => {
                 tell(id, session, Signal::Answered, out)
             }
+            // Denied or dismissed: the turn's end, an interrupt, follows.
+            (Status::Waiting(_), Status::Idle | Status::Starting) if session.open => {
+                tell(id, session, Signal::Answered, out)
+            }
             // A subagent was let go on after the turn ended.
             (Status::Waiting(_), Status::Busy) => {
                 session.closed_waiting = None;
@@ -698,23 +702,17 @@ impl Claude {
             records.any(|record| anchors(&record))
         })?;
         let records: Vec<Record> = lines.iter().filter_map(|line| Record::read(line)).collect();
-        // Nothing read back starts a turn: one began further back.
-        let began_before = !records.iter().any(anchors);
         let session = self.sessions.get_mut(id).expect("started");
         session.transcript = Some((path.to_owned(), tail));
-        session.open = began_before;
         let mut history = Vec::new();
+        // A turn's work without its start: the turn began further back.
+        let work = |record: &Record| record.is_model() || record.is_tool_result();
+        if !records.iter().any(anchors) && records.iter().any(work) {
+            session.open = true;
+            tell(id, session, Signal::Prompted, &mut history);
+        }
         for record in &records {
             self.record(id, record, &mut history);
-        }
-        let session = self.sessions.get_mut(id).expect("started");
-        if began_before && session.open {
-            match session.status {
-                Status::Busy => tell(id, session, Signal::Prompted, &mut history),
-                Status::Waiting(_) => {}
-                // Not at work, so whatever that turn was is over.
-                Status::Idle | Status::Starting => session.open = false,
-            }
         }
         Ok(())
     }
