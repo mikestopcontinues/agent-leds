@@ -44,8 +44,8 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 | [Released](#released) | file* | — | — | — | — | — | — |
 | [TurnEnded](#turnended) | file | file | file | file | file* | file | file |
 | [TurnEndedAsking](#turnendedasking) | file | file | file | file | file* | file | file |
-| [TurnFailed](#turnfailed) | file | file | file | file* | file* | file+hook* | hook |
-| [Interrupted](#interrupted) | file | file | file | file+hook* | file* | file+hook | file+hook |
+| [TurnFailed](#turnfailed) | file | file | file | file+hook | file* | file+hook* | hook |
+| [Interrupted](#interrupted) | file | file | file | file+hook | file* | file+hook | file+hook |
 | [Backgrounded](#backgrounded) | file | file | file | — | — | — | — |
 | [BackgroundDone](#backgrounddone) | file | file | file* | — | — | — | — |
 | [Ended](#ended) | file | file | file | file+hook | file* | file+hook | hook |
@@ -130,7 +130,8 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Claude Code, file, observed: an assistant record with isApiErrorMessage (probe-claude cc4, cc5)
 - Codex, file, observed: task_complete with an error (probe-codex runC; 119 such records in earlier rollouts)
 - Grok, file, observed: events.jsonl turn_ended with outcome error, written as a turn ends on an API error, before Grok runs StopFailure for it; whether a refusal or a max_output_tokens end writes it is unverified, and a request that cannot connect retries without end (gaps p2; probe-grok runs c, k)
-- Cursor, file, inferred: turn_ended with status error, from the bundle's code; not reproduced (probe-cursor turn_error (bundle 2986/7777.index.js))
+- Cursor, file, observed: turn_ended with status error, the transcript rewritten whole as it was before the turn with the error after (gaps cursor fail run (interactive) and -p runs on a model the plan does not include)
+- Cursor, hook, observed: stop with status error, for a bound chat whose transcript ends in turn_ended error: a failure after one the same rewrites the same bytes; after an interrupt the transcript ends aborted, so it says nothing (gaps cursor fail run, turns 1 and 2; gaps int-run turn 1; bundle 2986.index.js, the catch path)
 - Junie, file, inferred: TaskState after a task started, when it is FAILED, which only Irrlicht's parser reads, or the task had an AgentFailureEvent or an AgentTaskFailedEvent (probe-junie turn_error; Irrlicht real-failed-session)
 - OpenCode, file, observed: that message carrying an error, a MessageAbortedError included (probe-opencode T7–T9)
 - OpenCode, hook, inferred: session.error, for the session itself, while it is busy, other than a ContextOverflowError (OpenCode 1.19.5's SessionPrompt.run, which sets the session busy before getModel publishes session.error UnknownError; probe-opencode T11 (a user message and no reply))
@@ -141,7 +142,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Claude Code, file, observed: a user text starting [Request interrupted by user (probe-claude cc1–cc4)
 - Codex, file, observed: event_msg turn_aborted for any reason but replaced, which a new turn follows; a cancelled approval writes it too (probe-codex runA CTRLC-INTERRUPT, DENY-ESC; codex2)
 - Grok, file, observed: a cancelled turn_ended triggered by ctrl_c, the stop button, the dashboard or send_now (the user's next prompt, whose turn_started follows at once), or cancelled as permission_rejected or permission_cancelled (probe-grok interrupted, runs a, h; gaps grok-x a)
-- Cursor, hook, inferred: stop with status aborted, for a chat bound to its process; Cursor runs it on every interrupt, from the bundle's code (probe-cursor run B, turn 3 (no write); bundle 2986.index.js, the abort path)
+- Cursor, hook, observed: stop with status aborted, for a chat bound to its process; that it runs on an interrupt that writes nothing is from the bundle's code (gaps int-run turn 1 (err-hooks.log); probe-cursor run B, turn 3 (no write); bundle 2986.index.js, the abort path)
 - Cursor, file, observed: turn_ended with status aborted, including the previous turn's end rewritten to aborted (probe-cursor runs B, H)
 - Junie, file, inferred: TaskState after a task started that had a CancelAgentEvent (probe-junie interrupted; Irrlicht parser_test.go)
 - OpenCode, file, observed: that message's error a MessageAbortedError, or the message with neither finish nor error (probe-opencode T7, T8, T10)
@@ -166,7 +167,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Claude Code, file, observed: the session file deleted or naming another session (/clear), or its process gone (probe-claude cc1, cc2, cc10)
 - Codex, file, observed: the thread's lock deleted, or taken again by another process; or left unlocked, as a killed process leaves it (probe-codex runA, runB (kill -9), runC)
 - Grok, file, observed: the session's row gone from active_sessions.json, as /quit leaves it even mid-turn, or its process gone (probe-grok quit/crash, runs a, b, c)
-- Cursor, file, observed: the .running marker of the process the chat is bound to deleted, as a quit does (probe-cursor runs A, C, D, G, I)
+- Cursor, file, observed: the .running marker of the process the chat is bound to deleted, as a quit does; or the chat's store.db-wal, once seen or once the daemon starts to find store.db made, gone while the process runs on, as /new and resuming another chat leave it (probe-cursor runs A, C, D, G, I; gaps cursor pty and /new runs)
 - Cursor, hook, observed: the process the hook bound the chat to gone, as after kill -9, which leaves its marker (probe-cursor runs B, H)
 - Junie, file, inferred: a newer sidecar for the pid naming another session, the sidecar deleted, or its process gone (probe-junie session_start notes, quit/crash; Irrlicht pid.go)
 - OpenCode, file, observed: the session's row deleted or archived (probe-opencode T13)

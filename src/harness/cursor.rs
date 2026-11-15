@@ -17,8 +17,8 @@ const CREATED: &str = "{ \"version\": 1 }\n";
 /// The hook events the daemon needs. A prompt given as an argument or a
 /// text-only turn writes nothing until the turn ends, and no file names
 /// the process a chat runs in, so the prompt's hook says both. An
-/// interrupt before the turn's first checkpoint can write nothing, so the
-/// stop hook says it.
+/// interrupt before the turn's first checkpoint, or a failure after one the
+/// same, can leave the transcript as it was, so the stop hook says it.
 pub const HOOKS: [&str; 2] = ["beforeSubmitPrompt", "stop"];
 
 fn is_ours(entry: &Value) -> bool {

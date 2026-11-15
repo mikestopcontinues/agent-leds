@@ -5,12 +5,15 @@
 //! is read whole, and a read counts only once it is finished and new. Each
 //! running process, the CLI and its node worker alike, marks itself in
 //! `~/.local/share/cursor-agent/versions/<version>/.running/<pid>`, a file
-//! that names no chat. The `beforeSubmitPrompt` hook binds the chat to the
+//! that names no chat. The process holds the store of the chat it is on,
+//! `~/.cursor/chats/<bucket>/<chat>/store.db`, open, and lets go of it at
+//! `/new` or on resuming another chat, which deletes the store's
+//! write-ahead log. The `beforeSubmitPrompt` hook binds the chat to the
 //! CLI's process it runs under, and says that the turn started, which a
 //! text-only turn writes nothing of until it ends. The `stop` hook says
-//! that the user interrupted the turn: an interrupt before the turn's first
-//! checkpoint, after a turn that was interrupted too, leaves the transcript
-//! as it was.
+//! that the turn was interrupted or failed, which can leave the transcript
+//! as it was: an interrupt before the turn's first checkpoint after a turn
+//! that was interrupted too, and a failure after one the same.
 //!
 //! The files are undocumented. What they say at each moment of a session
 //! was taken from Cursor 2026.11.13.
@@ -69,16 +72,23 @@ pub const SIGNALS: &[Declared] = &[
     Declared::new(
         Signal::TurnFailed,
         Channel::File,
-        Evidence::Inferred,
-        "turn_ended with status error, from the bundle's code; not reproduced",
-        "probe-cursor turn_error (bundle 2986/7777.index.js)",
+        Evidence::Observed,
+        "turn_ended with status error, the transcript rewritten whole as it was before the turn with the error after",
+        "gaps cursor fail run (interactive) and -p runs on a model the plan does not include",
+    ),
+    Declared::new(
+        Signal::TurnFailed,
+        Channel::Hook,
+        Evidence::Observed,
+        "stop with status error, for a bound chat whose transcript ends in turn_ended error: a failure after one the same rewrites the same bytes; after an interrupt the transcript ends aborted, so it says nothing",
+        "gaps cursor fail run, turns 1 and 2; gaps int-run turn 1; bundle 2986.index.js, the catch path",
     ),
     Declared::new(
         Signal::Interrupted,
         Channel::Hook,
-        Evidence::Inferred,
-        "stop with status aborted, for a chat bound to its process; Cursor runs it on every interrupt, from the bundle's code",
-        "probe-cursor run B, turn 3 (no write); bundle 2986.index.js, the abort path",
+        Evidence::Observed,
+        "stop with status aborted, for a chat bound to its process; that it runs on an interrupt that writes nothing is from the bundle's code",
+        "gaps int-run turn 1 (err-hooks.log); probe-cursor run B, turn 3 (no write); bundle 2986.index.js, the abort path",
     ),
     Declared::new(
         Signal::Interrupted,
@@ -91,8 +101,8 @@ pub const SIGNALS: &[Declared] = &[
         Signal::Ended,
         Channel::File,
         Evidence::Observed,
-        "the .running marker of the process the chat is bound to deleted, as a quit does",
-        "probe-cursor runs A, C, D, G, I",
+        "the .running marker of the process the chat is bound to deleted, as a quit does; or the chat's store.db-wal, once seen or once the daemon starts to find store.db made, gone while the process runs on, as /new and resuming another chat leave it",
+        "probe-cursor runs A, C, D, G, I; gaps cursor pty and /new runs",
     ),
     Declared::new(
         Signal::Ended,
@@ -102,6 +112,13 @@ pub const SIGNALS: &[Declared] = &[
         "probe-cursor runs B, H",
     ),
 ];
+
+/// A chat's store.
+const DB: &str = "store.db";
+
+/// The write-ahead log of a chat's store, which SQLite keeps while a
+/// connection holds the store open.
+const WAL: &str = "store.db-wal";
 
 /// A hook payload, with the fields the daemon reads.
 #[derive(Deserialize)]
@@ -279,6 +296,9 @@ struct Session {
     taken: Option<Vec<u8>>,
     level: Option<Level>,
     told: Told,
+    /// Whether the process has held the chat's store open: seen so, or made
+    /// before the daemon started.
+    held: bool,
 }
 
 impl Session {
@@ -290,6 +310,7 @@ impl Session {
             taken: None,
             level: None,
             told: Told::default(),
+            held: false,
         }
     }
 
@@ -393,21 +414,66 @@ impl Cursor {
         found
     }
 
+    /// The folder Cursor keeps the chat's store and record in,
+    /// `~/.cursor/chats/<bucket>/<chat>`, found by its name in any bucket:
+    /// the bucket is a hash of the cwd, and is never computed.
+    fn store(&self, id: &str) -> Option<PathBuf> {
+        fs::read_dir(&self.chats)
+            .ok()?
+            .flatten()
+            .map(|bucket| bucket.path().join(id))
+            .find(|store| store.is_dir())
+    }
+
+    /// The chat whose store's write-ahead log is at `path`.
+    fn wal_of(&self, path: &Path) -> Option<String> {
+        let store = path.parent()?;
+        if path.file_name()? != WAL || store.parent()?.parent()? != self.chats {
+            return None;
+        }
+        Some(store.file_name()?.to_str()?.to_owned())
+    }
+
     /// The folder the chat works in, as Cursor's record of it says.
     fn folder(&self, id: &str) -> String {
         #[derive(Deserialize)]
         struct Meta {
             cwd: String,
         }
-        let meta = fs::read_dir(&self.chats)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .find_map(|bucket| {
-                let text = fs::read(bucket.path().join(id).join("meta.json")).ok()?;
-                serde_json::from_slice::<Meta>(&text).ok()
-            });
+        let meta = self.store(id).and_then(|store| {
+            let text = fs::read(store.join("meta.json")).ok()?;
+            serde_json::from_slice::<Meta>(&text).ok()
+        });
         meta.map(|meta| meta.cwd).unwrap_or_default()
+    }
+
+    /// Ends the chat if its process let go of the chat's store, as `/new`
+    /// and resuming another chat do while the process runs on. The process
+    /// holds the store of the chat it is on open from the chat's first
+    /// prompt, and SQLite deletes the store's write-ahead log when its last
+    /// connection closes. A log not seen yet says nothing: the prompt's hook
+    /// comes before the store is made. A store made before the daemon
+    /// started was held, so its log gone says so too.
+    fn let_go(&mut self, id: &str, out: &mut Vec<Observation>) {
+        if !self.sessions.contains_key(id) {
+            return;
+        }
+        let open = self
+            .store(id)
+            .is_some_and(|store| store.join(WAL).is_file());
+        let session = self.sessions.get_mut(id).expect("bound");
+        if open {
+            session.held = true;
+        } else if session.held {
+            self.sessions.remove(id);
+            out.push(Observation::new(
+                Harness::Cursor,
+                id,
+                Channel::File,
+                Event::one(Signal::Ended),
+                None,
+            ));
+        }
     }
 
     /// Reads the chat's transcript whole and tells what it says that the
@@ -512,18 +578,37 @@ impl Cursor {
         out
     }
 
-    /// An interrupt of a bound chat. One before the turn's first checkpoint
+    /// The end of a bound chat's turn, with how it ended, after catching up
+    /// on its transcript. An interrupt before the turn's first checkpoint
     /// rewrites the transcript to end the previous turn as aborted, which
-    /// says nothing new when it already ended so.
-    fn interrupt(&mut self, id: &str) -> Vec<Observation> {
+    /// says nothing new when it already ended so. A failure rewrites it to
+    /// end in turn_ended error, the same bytes when the turn before failed
+    /// the same way, so the hook says it when the transcript ends so. Cursor
+    /// runs the hook with status error after every interrupt too, once the
+    /// transcript ends aborted, which says nothing.
+    fn stop(&mut self, id: &str, status: &str) -> Vec<Observation> {
         let mut out = Vec::new();
         if !self.sessions.contains_key(id) {
             return out;
         }
         let _ = self.read(id, &mut out);
         let session = self.sessions.get_mut(id).expect("bound");
-        let signals = BTreeSet::from([Signal::Interrupted]);
-        tell(id, session, Channel::Hook, signals, &mut out);
+        let failed = session
+            .level
+            .as_ref()
+            .is_some_and(|level| level.last == Some(Last::Ended("error".to_owned())));
+        let signal = match status {
+            "aborted" => Signal::Interrupted,
+            "error" if failed => Signal::TurnFailed,
+            _ => return out,
+        };
+        tell(
+            id,
+            session,
+            Channel::Hook,
+            BTreeSet::from([signal]),
+            &mut out,
+        );
         out
     }
 }
@@ -554,12 +639,17 @@ impl Source for Cursor {
     }
 
     fn roots(&self) -> Vec<PathBuf> {
-        vec![self.projects.clone(), self.versions.clone()]
+        vec![
+            self.projects.clone(),
+            self.versions.clone(),
+            self.chats.clone(),
+        ]
     }
 
     /// Each chat a hook bound before the daemon started, whose process still
-    /// runs, as its transcript leaves it. A chat no hook bound names no
-    /// process, so it shows from its next prompt.
+    /// runs and still holds the chat's store, if the store was made, as its
+    /// transcript leaves it. A chat no hook bound names no process, so it
+    /// shows from its next prompt.
     fn seed(&mut self, k: &dyn Kernel, bound: &[(String, Liveness)]) -> Result<Seed> {
         let mut seeded = Vec::new();
         let mut unread = Vec::new();
@@ -577,8 +667,16 @@ impl Source for Cursor {
             let Some(marker) = self.marker(pid, start) else {
                 continue;
             };
-            self.sessions
-                .insert(id.clone(), Session::new(pid, start, marker));
+            let mut session = Session::new(pid, start, marker);
+            // The process made the store at the chat's first prompt, or
+            // opened it on resuming the chat, before the prompt.
+            session.held = self.store(id).is_some_and(|store| store.join(DB).is_file());
+            self.sessions.insert(id.clone(), session);
+            let mut ended = Vec::new();
+            self.let_go(id, &mut ended);
+            if !ended.is_empty() {
+                continue;
+            }
             // The chat is still followed, from its next read.
             if let Err(error) = self.read(id, &mut Vec::new()) {
                 unread.push(error);
@@ -615,30 +713,39 @@ impl Source for Cursor {
     }
 
     fn changed(&mut self, _k: &dyn Kernel, paths: Option<&[PathBuf]>) -> Vec<Observation> {
-        let (mut chats, mut markers): (Vec<String>, Vec<PathBuf>) = match paths {
-            Some(paths) => (
-                paths.iter().filter_map(|path| self.chat_of(path)).collect(),
-                paths
-                    .iter()
-                    .filter(|path| self.is_marker(path))
-                    .cloned()
-                    .collect(),
-            ),
-            None => (
-                self.sessions.keys().cloned().collect(),
-                self.sessions.values().map(|s| s.marker.clone()).collect(),
-            ),
-        };
+        let (mut chats, mut stores, mut markers): (Vec<String>, Vec<String>, Vec<PathBuf>) =
+            match paths {
+                Some(paths) => (
+                    paths.iter().filter_map(|path| self.chat_of(path)).collect(),
+                    paths.iter().filter_map(|path| self.wal_of(path)).collect(),
+                    paths
+                        .iter()
+                        .filter(|path| self.is_marker(path))
+                        .cloned()
+                        .collect(),
+                ),
+                None => (
+                    self.sessions.keys().cloned().collect(),
+                    self.sessions.keys().cloned().collect(),
+                    self.sessions.values().map(|s| s.marker.clone()).collect(),
+                ),
+            };
         chats.sort();
         chats.dedup();
+        stores.sort();
+        stores.dedup();
         markers.sort();
         markers.dedup();
         let mut out = Vec::new();
-        // The last checkpoint is written before the process unlinks its marker.
+        // The last checkpoint is written before the process lets go of the
+        // chat's store or unlinks its marker.
         for id in chats {
             if self.sessions.contains_key(&id) {
                 let _ = self.read(&id, &mut out);
             }
+        }
+        for id in stores {
+            self.let_go(&id, &mut out);
         }
         for marker in markers {
             self.gone(&marker, &mut out);
@@ -646,18 +753,16 @@ impl Source for Cursor {
         out
     }
 
-    /// A prompt or an interrupt, each after catching up on the chat's
+    /// A prompt or a turn's end, each after catching up on the chat's
     /// transcript.
     fn hook(&mut self, _k: &dyn Kernel, hook: &Hook) -> Vec<Observation> {
         let Ok(payload) = Payload::deserialize(&hook.payload) else {
             return Vec::new();
         };
-        match payload.hook_event_name.as_str() {
-            "beforeSubmitPrompt" => self.prompt(payload, &hook.ancestry),
-            // A turn that completes or fails says so in its transcript.
-            "stop" if payload.status.as_deref() == Some("aborted") => {
-                self.interrupt(&payload.conversation_id)
-            }
+        match (payload.hook_event_name.as_str(), payload.status.as_deref()) {
+            ("beforeSubmitPrompt", _) => self.prompt(payload, &hook.ancestry),
+            // A turn that completes says so in its transcript.
+            ("stop", Some(status)) => self.stop(&payload.conversation_id, status),
             _ => Vec::new(),
         }
     }
@@ -829,12 +934,36 @@ mod tests {
 
     #[test]
     fn an_interrupt_that_writes_nothing_is_told_by_the_stop_hook() {
-        let replay = replay("interrupted.hook");
+        let replay = replay("an_interrupt_that_writes_nothing_is_told_by_the_stop_hook");
         assert_eq!(
             phases(&replay),
             [(
                 "b6f5f883-1823-4bc2-a601-1cc761c083a1".to_owned(),
                 Phase::Idle
+            )]
+        );
+    }
+
+    #[test]
+    fn the_stop_hook_s_error_after_an_interrupt_says_nothing() {
+        let replay = replay("interrupted.hook");
+        assert_eq!(
+            phases(&replay),
+            [(
+                "ec732734-8c9d-4cc5-bc25-474e3015b279".to_owned(),
+                Phase::Idle
+            )]
+        );
+    }
+
+    #[test]
+    fn a_second_failure_like_the_first_is_told_by_the_stop_hook() {
+        let replay = replay("turn_failed.hook");
+        assert_eq!(
+            phases(&replay),
+            [(
+                "0903e018-043a-45e2-a954-1dd888361027".to_owned(),
+                Phase::Failed
             )]
         );
     }
@@ -861,6 +990,32 @@ mod tests {
             .filter(|(o, _)| o.event.signals().contains(&Signal::Ended))
             .count();
         assert_eq!(ended, 2);
+    }
+
+    #[test]
+    fn a_new_chat_in_the_process_ends_the_old_one() {
+        let replay = replay("a_new_chat_in_the_process_ends_the_old_one");
+        assert!(replay.phases().is_empty());
+        let ended: Vec<Channel> = replay
+            .yielded
+            .iter()
+            .filter(|(o, _)| o.event.signals().contains(&Signal::Ended))
+            .map(|(o, _)| o.channel)
+            .collect();
+        assert_eq!(ended, [Channel::File]);
+    }
+
+    #[test]
+    fn a_chat_left_while_the_daemon_was_stopped_is_not_followed() {
+        let replay = replay("a_chat_whose_store_is_held");
+        assert_eq!(fixture::restart(&replay).sessions().len(), 1);
+        // /new while the daemon was stopped: the store stays, its log goes.
+        let store = replay.home.path().join(
+            ".cursor/chats/8c06ea56610da84475132a9aaefbb90e/01f0f07f-a15b-4a43-a037-ec9e03b971b0",
+        );
+        fs::remove_file(store.join(WAL)).unwrap();
+        assert!(store.join(DB).is_file());
+        assert!(fixture::restart(&replay).sessions().is_empty());
     }
 
     #[test]
