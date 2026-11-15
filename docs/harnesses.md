@@ -56,11 +56,11 @@ A thread whose `session_meta` names a subagent, by its `source` or its `thread_s
 - A goal's next turn can come long after the last one ended: of 1,086 goal turns that followed a goal turn in the desktop rollouts, 568 started more than a minute later, and the session shows working in the background meanwhile.
 - A waiting goal made active again, or cleared, after its turn ended keeps the question until the next turn, since no move leaves a question for the background.
 - A queued prompt the user removes just as the turn ends leaves the session working until its next turn.
-- A failing request that Codex retries leaves no record, so the session stays working until the turn ends.
+- A failing request that Codex retries leaves no record, so the session stays working until the turn ends. After a turn ends on a capacity error (503), the desktop app can start it again by itself, as a turn with trigger `capacity_retry_automatic` (12 such turns in the desktop rollouts, 4 of them within a minute of an error), which shows working again after the error.
 - A subagent that never reports completing keeps its parent in the background until the next prompt.
 - A subagent started or given its task in an earlier turn does not keep its parent in the background: when the turn ends the session shows stopped while the subagent works. A `send_message` to a subagent starts no turn of its own, so it does not count either.
 - A plan proposal is recognised by its `<proposed_plan>` block, which no rollout has shown yet.
-- Codex's desktop app was not running during the probe, so whether it holds the thread locks the same way is not confirmed.
+- The engine the desktop app bundles, `codex app-server` 0.163, takes a thread's lock at `thread/start` and deletes it on SIGTERM, and unsubscribing from the thread did not release the lock within 60 s; Homebrew's 0.153 leaves the lock behind, unlocked, as a killed process does. That was seen with the engine alone, in a throwaway `CODEX_HOME`. The app itself, its durable host, and whether a thread the app unloads (after 3 hours idle, or past 10 inactive threads) lets its lock go were not observed, so a light could stay or vanish when the app unloads a thread.
 
 ## Grok
 
