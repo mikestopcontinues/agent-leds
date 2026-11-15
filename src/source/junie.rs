@@ -73,7 +73,7 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Answered,
-        "the last waiting step written again as waiting on nothing, or a UserAsyncResponseEvent or UserResponseEvent while a step waits",
+        "the last waiting step written again as COMPLETED or in a state other than INPUT_REQUIRED, or a UserAsyncResponseEvent or UserResponseEvent while a step waits",
         "probe-junie permission_resolved, question_answered; Irrlicht real-terminal-approval, real-lifecycle-session",
     ),
     file(
@@ -199,13 +199,19 @@ struct Block {
 }
 
 impl Block {
-    /// What the step waits on the user for, told by the session state the
-    /// update is stamped with: an approval, a question, or nothing. A step
-    /// that is COMPLETED, as in the replay of a task's blocks at its end,
-    /// waits on nothing.
+    /// Whether the update is stamped with the session waiting on the user and
+    /// the step is not COMPLETED. A step that waited is answered by an update
+    /// that is not open: one COMPLETED, as in the replay of a task's blocks at
+    /// its end, or stamped with another state.
+    fn open(&self, state: Option<&str>) -> bool {
+        state == Some("INPUT_REQUIRED") && self.status.as_deref() != Some("COMPLETED")
+    }
+
+    /// What an open step waits on the user for: an approval, a question, or
+    /// nothing.
     fn waits(&self, state: Option<&str>) -> BTreeSet<Signal> {
         let mut waits = BTreeSet::new();
-        if state != Some("INPUT_REQUIRED") || self.status.as_deref() == Some("COMPLETED") {
+        if !self.open(state) {
             return waits;
         }
         if self.approval_request.is_some() {
@@ -669,7 +675,7 @@ fn update(id: &str, session: &mut Session, record: &Record, out: &mut Vec<Observ
         if session.waiting.insert(step.clone()) {
             tell(id, session, waits, out);
         }
-    } else if session.waiting.remove(step) && session.waiting.is_empty() {
+    } else if !block.open(state) && session.waiting.remove(step) && session.waiting.is_empty() {
         tell(id, session, [Signal::Answered], out);
     }
 }

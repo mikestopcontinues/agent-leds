@@ -1,0 +1,15 @@
+{"cite": "Irrlicht parser.go parseInputRequest", "evidence": "inferred"}
+{"alive": 47990, "started_us": 1787663400000000}
+{"write": ".junie/processes/47990-session-260825-151015-19jp-c95cdd197f46.json", "text": {"pid": 47990, "sessionId": "session-260825-151015-19jp", "projectPath": "/Users/me/Code/app", "startedAt": 1787663400500}}
+{"expect": [["started", "file"]]}
+{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "UserPromptEvent", "requestId": "prompt-260825-151015-v7cf", "prompt": "PROBE prompt", "presentablePrompt": "PROBE prompt", "requiresConfirmation": true, "timestampMs": 1787663415250}}
+{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "TaskStartedEvent", "taskId": "task-260825-151015-1bxv", "timestampMs": 1787663415261}}
+{"expect": [["prompted", "file"], ["prompted", "file"]]}
+{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "SessionA2uxEvent", "event": {"state": "INPUT_REQUIRED", "agentEvent": {"kind": "TerminalBlockUpdatedEvent", "agent": {"kind": "MainAgent", "id": "main", "name": "main", "type": "LINEAR"}, "stepId": "3e0adc81-026b-488e-a22a-2389704716ce", "approvalRequest": {"id": "403fb241-a3a9-449b-8dfb-df5318818e7e", "allowListOptions": []}, "status": "IN_PROGRESS", "command": "cat src/schema.cql"}}, "taskId": "task-260825-151015-1bxv", "timestampMs": 1787663477247}}
+{"expect": [["permission_asked", "file"]]}
+{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "SessionA2uxEvent", "event": {"state": "INPUT_REQUIRED", "agentEvent": {"kind": "TerminalBlockUpdatedEvent", "agent": {"kind": "MainAgent", "id": "main", "name": "main", "type": "LINEAR"}, "stepId": "9b1f4c2e-5d7a-4e8b-a3c6-0f2d8e9a7b14", "approvalRequest": {"id": "403fb241-a3a9-449b-8dfb-df5318818e7e", "allowListOptions": []}, "status": "IN_PROGRESS", "command": "cat src/schema.cql"}}, "taskId": "task-260825-151015-1bxv", "timestampMs": 1787663477300}}
+{"expect": [["permission_asked", "file"]]}
+{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "SessionA2uxEvent", "event": {"state": "INPUT_REQUIRED", "agentEvent": {"kind": "TerminalBlockUpdatedEvent", "agent": {"kind": "MainAgent", "id": "main", "name": "main", "type": "LINEAR"}, "stepId": "3e0adc81-026b-488e-a22a-2389704716ce", "approvalRequest": {"id": "403fb241-a3a9-449b-8dfb-df5318818e7e", "allowListOptions": []}, "status": "COMPLETED", "command": "cat src/schema.cql"}}, "taskId": "task-260825-151015-1bxv", "timestampMs": 1787663478000}}
+{"expect": []}
+{"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "SessionA2uxEvent", "event": {"state": "IN_PROGRESS", "agentEvent": {"kind": "TerminalBlockUpdatedEvent", "agent": {"kind": "MainAgent", "id": "main", "name": "main", "type": "LINEAR"}, "stepId": "9b1f4c2e-5d7a-4e8b-a3c6-0f2d8e9a7b14", "status": "IN_PROGRESS", "command": "cat src/schema.cql"}}, "taskId": "task-260825-151015-1bxv", "timestampMs": 1787663479000}}
+{"expect": [["answered", "file"]]}

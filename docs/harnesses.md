@@ -86,7 +86,7 @@ Junie keeps its folder at `$JUNIE_HOME`, or at `~/.junie` in the account's home 
 | `UserPromptEvent`, or `TaskStartedEvent` when a task resumes | working |
 | A block waiting in state `INPUT_REQUIRED` with an `approvalRequest` | question |
 | An `AskAsyncRequestUpdatedEvent` or `ChoiceRequestUpdatedEvent` waiting in state `INPUT_REQUIRED` | question |
-| The waiting step written again waiting on nothing, or the user's response | working |
+| The waiting step written again as `COMPLETED` or outside `INPUT_REQUIRED`, or the user's response | working |
 | `TaskState FAILED`, or `TaskState` after an `AgentFailureEvent` or `AgentTaskFailedEvent` | error |
 | `TaskState` after a `CancelAgentEvent` | removed |
 | `TaskState` whose result's last line ends in a question mark | question, as a weak signal |
