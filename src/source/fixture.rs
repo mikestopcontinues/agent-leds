@@ -10,9 +10,13 @@
 //! - `{"write": "<path>", "text": ...}` rewrites a file in place;
 //! - `{"delete": "<path>"}`;
 //! - `{"hook": <payload>, "ancestry": [<proc>, ...]}` delivers a hook;
+//! - `{"lock": "<path>", "at": "<ISO 8601 UTC time>"}` is a process opening
+//!   a file, creating it if it is not there, and holding a lock on it: the
+//!   file's modification time is `at`, or now, and the fake kernel says it
+//!   is locked;
 //! - `{"alive": <pid>, "started_us": <n>}` and `{"exit": <pid>}` start and
-//!   end a process, and `{"lock": "<path>"}` and `{"unlock": "<path>"}` take
-//!   and drop a lock, for the fake kernel the source and the sweep ask;
+//!   end a process, and `{"unlock": "<path>"}` drops a lock as a killed
+//!   process does, for the fake kernel the source and the sweep ask;
 //! - `{"expect": [["<signal>", "<channel>"], ...]}` says what every step
 //!   since the last `expect` yielded, in order, one observation each; an
 //!   observation of several signals is `[["<signal>", ...], "<channel>"]`.
@@ -29,6 +33,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -100,6 +105,7 @@ enum Step {
     },
     Lock {
         lock: String,
+        at: Option<String>,
     },
     Unlock {
         unlock: String,
@@ -133,7 +139,8 @@ impl Step {
         match self {
             Step::Append { append: path, .. }
             | Step::Write { write: path, .. }
-            | Step::Delete { delete: path } => Some(path),
+            | Step::Delete { delete: path }
+            | Step::Lock { lock: path, .. } => Some(path),
             _ => None,
         }
     }
@@ -218,8 +225,8 @@ impl Replay {
         phases(&self.queue)
     }
 
-    /// Makes a file step's change on disk.
-    fn write(&self, step: &Step) -> PathBuf {
+    /// Makes a file step's change on disk, and to the fake kernel for a lock.
+    fn write(&mut self, step: &Step) -> PathBuf {
         let text = |value: &Value| match value {
             Value::String(text) => text.clone(),
             value => value.to_string(),
@@ -240,6 +247,19 @@ impl Replay {
             }
             Step::Write { text: value, .. } => fs::write(&path, text(value)).unwrap(),
             Step::Delete { .. } => fs::remove_file(&path).unwrap(),
+            Step::Lock { at, .. } => {
+                let file = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .unwrap();
+                let at = at.as_deref().map_or_else(SystemTime::now, |at| {
+                    let second = liveness::iso_second(at).expect("an ISO 8601 time");
+                    UNIX_EPOCH + Duration::from_secs(second as u64)
+                });
+                file.set_modified(at).unwrap();
+                self.kernel.locks.insert(path.clone());
+            }
             _ => unreachable!(),
         }
         path
@@ -254,9 +274,6 @@ impl Replay {
             }
             Step::Exit { exit } => {
                 self.kernel.starts.remove(exit);
-            }
-            Step::Lock { lock } => {
-                self.kernel.locks.insert(home.join(lock));
             }
             Step::Unlock { unlock } => {
                 self.kernel.locks.remove(&home.join(unlock));

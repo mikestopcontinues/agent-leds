@@ -2,7 +2,7 @@
 
 What each agent harness reports to the service and where it falls short. [design.md](design.md) covers what the service does with the reports.
 
-The service reads Claude Code's own files, and registers no hooks with it. With each other harness, `agent-leds install` registers `agent-leds hook <harness>` for the events listed below; OpenCode and Pi load a plugin of ours that runs it. The hook passes the event to the daemon with the processes it runs under, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked. Whatever the hooks say, a session leaves when the process running it ends.
+The service reads Claude Code's and Codex's own files, and registers no hooks with Claude Code and one with Codex, for the one moment its files do not record. With each other harness, `agent-leds install` registers `agent-leds hook <harness>` for the events listed below; OpenCode and Pi load a plugin of ours that runs it. The hook passes the event to the daemon with the processes it runs under, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked. Whatever the hooks say, a session leaves when the process running it ends.
 
 The harnesses took their hook events from Claude Code, so most of the names agree. Each harness reads only its own spelling. [coverage.md](coverage.md) lists every signal each harness gives, how each is known, and the moves each cannot make.
 
@@ -26,21 +26,32 @@ A turn that ends with a subagent or a workflow running in the background is not 
 
 ## Codex
 
-Hooks are `[[hooks.<Event>]]` groups in `~/.codex/config.toml`, after the groups that are there. Codex runs a hook only once its hash is recorded under `[hooks.state]`, so the install asks `codex app-server` for the hash of each and records it. That needs `codex` on the `PATH`. Codex finds a hook's hash by the hook's place among the groups of its event, so if another tool reorders the groups, run `agent-leds install` again.
+A Codex process holds a lock on `~/.codex/thread-writer-locks/<thread>.lock` for each thread it runs, and appends the thread's rollout, `~/.codex/sessions/YYYY/MM/DD/rollout-<time>-<thread>.jsonl`, a record at a time. The daemon follows a thread while its lock is held: the lock deleted is a quit, and a lock left unlocked is a process that was killed. The date folders are listed, never computed, since a resumed thread goes on writing to the rollout in the folder of the day it began. Compressed rollouts and `~/.codex/archived_sessions` are never appended to, and are not read.
 
-| Hook event | Session becomes |
+| What Codex writes | Session becomes |
 | --- | --- |
-| `UserPromptSubmit`, `PreToolUse`, `PostToolUse` | working |
-| `PermissionRequest`, `PreToolUse` for `request_user_input` or `request_user_input_async` | question |
-| `Stop` whose last line ends in a question mark, or that is a `<proposed_plan>` to review | question, as a weak signal |
-| `Stop` otherwise | stopped |
-| `SessionEnd`, `Interrupt` | removed |
+| `task_started` | working |
+| A `request_user_input` call with no output yet | question |
+| The question's output | working |
+| `task_complete` whose last line ends in a question mark, or that holds a `<proposed_plan>` | question, as a weak signal |
+| `task_complete` while a subagent the turn started, or gave a `followup_task`, is still at work | working, in the background |
+| `task_complete` otherwise, or the last such subagent completed after the turn ended | stopped |
+| `task_complete` with an error | error |
+| `turn_aborted`, which a cancelled approval writes too | removed |
+| The lock deleted or left unlocked | removed |
 
-A Codex subagent runs no hooks. The session that starts one reports its `spawn_agent` and `wait_agent` calls, so it shows as working while it waits; one it leaves running in the background after its turn ends goes unseen. Codex also runs agents of its own, such as the one that consolidates its memories, as sessions it keeps no transcript of. Those are ignored, as is any session Codex keeps no transcript of. The gaps:
+Nothing is written while an approval waits, so `agent-leds install` registers the hook for `PermissionRequest` alone, and removes the others an earlier version registered with their trust records. The hook makes the session a question only while its rollout has that turn open; the next tool output or completed item in the rollout answers it. Codex runs a hook only once its hash is recorded under `[hooks.state]`, so the install asks `codex app-server` for the hash and records it, which needs `codex` on the `PATH`. Codex keys that record by the hook's place among the groups of its event, so a group of ours keeps its place, and if another tool reorders the groups, run `agent-leds install` again.
 
-- Codex has no event for a turn that fails, so there is no error state. A session whose request fails stays green until its next prompt, or until its process ends.
-- `request_user_input_async` does not stop the agent. The session is orange until the agent's next tool call, not until you answer.
-- A plan is recognized only when Codex passes it as the turn's last message.
+A thread whose `session_meta` names a subagent, by its `source` or its `thread_source`, is never followed: its parent's rollout says when it starts and completes, and the copy of the parent's history a forked subagent's rollout opens with is never read. That leaves out the agent that consolidates Codex's memories too. A thread the desktop app opened for an agent (`thread_source` `agent_created_thread`) is followed like the user's own. When the daemon starts, and when it first sees a thread's lock, it reads the thread's rollout back to its last `task_started`, at most 16 MiB, and only what was written since the lock was taken, so a resumed thread does not replay its history and a prompt written before the lock is seen still counts. The files are undocumented; the fixtures in `tests/fixtures/codex/`, recorded from Codex 0.153.2 and the desktop app's 0.162 rollouts, pin what the daemon expects of them. The gaps:
+
+- A thread opened in the terminal shows only once its first prompt creates its rollout.
+- An approval a subagent asks for is not seen: it is not known whether its hook names the subagent's thread or its parent's, and the subagent's thread is not followed.
+- `request_user_input_async`, the desktop app's question, does not stop the agent, so the session stays working while it waits for the answer.
+- A failing request that Codex retries leaves no record, so the session stays working until the turn ends.
+- A subagent that never reports completing keeps its parent in the background until the next prompt.
+- A subagent started or given its task in an earlier turn does not keep its parent in the background: when the turn ends the session shows stopped while the subagent works. A `send_message` to a subagent starts no turn of its own, so it does not count either.
+- A plan proposal is recognised by its `<proposed_plan>` block, which no rollout has shown yet.
+- Codex's desktop app was not running during the probe, so whether it holds the thread locks the same way is not confirmed.
 
 ## Grok
 
