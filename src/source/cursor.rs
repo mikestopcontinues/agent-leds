@@ -5,7 +5,10 @@
 //! is read whole, and a read counts only once it is finished and new. Each
 //! running process, the CLI and its node worker alike, marks itself in
 //! `~/.local/share/cursor-agent/versions/<version>/.running/<pid>`, a file
-//! that names no chat. The `beforeSubmitPrompt` hook binds the chat to the
+//! that names no chat. The process holds the store of the chat it is on,
+//! `~/.cursor/chats/<bucket>/<chat>/store.db`, open, and lets go of it at
+//! `/new` or on resuming another chat, which deletes the store's
+//! write-ahead log. The `beforeSubmitPrompt` hook binds the chat to the
 //! CLI's process it runs under, and says that the turn started, which a
 //! text-only turn writes nothing of until it ends. The `stop` hook says
 //! that the turn was interrupted or failed, which can leave the transcript
@@ -98,8 +101,8 @@ pub const SIGNALS: &[Declared] = &[
         Signal::Ended,
         Channel::File,
         Evidence::Observed,
-        "the .running marker of the process the chat is bound to deleted, as a quit does",
-        "probe-cursor runs A, C, D, G, I",
+        "the .running marker of the process the chat is bound to deleted, as a quit does; or the chat's store.db-wal, once seen, deleted while the process runs on, as /new and resuming another chat do",
+        "probe-cursor runs A, C, D, G, I; gaps cursor pty and /new runs",
     ),
     Declared::new(
         Signal::Ended,
@@ -109,6 +112,10 @@ pub const SIGNALS: &[Declared] = &[
         "probe-cursor runs B, H",
     ),
 ];
+
+/// The write-ahead log of a chat's store, `store.db`, which SQLite keeps
+/// while a connection holds the store open.
+const WAL: &str = "store.db-wal";
 
 /// A hook payload, with the fields the daemon reads.
 #[derive(Deserialize)]
@@ -286,6 +293,8 @@ struct Session {
     taken: Option<Vec<u8>>,
     level: Option<Level>,
     told: Told,
+    /// Whether the chat's store has been seen held open.
+    held: bool,
 }
 
 impl Session {
@@ -297,6 +306,7 @@ impl Session {
             taken: None,
             level: None,
             told: Told::default(),
+            held: false,
         }
     }
 
@@ -400,21 +410,65 @@ impl Cursor {
         found
     }
 
+    /// The folder Cursor keeps the chat's store and record in,
+    /// `~/.cursor/chats/<bucket>/<chat>`, found by its name in any bucket:
+    /// the bucket is a hash of the cwd, and is never computed.
+    fn store(&self, id: &str) -> Option<PathBuf> {
+        fs::read_dir(&self.chats)
+            .ok()?
+            .flatten()
+            .map(|bucket| bucket.path().join(id))
+            .find(|store| store.is_dir())
+    }
+
+    /// The chat whose store's write-ahead log is at `path`.
+    fn wal_of(&self, path: &Path) -> Option<String> {
+        let store = path.parent()?;
+        if path.file_name()? != WAL || store.parent()?.parent()? != self.chats {
+            return None;
+        }
+        Some(store.file_name()?.to_str()?.to_owned())
+    }
+
     /// The folder the chat works in, as Cursor's record of it says.
     fn folder(&self, id: &str) -> String {
         #[derive(Deserialize)]
         struct Meta {
             cwd: String,
         }
-        let meta = fs::read_dir(&self.chats)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .find_map(|bucket| {
-                let text = fs::read(bucket.path().join(id).join("meta.json")).ok()?;
-                serde_json::from_slice::<Meta>(&text).ok()
-            });
+        let meta = self.store(id).and_then(|store| {
+            let text = fs::read(store.join("meta.json")).ok()?;
+            serde_json::from_slice::<Meta>(&text).ok()
+        });
         meta.map(|meta| meta.cwd).unwrap_or_default()
+    }
+
+    /// Ends the chat if its process let go of the chat's store, as `/new`
+    /// and resuming another chat do while the process runs on. The process
+    /// holds the store of the chat it is on open from the chat's first
+    /// prompt, and SQLite deletes the store's write-ahead log when its last
+    /// connection closes. A log not seen yet says nothing: the prompt's hook
+    /// comes before the store is made.
+    fn let_go(&mut self, id: &str, out: &mut Vec<Observation>) {
+        if !self.sessions.contains_key(id) {
+            return;
+        }
+        let open = self
+            .store(id)
+            .is_some_and(|store| store.join(WAL).is_file());
+        let session = self.sessions.get_mut(id).expect("bound");
+        if open {
+            session.held = true;
+        } else if session.held {
+            self.sessions.remove(id);
+            out.push(Observation::new(
+                Harness::Cursor,
+                id,
+                Channel::File,
+                Event::one(Signal::Ended),
+                None,
+            ));
+        }
     }
 
     /// Reads the chat's transcript whole and tells what it says that the
@@ -580,7 +634,11 @@ impl Source for Cursor {
     }
 
     fn roots(&self) -> Vec<PathBuf> {
-        vec![self.projects.clone(), self.versions.clone()]
+        vec![
+            self.projects.clone(),
+            self.versions.clone(),
+            self.chats.clone(),
+        ]
     }
 
     /// Each chat a hook bound before the daemon started, whose process still
@@ -609,6 +667,7 @@ impl Source for Cursor {
             if let Err(error) = self.read(id, &mut Vec::new()) {
                 unread.push(error);
             }
+            self.let_go(id, &mut Vec::new());
             let turn = self.sessions[id].turn();
             let start = Start {
                 cwd: self.folder(id),
@@ -641,30 +700,39 @@ impl Source for Cursor {
     }
 
     fn changed(&mut self, _k: &dyn Kernel, paths: Option<&[PathBuf]>) -> Vec<Observation> {
-        let (mut chats, mut markers): (Vec<String>, Vec<PathBuf>) = match paths {
-            Some(paths) => (
-                paths.iter().filter_map(|path| self.chat_of(path)).collect(),
-                paths
-                    .iter()
-                    .filter(|path| self.is_marker(path))
-                    .cloned()
-                    .collect(),
-            ),
-            None => (
-                self.sessions.keys().cloned().collect(),
-                self.sessions.values().map(|s| s.marker.clone()).collect(),
-            ),
-        };
+        let (mut chats, mut stores, mut markers): (Vec<String>, Vec<String>, Vec<PathBuf>) =
+            match paths {
+                Some(paths) => (
+                    paths.iter().filter_map(|path| self.chat_of(path)).collect(),
+                    paths.iter().filter_map(|path| self.wal_of(path)).collect(),
+                    paths
+                        .iter()
+                        .filter(|path| self.is_marker(path))
+                        .cloned()
+                        .collect(),
+                ),
+                None => (
+                    self.sessions.keys().cloned().collect(),
+                    self.sessions.keys().cloned().collect(),
+                    self.sessions.values().map(|s| s.marker.clone()).collect(),
+                ),
+            };
         chats.sort();
         chats.dedup();
+        stores.sort();
+        stores.dedup();
         markers.sort();
         markers.dedup();
         let mut out = Vec::new();
-        // The last checkpoint is written before the process unlinks its marker.
+        // The last checkpoint is written before the process lets go of the
+        // chat's store or unlinks its marker.
         for id in chats {
             if self.sessions.contains_key(&id) {
                 let _ = self.read(&id, &mut out);
             }
+        }
+        for id in stores {
+            self.let_go(&id, &mut out);
         }
         for marker in markers {
             self.gone(&marker, &mut out);
@@ -909,6 +977,19 @@ mod tests {
             .filter(|(o, _)| o.event.signals().contains(&Signal::Ended))
             .count();
         assert_eq!(ended, 2);
+    }
+
+    #[test]
+    fn a_new_chat_in_the_process_ends_the_old_one() {
+        let replay = replay("a_new_chat_in_the_process_ends_the_old_one");
+        assert!(replay.phases().is_empty());
+        let ended: Vec<Channel> = replay
+            .yielded
+            .iter()
+            .filter(|(o, _)| o.event.signals().contains(&Signal::Ended))
+            .map(|(o, _)| o.channel)
+            .collect();
+        assert_eq!(ended, [Channel::File]);
     }
 
     #[test]

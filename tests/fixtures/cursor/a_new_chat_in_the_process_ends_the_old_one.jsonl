@@ -1,0 +1,22 @@
+{"cite":"gaps cursor /new run: the first prompt makes the chat's store and its write-ahead log; /new (/clear) deletes the log at once while the process runs on, 15 s before the quit unlinks its marker","evidence":"observed"}
+{"alive":91981,"started_us":1794756765368000}
+{"write":".local/share/cursor-agent/versions/2026.11.13-eacade1/.running/91981","text":"cursor-agent|Sun Nov 15 15:32:45 2026"}
+{"alive":92120,"started_us":1794756766864000}
+{"write":".local/share/cursor-agent/versions/2026.11.13-eacade1/.running/92120","text":"node|Sun Nov 15 15:32:46 2026"}
+{"write":".cursor/chats/8c06ea56610da84475132a9aaefbb90e/01f0f07f-a15b-4a43-a037-ec9e03b971b0/meta.json","text":"{\"schemaVersion\":1,\"createdAtMs\":1794756765798,\"hasConversation\":false,\"updatedAtMs\":1794756766800,\"cwd\":\"/Users/me/Code/app\"}"}
+{"expect":[]}
+{"hook":{"conversation_id":"01f0f07f-a15b-4a43-a037-ec9e03b971b0","generation_id":"3e7a1c52-9d04-4b6f-8a2e-5f1c0d9b7a63","model":"default","prompt":"Reply with the single word: one","attachments":[],"session_id":"01f0f07f-a15b-4a43-a037-ec9e03b971b0","hook_event_name":"beforeSubmitPrompt","cursor_version":"2026.11.13-eacade1","workspace_roots":["/Users/me/Code/app"],"user_email":null,"transcript_path":null},"ancestry":[{"pid":92368,"started_us":1794756769950000},{"pid":91981,"started_us":1794756765368000},{"pid":755,"started_us":1794680000000000}]}
+{"expect":[["started","hook"],["prompted","hook"]]}
+{"write":".cursor/chats/8c06ea56610da84475132a9aaefbb90e/01f0f07f-a15b-4a43-a037-ec9e03b971b0/store.db","text":"SQLite format 3"}
+{"write":".cursor/chats/8c06ea56610da84475132a9aaefbb90e/01f0f07f-a15b-4a43-a037-ec9e03b971b0/store.db-wal","text":"the log"}
+{"expect":[]}
+{"write":".cursor/projects/Users-me-Code-app/agent-transcripts/01f0f07f-a15b-4a43-a037-ec9e03b971b0/01f0f07f-a15b-4a43-a037-ec9e03b971b0.jsonl","text":"{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"<timestamp>Sunday, Nov 15, 2026, 9:32 AM (UTC-6)</timestamp>\\n<user_query>\\nReply with the single word: one\\n</user_query>\"}]}}\n"}
+{"expect":[["prompted","file"]]}
+{"append":".cursor/projects/Users-me-Code-app/agent-transcripts/01f0f07f-a15b-4a43-a037-ec9e03b971b0/01f0f07f-a15b-4a43-a037-ec9e03b971b0.jsonl","line":{"role":"assistant","message":{"content":[{"type":"text","text":"one"}]}}}
+{"append":".cursor/projects/Users-me-Code-app/agent-transcripts/01f0f07f-a15b-4a43-a037-ec9e03b971b0/01f0f07f-a15b-4a43-a037-ec9e03b971b0.jsonl","line":{"type":"turn_ended","status":"success"}}
+{"expect":[["turn_ended","file"]]}
+{"delete":".cursor/chats/8c06ea56610da84475132a9aaefbb90e/01f0f07f-a15b-4a43-a037-ec9e03b971b0/store.db-wal"}
+{"expect":[["ended","file"]]}
+{"delete":".local/share/cursor-agent/versions/2026.11.13-eacade1/.running/91981"}
+{"exit":91981}
+{"expect":[]}
