@@ -16,7 +16,7 @@ It is done when:
 - No guessing: no timers or heuristics that infer state. A process's liveness counts as read from files when the harness itself writes the pid, lock or marker. The daemon never scans the process table. A guess may return later as a named signal with its own channel, so the coverage document keeps telling evidence from inference.
 - No backward compatibility: the saved queue resets on upgrade, obsolete hook registrations are removed by install, and replaced code is deleted.
 - Visible behaviour that is not about detection stays: queue order, weak and blocked questions, reading through the desktop app, the announce animation, `keep_read_minutes`, `abandon_days`, dismiss, status and doctor.
-- New dependencies: `notify` (FSEvents) for watching, and `rusqlite` against the system SQLite for OpenCode's database.
+- New dependencies: `notify` (FSEvents) for watching, and `rusqlite`, with SQLite built in (the system SQLite of older macOS lacks what it calls), for OpenCode's and Codex's databases.
 
 What each harness's files record was established with real sessions on 2026-11-14 (Claude Code 2.1.325, Codex 0.153.2, Grok 1.0.77, Cursor 2026.11.13, OpenCode 1.19.5, Pi 0.84.4 and 1.5.2). Junie 26.11.1 (4020.10) followed on 2026-11-15; the rules none of its sessions reached rest on third-party captures and are marked inferred. The hooks that remain:
 

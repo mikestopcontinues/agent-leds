@@ -305,6 +305,10 @@ impl Replay {
                 };
                 let db = rusqlite::Connection::open(&path).unwrap();
                 db.pragma_update(None, "journal_mode", "wal").unwrap();
+                // A fixture's schema holds only the tables its source reads;
+                // the bundled SQLite would hold it to the foreign keys of the
+                // tables left out.
+                db.pragma_update(None, "foreign_keys", false).unwrap();
                 db.execute_batch(&statements)
                     .unwrap_or_else(|e| panic!("{}: {e}: {statements}", self.name));
             }
