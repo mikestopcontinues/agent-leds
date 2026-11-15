@@ -4,10 +4,15 @@
 //! runs and whether it is busy, idle or waiting on the user. The session's
 //! transcript, `~/.claude/projects/<slug>/<session>.jsonl`, is appended a
 //! record at a time. The session file says when the turn waits; the
-//! transcript says when it starts and how it ends. No hook is needed.
+//! transcript says when it starts and how it ends. The desktop app's log,
+//! `~/Library/Logs/Claude/main.log`, says when each dialog the app shows a
+//! session opens and closes, its own too, such as computer use's and the
+//! in-app browser's approvals, which the session file does not show. No
+//! hook is needed.
 //!
 //! The files are undocumented. What they say at each moment of a session
-//! was taken from Claude Code 2.1.325 and the desktop app's 2.1.321.
+//! was taken from Claude Code 2.1.325 and the desktop app's 2.1.321; the
+//! log, from the desktop app 1.40609 to 2026-11-15.
 
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsStr;
@@ -25,6 +30,7 @@ use serde_json::Value;
 use super::tail::{self, Tail};
 use super::{Event, Hook, Observation, Seed, Source, Start, Strange, Told, Unread};
 use crate::coverage::{Declared, Evidence};
+use crate::desktop;
 use crate::fsm::{Channel, Signal};
 use crate::harness::{Harness, ends_on_question};
 use crate::liveness::{self, Kernel, Liveness, StartCheck};
@@ -55,18 +61,18 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::PermissionAsked,
-        "the session file going to status waiting, for anything but input needed or dialog open; or a prompt read while the session file waits",
-        "probe-claude cc1, cc4, cc10",
+        "the session file going to status waiting, for anything but input needed or dialog open; or the desktop app's log emitting a tool permission request for the session, for any tool but AskUserQuestion, such as computer:request_access or browser:open_site, while the session file does not wait; or a prompt read while either waits",
+        "probe-claude cc1, cc4, cc10; the desktop app's main.log, 2026-09-30 to 2026-11-15 (a_desktop_dialog_the_session_file_does_not_show_blocks_until_it_closes)",
     ),
     file(
         Signal::QuestionAsked,
-        "the session file going to status waiting for input needed; or a prompt read while the session file says so",
-        "probe-claude cc2, cc9",
+        "the session file going to status waiting for input needed, or the desktop app's log emitting a tool permission request for AskUserQuestion while the session file does not wait; or a prompt read while either says so",
+        "probe-claude cc2, cc9; the desktop app's main.log (a_question_both_the_session_file_and_the_log_tell_blocks_once)",
     ),
     file(
         Signal::Answered,
-        "the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt",
-        "probe-claude cc1, cc2",
+        "the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt; the wait over only once neither the session file nor the desktop app's log holds one: the log closes a request with a permission response or an abort, and closes every request when the app starts again",
+        "probe-claude cc1, cc2; the desktop app's main.log (a_desktop_dialog_the_session_file_does_not_show_blocks_until_it_closes)",
     ),
     Declared::new(
         Signal::Released,
@@ -430,8 +436,11 @@ struct Session {
     owner: PathBuf,
     /// What the session file last said the process is doing, before any
     /// dialog it says is open now.
-    status: Status,
-    /// Whether the session file says a dialog is open, which hides `status`.
+    file: Status,
+    /// The wait of the dialog the desktop app's log holds open for the
+    /// session, the first if several.
+    desktop: Option<Signal>,
+    /// Whether the session file says a dialog is open, which hides `file`.
     dialog: bool,
     /// Whether the wait the session file says is a request made outside a
     /// turn, which began after the turn's end.
@@ -454,12 +463,103 @@ struct Session {
     told: Told,
 }
 
-/// Claude Code's sessions, from its session files and transcripts.
+impl Session {
+    /// What the process is doing, as the session file and the desktop app's
+    /// log say it together: waiting while either holds a wait, on the session
+    /// file's own when it has one. Every change of it is one edge, so a wait
+    /// both tell is told once, and is over only once neither holds it.
+    fn status(&self) -> Status {
+        match (self.file, self.desktop) {
+            (Status::Waiting(_), _) | (_, None) => self.file,
+            (_, Some(wait)) => Status::Waiting(wait),
+        }
+    }
+}
+
+/// What a line of the desktop app's log says of the dialogs it shows.
+#[derive(Debug, PartialEq)]
+enum Said<'a> {
+    /// The app started: no dialog of an earlier launch is open.
+    Launched,
+    /// A dialog opened for a tool in the app's session `local`.
+    Opened {
+        request: &'a str,
+        tool: &'a str,
+        local: &'a str,
+    },
+    /// The dialog was answered, or aborted.
+    Closed { request: &'a str },
+}
+
+impl Said<'_> {
+    /// What a line says, if it is one of those. A line is
+    /// `<date> <time> [<level>] <message>`; the lines that carry on a
+    /// message of several lines start otherwise.
+    fn read(line: &[u8]) -> Option<Said<'_>> {
+        let line = std::str::from_utf8(line).ok()?;
+        if line.get(19..21) != Some(" [") {
+            return None;
+        }
+        let (_, message) = line[21..].split_once("] ")?;
+        if message == "Starting app {" {
+            return Some(Said::Launched);
+        }
+        if let Some(rest) = message.strip_prefix("Emitted tool permission request ") {
+            let (request, rest) = rest.split_once(" for ")?;
+            let (tool, local) = rest.split_once(" in session ")?;
+            return Some(Said::Opened {
+                request,
+                tool,
+                local,
+            });
+        }
+        // `<request>: once (tool: <tool>)`, or always.
+        if let Some(rest) = message.strip_prefix("Received permission response for ") {
+            let (request, _) = rest.split_once(": ")?;
+            return Some(Said::Closed { request });
+        }
+        let rest = message.strip_prefix("Permission request ")?;
+        let (request, _) = rest.strip_suffix(" aborted")?.split_once(" for ")?;
+        Some(Said::Closed { request })
+    }
+}
+
+/// A dialog the desktop app's log holds open.
+struct Dialog {
+    request: String,
+    /// The app's session, and the Claude Code session it runs once the
+    /// app's file for it has been read. A file caught half written is read
+    /// again at the log's next change; an agent-mode session has none.
+    local: String,
+    session: Option<String>,
+    wait: Signal,
+}
+
+/// The wait a dialog for `tool` is: a question for `AskUserQuestion`, an
+/// approval for any other.
+fn wait(tool: &str) -> Signal {
+    if tool == "AskUserQuestion" {
+        Signal::QuestionAsked
+    } else {
+        Signal::PermissionAsked
+    }
+}
+
+/// Claude Code's sessions, from its session files and transcripts, and the
+/// desktop app's log and session files.
 pub struct Claude {
     sessions_dir: PathBuf,
     projects_dir: PathBuf,
+    /// The desktop app's log folder, and its own session files.
+    logs_dir: PathBuf,
+    app_sessions: PathBuf,
     procs: HashMap<PathBuf, Proc>,
     sessions: HashMap<String, Session>,
+    /// The desktop app's log, with whether its last read stopped at its budget.
+    log: Option<Tail>,
+    log_behind: bool,
+    /// The dialogs the log holds open, in the order they opened.
+    dialogs: Vec<Dialog>,
     /// What its reads could not make sense of, since it was last asked.
     strange: Strange,
 }
@@ -481,14 +581,180 @@ pub fn folder(config_dir: Option<&OsStr>, home: &Path) -> PathBuf {
 
 impl Claude {
     /// Claude Code's sessions, from its folder, `~/.claude` or
-    /// `$CLAUDE_CONFIG_DIR`.
-    pub fn new(folder: &Path) -> Claude {
+    /// `$CLAUDE_CONFIG_DIR`, and the desktop app's files in `home`.
+    pub fn new(home: &Path, folder: &Path) -> Claude {
         Claude {
             sessions_dir: folder.join("sessions"),
             projects_dir: folder.join("projects"),
+            logs_dir: home.join("Library/Logs/Claude"),
+            app_sessions: desktop::sessions(home),
             procs: HashMap::new(),
             sessions: HashMap::new(),
+            log: None,
+            log_behind: false,
+            dialogs: Vec::new(),
             strange: Strange::default(),
+        }
+    }
+
+    fn log_path(&self) -> PathBuf {
+        self.logs_dir.join("main.log")
+    }
+
+    /// Whether `path` is the desktop app's log, or the file it was renamed to.
+    fn is_log(&self, path: &Path) -> bool {
+        path.parent() == Some(&self.logs_dir)
+            && path
+                .file_name()
+                .is_some_and(|name| name == "main.log" || name == "main1.log")
+    }
+
+    /// Reads the desktop app's log to its end at a seed: back to where the
+    /// app last started, through the files it rotated the log to, at most
+    /// four, for the dialogs still open. Only those are looked up.
+    fn seed_log(&mut self) -> io::Result<()> {
+        let (path, rotated) = (self.log_path(), self.logs_dir.join("main1.log"));
+        let mut files = Vec::new();
+        match Tail::at_start(&path) {
+            Ok(tail) => {
+                self.log = Some(tail);
+                let mut lines = Vec::new();
+                loop {
+                    lines.extend(tail::follow_rotated(
+                        &mut self.log,
+                        &path,
+                        &rotated,
+                        &mut self.log_behind,
+                        &mut self.strange,
+                    )?);
+                    if !self.log_behind {
+                        break;
+                    }
+                }
+                files.push(lines);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        let launched = |lines: &[Vec<u8>]| {
+            let launch = |line: &Vec<u8>| Said::read(line) == Some(Said::Launched);
+            lines.iter().any(launch)
+        };
+        for n in 1..=4 {
+            if files.last().is_some_and(|lines| launched(lines)) {
+                break;
+            }
+            let bytes = match fs::read(self.logs_dir.join(format!("main{n}.log"))) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+                Err(error) => return Err(error),
+            };
+            files.push(
+                bytes
+                    .split(|&byte| byte == b'\n')
+                    .map(<[u8]>::to_vec)
+                    .collect(),
+            );
+        }
+        self.dialogs.clear();
+        for line in files.iter().rev().flatten() {
+            if let Some(said) = Said::read(line) {
+                self.said(said);
+            }
+        }
+        self.resolve();
+        Ok(())
+    }
+
+    /// Reads what the desktop app's log got since it was last read, and
+    /// collects in `edges` each session whose status that changes.
+    fn read_log(&mut self, edges: &mut Vec<(String, Status, Status)>) {
+        let (path, rotated) = (self.log_path(), self.logs_dir.join("main1.log"));
+        // A log made since the seed holds nothing older.
+        if self.log.is_none() {
+            self.log = Tail::at_start(&path).ok();
+        }
+        let read = tail::follow_rotated(
+            &mut self.log,
+            &path,
+            &rotated,
+            &mut self.log_behind,
+            &mut self.strange,
+        );
+        // Read again at its next change.
+        let lines = read.unwrap_or_default();
+        let mut held = Vec::new();
+        for said in lines.iter().filter_map(|line| Said::read(line)) {
+            held.extend(self.said(said));
+            held.extend(self.resolve());
+            for id in held.drain(..) {
+                self.desktop(&id, edges);
+            }
+        }
+        // Sessions whose files could not be read before.
+        for id in self.resolve() {
+            self.desktop(&id, edges);
+        }
+    }
+
+    /// Applies what a line of the log says to the dialogs it holds open, and
+    /// says which sessions that changes.
+    fn said(&mut self, said: Said) -> Vec<String> {
+        let closed = match said {
+            Said::Launched => mem::take(&mut self.dialogs),
+            Said::Opened {
+                request,
+                tool,
+                local,
+            } => {
+                self.dialogs.push(Dialog {
+                    request: request.to_owned(),
+                    local: local.to_owned(),
+                    session: None,
+                    wait: wait(tool),
+                });
+                Vec::new()
+            }
+            Said::Closed { request } => {
+                let (closed, open) = mem::take(&mut self.dialogs)
+                    .into_iter()
+                    .partition(|dialog| dialog.request == request);
+                self.dialogs = open;
+                closed
+            }
+        };
+        closed
+            .into_iter()
+            .filter_map(|dialog| dialog.session)
+            .collect()
+    }
+
+    /// Looks up the Claude Code session of each open dialog not known yet,
+    /// and says which it found.
+    fn resolve(&mut self) -> Vec<String> {
+        let mut found = Vec::new();
+        for dialog in self.dialogs.iter_mut().filter(|d| d.session.is_none()) {
+            dialog.session = desktop::cli_session(&self.app_sessions, &dialog.local);
+            found.extend(dialog.session.clone());
+        }
+        found
+    }
+
+    /// Sets what the log holds open for the session `id`, collecting the
+    /// edge in `edges` if its status changes.
+    fn desktop(&mut self, id: &str, edges: &mut Vec<(String, Status, Status)>) {
+        let Some(session) = self.sessions.get_mut(id) else {
+            return;
+        };
+        let before = session.status();
+        session.desktop = self
+            .dialogs
+            .iter()
+            .find(|dialog| dialog.session.as_deref() == Some(id))
+            .map(|dialog| dialog.wait);
+        let after = session.status();
+        if before != after {
+            edges.push((id.to_owned(), before, after));
         }
     }
 
@@ -600,7 +866,7 @@ impl Claude {
         {
             let status = process.status();
             let new = status.is_none() != session.dialog
-                || status.is_some_and(|status| status != session.status);
+                || status.is_some_and(|status| status != session.file);
             if session.owner != path {
                 // A file not its owner's says nothing of the session,
                 // unless the owner was killed and left its file, and
@@ -621,11 +887,12 @@ impl Claude {
             let session = self.sessions.get_mut(&id).expect("tracked");
             session.dialog = status.is_none();
             session.request = process.requests();
-            if let Some(status) = status
-                && session.status != status
-            {
-                edges.push((id, session.status, status));
-                session.status = status;
+            if let Some(status) = status {
+                let before = session.status();
+                session.file = status;
+                if session.status() != before {
+                    edges.push((id, before, session.status()));
+                }
             }
             return Ok(());
         }
@@ -658,7 +925,8 @@ impl Claude {
             Session {
                 start,
                 owner: path.to_owned(),
-                status: Status::Starting,
+                file: Status::Starting,
+                desktop: None,
                 dialog: status.is_none(),
                 request,
                 transcript,
@@ -672,12 +940,15 @@ impl Claude {
                 told: Told::default(),
             },
         );
-        if let Some(status) = status
-            && status != Status::Starting
-        {
-            edges.push((id.clone(), Status::Starting, status));
-            self.sessions.get_mut(&id).expect("just added").status = status;
+        if let Some(status) = status {
+            self.sessions.get_mut(&id).expect("just added").file = status;
         }
+        let session = &self.sessions[&id];
+        if session.status() != Status::Starting {
+            edges.push((id.clone(), Status::Starting, session.status()));
+        }
+        // A dialog the desktop app's log holds open for it.
+        self.desktop(&id, edges);
         Ok(())
     }
 
@@ -697,6 +968,9 @@ impl Claude {
         });
         let Some((other, start)) = other else {
             self.sessions.remove(id);
+            // A dialog the app left open holds up no later run of the session.
+            self.dialogs
+                .retain(|dialog| dialog.session.as_deref() != Some(id));
             out.push(Observation::new(
                 Harness::Claude,
                 id,
@@ -716,7 +990,7 @@ impl Claude {
         session.owner = other;
         session.dialog = status.is_none();
         session.request = process.is_some_and(|(process, _)| process.requests());
-        session.status = status.unwrap_or(Status::Starting);
+        session.file = status.unwrap_or(Status::Starting);
         out.push(self.started(k, id, String::new()));
     }
 
@@ -808,7 +1082,7 @@ impl Claude {
             // A prompt written after the session file said it waits, as a
             // permission asked at once is, is told with the wait.
             let mut started = BTreeSet::from([Signal::Prompted]);
-            if let Status::Waiting(wait) = session.status
+            if let Status::Waiting(wait) = session.status()
                 && !session.dialog
             {
                 started.insert(wait);
@@ -840,7 +1114,7 @@ impl Claude {
             }
             // Work the turn delegated runs on. A dialog open now hides
             // whether it does.
-            if session.status == Status::Busy && !session.dialog {
+            if session.status() == Status::Busy && !session.dialog {
                 end.insert(Signal::Backgrounded);
             }
         }
@@ -850,7 +1124,7 @@ impl Claude {
         session.open = false;
         session.asking = false;
         session.background = end.contains(&Signal::Backgrounded);
-        match session.status {
+        match session.status() {
             // A subagent's request holds the session up after its turn: how
             // the turn ended is told once the wait is over.
             Status::Waiting(_) => session.closed_waiting = Some(end),
@@ -866,12 +1140,12 @@ impl Claude {
     /// as it would have been told live.
     fn seed_transcript(&mut self, id: &str, path: &Path) -> io::Result<()> {
         let session = self.sessions.get_mut(id).expect("started");
-        let status = session.status;
+        let status = session.file;
         if session.request {
-            session.status = Status::Starting;
+            session.file = Status::Starting;
         }
         let seeded = self.seed_records(id, path);
-        self.sessions.get_mut(id).expect("started").status = status;
+        self.sessions.get_mut(id).expect("started").file = status;
         seeded
     }
 
@@ -992,9 +1266,17 @@ impl Source for Claude {
         vec![self.sessions_dir.clone(), self.projects_dir.clone()]
     }
 
+    fn shallow_roots(&self) -> Vec<PathBuf> {
+        vec![self.logs_dir.clone()]
+    }
+
     fn seed(&mut self, k: &dyn Kernel, _bound: &[(String, Liveness)]) -> Result<Seed> {
         let mut seeded = Vec::new();
         let mut unread = Vec::new();
+        // The dialogs open now, before the sessions they hold up.
+        if let Err(error) = self.seed_log() {
+            unread.push(Unread::new(&self.log_path(), error));
+        }
         for path in self.session_files() {
             let mut started = Vec::new();
             let mut edges = Vec::new();
@@ -1046,6 +1328,10 @@ impl Source for Claude {
             // Read again at its next change.
             let _ = self.session_file(k, &path, &mut out, &mut edges);
         }
+        // The desktop app's dialogs change the status as the session files do.
+        if paths.is_none_or(|paths| paths.iter().any(|path| self.is_log(path))) {
+            self.read_log(&mut edges);
+        }
         // The transcripts are read against the session files as they are
         // now, and the status changes told after them.
         let mut transcripts: Vec<(String, PathBuf)> = match paths {
@@ -1091,6 +1377,9 @@ impl Source for Claude {
     fn behind(&self) -> Vec<PathBuf> {
         let behind = self.sessions.values().filter(|session| session.behind);
         let mut paths: Vec<PathBuf> = behind.filter_map(|s| s.transcript.clone()).collect();
+        if self.log_behind {
+            paths.push(self.log_path());
+        }
         paths.sort();
         paths
     }
@@ -1124,7 +1413,8 @@ mod tests {
     #[ignore = "reads the real ~/.claude"]
     fn seeds_from_the_real_home() {
         let home = std::env::var_os("HOME").expect("a home");
-        let mut claude = Claude::new(&config_dir(Path::new(&home)));
+        let home = Path::new(&home);
+        let mut claude = Claude::new(home, &config_dir(home));
         let mut queue = crate::queue::Queue::default();
         for o in fixture::printed(claude.seed(&liveness::System, &[]).unwrap()) {
             assert!(o.quiet);
@@ -1250,6 +1540,140 @@ mod tests {
     fn a_desktop_permission_prompt_shows_a_question() {
         let replay = replay("a_desktop_permission_prompt_shows_a_question");
         assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    /// How many observations of the replay told `signal`.
+    fn told(replay: &Replay, signal: Signal) -> usize {
+        let told = |(o, _): &&(Observation, usize)| o.event.signals().contains(&signal);
+        replay.yielded.iter().filter(told).count()
+    }
+
+    #[test]
+    fn a_desktop_dialog_the_session_file_does_not_show_blocks_until_it_closes() {
+        let replay =
+            replay("a_desktop_dialog_the_session_file_does_not_show_blocks_until_it_closes");
+        assert_eq!(told(&replay, Signal::PermissionAsked), 1);
+        assert_eq!(told(&replay, Signal::Answered), 1);
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    /// The session file and the log each hold the wait while the other has
+    /// let it go, whichever closes first.
+    #[test]
+    fn a_question_both_the_session_file_and_the_log_tell_blocks_once() {
+        let replay = replay("a_question_both_the_session_file_and_the_log_tell_blocks_once");
+        assert_eq!(told(&replay, Signal::QuestionAsked), 2);
+        assert_eq!(told(&replay, Signal::Answered), 2);
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn a_dialog_aborted_or_left_by_an_earlier_launch_of_the_app_is_closed() {
+        let replay = replay("a_dialog_aborted_or_left_by_an_earlier_launch_of_the_app_is_closed");
+        assert_eq!(told(&replay, Signal::Answered), 2);
+        assert_eq!(phase(&replay), Phase::Working);
+    }
+
+    #[test]
+    fn the_log_s_lines_say_what_they_say_of_dialogs() {
+        fn read(line: &str) -> Option<Said<'_>> {
+            Said::read(line.as_bytes())
+        }
+        assert_eq!(
+            read(
+                "2026-11-15 10:43:43 [info] Emitted tool permission request r1 for browser:open_site in session local_a"
+            ),
+            Some(Said::Opened {
+                request: "r1",
+                tool: "browser:open_site",
+                local: "local_a"
+            })
+        );
+        for closed in [
+            "2026-11-15 10:48:06 [info] Received permission response for r1: always (tool: computer:request_access)",
+            "2026-11-10 15:33:05 [info] Permission request r1 for AskUserQuestion aborted",
+        ] {
+            assert_eq!(read(closed), Some(Said::Closed { request: "r1" }));
+        }
+        assert_eq!(
+            read("2026-11-10 11:29:29 [info] Starting app {"),
+            Some(Said::Launched)
+        );
+        for nothing in [
+            "2026-11-15 10:48:06 [info] LocalSessions.respondToToolPermission: requestId=r1, decision=always, hasUpdatedInput=true",
+            "  message: 'Emitted tool permission request r1 for Bash in session local_a'",
+            "  appVersion: '1.40609.0',",
+            "",
+        ] {
+            assert_eq!(read(nothing), None, "{nothing}");
+        }
+    }
+
+    /// The app rotates its log by renaming it to main1.log and starting a
+    /// new one: a dialog opened before and closed after is told once.
+    #[test]
+    fn a_dialog_across_the_log_s_rotation_is_told_once() {
+        let replay =
+            replay("a_desktop_dialog_the_session_file_does_not_show_blocks_until_it_closes");
+        let logs = replay.home.path().join("Library/Logs/Claude");
+        let (log, rotated) = (logs.join("main.log"), logs.join("main1.log"));
+        let (mut source, mut queue) = fixture::restarted(&replay);
+        let key = queue.sessions()[0].key.clone();
+        let local = "local_9c213b9c-d3e3-4d97-94b7-1d7465e037f7";
+        let mut file = fs::OpenOptions::new().append(true).open(&log).unwrap();
+        let opened = format!(
+            "2026-11-15 11:02:00 [info] Emitted tool permission request r2 for browser:open_site in session {local}\n"
+        );
+        std::io::Write::write_all(&mut file, opened.as_bytes()).unwrap();
+        fs::rename(&log, &rotated).unwrap();
+        let closed = "2026-11-15 11:02:09 [info] Received permission response for r2: once (tool: browser:open_site)\n";
+        fs::write(&log, closed).unwrap();
+        let mut signals = Vec::new();
+        for o in source.changed(&replay.kernel, Some(&[log.clone(), rotated.clone()])) {
+            signals.push(o.event.signals());
+            queue.apply(&o, 1);
+        }
+        // The turn had ended: the wait goes back to where it found it.
+        assert_eq!(
+            signals,
+            [Signal::PermissionAsked, Signal::Released].map(|s| BTreeSet::from([s]))
+        );
+        assert_eq!(queue.phase(&key), Phase::Stopped);
+        assert!(source.changed(&replay.kernel, None).is_empty());
+        // A daemon starting now reads both files, and finds nothing open.
+        assert_eq!(fixture::seed(&replay).phase(&key), Phase::Stopped);
+        fs::write(&log, "").unwrap();
+        assert_eq!(fixture::seed(&replay).phase(&key), Phase::Blocked);
+    }
+
+    /// The app's file for its session, caught half written as a dialog
+    /// opens, is read again at the log's next change.
+    #[test]
+    fn a_dialog_whose_session_cannot_be_looked_up_yet_is_looked_up_again() {
+        let replay =
+            replay("a_desktop_dialog_the_session_file_does_not_show_blocks_until_it_closes");
+        let home = replay.home.path();
+        let log = home.join("Library/Logs/Claude/main.log");
+        let app = desktop::sessions(home)
+            .join("account/organization/local_9c213b9c-d3e3-4d97-94b7-1d7465e037f7.json");
+        let whole = fs::read_to_string(&app).unwrap();
+        let (mut source, mut queue) = fixture::restarted(&replay);
+        let key = queue.sessions()[0].key.clone();
+        let mut append = |line: &str| {
+            let mut file = fs::OpenOptions::new().append(true).open(&log).unwrap();
+            std::io::Write::write_all(&mut file, format!("{line}\n").as_bytes()).unwrap();
+            let read = source.changed(&replay.kernel, Some(std::slice::from_ref(&log)));
+            for o in &read {
+                queue.apply(o, 1);
+            }
+            read.len()
+        };
+        fs::write(&app, &whole[..whole.len() / 2]).unwrap();
+        let opened = "2026-11-15 11:02:00 [info] Emitted tool permission request r2 for browser:open_site in session local_9c213b9c-d3e3-4d97-94b7-1d7465e037f7";
+        assert_eq!(append(opened), 0);
+        fs::write(&app, &whole).unwrap();
+        assert_eq!(append("2026-11-15 11:02:01 [info] Config file written"), 1);
+        assert_eq!(queue.phase(&key), Phase::Blocked);
     }
 
     #[test]

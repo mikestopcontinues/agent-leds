@@ -182,6 +182,51 @@ pub fn follow(
     }
 }
 
+/// `follow` for a log its writer rotates by renaming it to `rotated` and
+/// starting a new one at `path`, as the Claude desktop app's logger does.
+/// What the old file got after the tail last read it is read from `rotated`
+/// first, and then the new file from its first byte, so no line is lost or
+/// read twice. The moment between the rename and the new file keeps the
+/// tail where it was. A file truncated in place is read from its start.
+pub fn follow_rotated(
+    slot: &mut Option<Tail>,
+    path: &Path,
+    rotated: &Path,
+    behind: &mut bool,
+    strange: &mut Strange,
+) -> io::Result<Vec<Vec<u8>>> {
+    *behind = false;
+    let Some(tail) = slot else {
+        return Ok(Vec::new());
+    };
+    let read = match tail.read(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Lines::Replaced,
+        read => read?,
+    };
+    if let Lines::Read { lines, more } = read {
+        *behind = more;
+        tail.count(strange);
+        return Ok(lines);
+    }
+    // The file the tail read is `rotated` now, unless that holds another.
+    let mut lines = Vec::new();
+    if let Ok(Lines::Read { lines: rest, more }) = tail.read(rotated) {
+        tail.count(strange);
+        lines = rest;
+        if more {
+            *behind = true;
+            return Ok(lines);
+        }
+    }
+    match Tail::at_start(path) {
+        Ok(new) => *slot = Some(new),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(lines),
+        Err(error) => return Err(error),
+    }
+    lines.extend(follow(slot, path, behind, strange)?);
+    Ok(lines)
+}
+
 /// Reads backward from the end in windows of 256 KiB, doubling up to 16 MiB,
 /// until the window holds a line `anchors` accepts (one where the state the
 /// lines fold into began), or reaches the start of the file. Each byte is
@@ -373,6 +418,33 @@ mod tests {
         fs::write(&staged, b"one\ntwo\n").unwrap();
         fs::rename(&staged, &path).unwrap();
         assert_eq!(tail.read(&path).unwrap(), Lines::Replaced);
+    }
+
+    #[test]
+    fn a_log_rotated_by_a_rename_loses_and_repeats_no_line() {
+        let (folder, path) = log();
+        let rotated = folder.path().join("events1.jsonl");
+        append(&path, b"one\n");
+        let mut slot = Some(Tail::at_start(&path).unwrap());
+        let (mut behind, mut strange) = (false, Strange::default());
+        let mut follow = |slot: &mut Option<Tail>| {
+            follow_rotated(slot, &path, &rotated, &mut behind, &mut strange).unwrap()
+        };
+        assert_eq!(follow(&mut slot), [b"one".to_vec()]);
+        // Written after the last read, then renamed, with no new file yet.
+        append(&path, b"two\nthr");
+        fs::rename(&path, &rotated).unwrap();
+        assert_eq!(follow(&mut slot), [b"two".to_vec()]);
+        assert!(slot.is_some());
+        append(&rotated, b"ee\n");
+        append(&path, b"four\n");
+        assert_eq!(follow(&mut slot), [b"three".to_vec(), b"four".to_vec()]);
+        append(&path, b"five\n");
+        assert_eq!(follow(&mut slot), [b"five".to_vec()]);
+        // Truncated in place: what it holds now is new.
+        fs::write(&path, b"six\n").unwrap();
+        assert_eq!(follow(&mut slot), [b"six".to_vec()]);
+        assert_eq!(follow(&mut slot), Vec::<Vec<u8>>::new());
     }
 
     #[test]

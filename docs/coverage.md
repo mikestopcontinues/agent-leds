@@ -77,7 +77,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### PermissionAsked
 
-- Claude Code, file, observed: the session file going to status waiting, for anything but input needed or dialog open; or a prompt read while the session file waits (probe-claude cc1, cc4, cc10)
+- Claude Code, file, observed: the session file going to status waiting, for anything but input needed or dialog open; or the desktop app's log emitting a tool permission request for the session, for any tool but AskUserQuestion, such as computer:request_access or browser:open_site, while the session file does not wait; or a prompt read while either waits (probe-claude cc1, cc4, cc10; the desktop app's main.log, 2026-09-30 to 2026-11-15 (a_desktop_dialog_the_session_file_does_not_show_blocks_until_it_closes))
 - Codex, hook, observed: PermissionRequest naming the turn the rollout has open (0.5.0 hooks during probe-codex runA PROMPT4 and codex2)
 - Grok, file, observed: plan_mode.json awaiting_plan_approval true while a turn is open, as exit_plan_mode's plan card waits on the user; not for a tool's approval card (gaps p3)
 - Junie, file, inferred: a SessionA2uxEvent in state INPUT_REQUIRED whose block carries an approvalRequest and is not COMPLETED, once per stepId (probe-junie permission_pending; Irrlicht real-terminal-approval)
@@ -85,7 +85,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### QuestionAsked
 
-- Claude Code, file, observed: the session file going to status waiting for input needed; or a prompt read while the session file says so (probe-claude cc2, cc9)
+- Claude Code, file, observed: the session file going to status waiting for input needed, or the desktop app's log emitting a tool permission request for AskUserQuestion while the session file does not wait; or a prompt read while either says so (probe-claude cc2, cc9; the desktop app's main.log (a_question_both_the_session_file_and_the_log_tell_blocks_once))
 - Codex, file, observed: a function_call to request_user_input, which blocks; not request_user_input_async, which does not (probe-codex runA PROMPT2; desktop rollouts 0.162)
 - Grok, file, observed: events.jsonl tool_started for ask_user_question (probe-grok question_pending, grok5)
 - Junie, file, inferred: a SessionA2uxEvent in state INPUT_REQUIRED whose block is an AskAsyncRequestUpdatedEvent or ChoiceRequestUpdatedEvent and is not COMPLETED, once per stepId (probe-junie question_pending; Irrlicht real-lifecycle-session)
@@ -94,7 +94,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### Answered
 
-- Claude Code, file, observed: the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt (probe-claude cc1, cc2)
+- Claude Code, file, observed: the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt; the wait over only once neither the session file nor the desktop app's log holds one: the log closes a request with a permission response or an abort, and closes every request when the app starts again (probe-claude cc1, cc2; the desktop app's main.log (a_desktop_dialog_the_session_file_does_not_show_blocks_until_it_closes))
 - Codex, file, observed: the output for the pending question's call_id; or, after the approval hook or a daemon start inside a turn, the next call output, completed item that is not a subagent's, or task_complete (probe-codex runA PROMPT2, DENY-ESC; codex2 (approved))
 - Grok, file, observed: events.jsonl tool_completed for ask_user_question, or plan_mode.json awaiting_plan_approval false again while the turn goes on (probe-grok question_pending, grok5; gaps p3)
 - Junie, file, inferred: the last waiting step written again as COMPLETED or in a state other than INPUT_REQUIRED, or a UserAsyncResponseEvent, UserResponseEvent or CancelAgentEvent while a step waits (probe-junie permission_resolved, question_answered, interrupted; Irrlicht real-terminal-approval, real-lifecycle-session, parser_test.go)
