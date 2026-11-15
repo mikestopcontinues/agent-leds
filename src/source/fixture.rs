@@ -42,6 +42,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -609,6 +610,24 @@ fn restarted(replay: &Replay) -> (Box<dyn Source>, Queue) {
         .collect();
     let (source, fresh) = seeded(replay, &bound);
     (source, Queue::restore(saved, fresh))
+}
+
+/// Holds a daemon started after a replay to a read of `file` that stops at
+/// its budget and then fails for good: the source is not left behind, so it
+/// is not read again and again until the file can be read.
+pub fn a_read_that_fails_leaves_nothing_behind(replay: &Replay, file: &str) {
+    let file = replay.home.path().join(file);
+    let (mut source, _) = restarted(replay);
+    let line = format!("{{\"pad\": \"{}\"}}\n", "x".repeat(1 << 20));
+    let mut log = OpenOptions::new().append(true).open(&file).unwrap();
+    log.write_all(line.repeat(9).as_bytes()).unwrap();
+    source.changed(&replay.kernel, Some(std::slice::from_ref(&file)));
+    assert!(source.behind(), "{}: read all at once", replay.name);
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+    source.changed(&replay.kernel, Some(std::slice::from_ref(&file)));
+    let behind = source.behind();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(!behind, "{}: behind on a file it cannot read", replay.name);
 }
 
 /// The queue a daemon starting now would show.

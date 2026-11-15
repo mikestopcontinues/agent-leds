@@ -508,7 +508,11 @@ impl Grok {
                     reader.behind = false;
                     return;
                 }
-                Err(_) => return,
+                // Read again at its next change, not over and over now.
+                Err(_) => {
+                    reader.behind = false;
+                    return;
+                }
             },
         };
         for line in lines {
@@ -941,5 +945,13 @@ mod tests {
         let replay = replay("a_session_whose_process_exits_ends");
         assert!(replay.phases().is_empty());
         assert!(!fixture::seed(&replay).tracked());
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_leaves_nothing_behind() {
+        fixture::a_read_that_fails_leaves_nothing_behind(
+            &replay("turn_ended.file"),
+            ".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dc0d-63f4-7eb0-95d3-175af42f88aa/events.jsonl",
+        );
     }
 }

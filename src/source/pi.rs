@@ -461,7 +461,11 @@ impl Pi {
                 session.behind = false;
                 return;
             }
-            Err(_) => return,
+            // Read again at its next change, not over and over now.
+            Err(_) => {
+                session.behind = false;
+                return;
+            }
         };
         for line in lines {
             if let Some(entry) = Entry::read(&line) {
@@ -1070,5 +1074,13 @@ mod tests {
         let mut pi = Pi::new(home.path());
         let told = pi.hook(&liveness::System, &start(79128, None));
         assert!(told.is_empty());
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_leaves_nothing_behind() {
+        fixture::a_read_that_fails_leaves_nothing_behind(
+            &replay("turn_ended.file"),
+            ".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-22-17-696Z_01a1df28-8760-7cc5-95aa-023c234bc57e.jsonl",
+        );
     }
 }

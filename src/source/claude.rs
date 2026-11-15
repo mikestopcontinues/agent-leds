@@ -587,7 +587,11 @@ impl Claude {
                 session.behind = false;
                 return;
             }
-            Err(_) => return,
+            // Read again at its next change, not over and over now.
+            Err(_) => {
+                session.behind = false;
+                return;
+            }
         };
         for line in lines {
             self.line(id, &line, out);
@@ -1151,5 +1155,13 @@ mod tests {
         assert!(replay.phases().is_empty());
         // The killed process left its file; a daemon starting now ignores it.
         assert!(!fixture::seed(&replay).tracked());
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_leaves_nothing_behind() {
+        fixture::a_read_that_fails_leaves_nothing_behind(
+            &replay("turn_ended.file"),
+            ".claude/projects/-Users-me-Code-app/e8f843a7-1f54-44e3-b14d-99f53e9cec7a.jsonl",
+        );
     }
 }

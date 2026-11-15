@@ -577,7 +577,11 @@ impl Junie {
                 session.behind = false;
                 return;
             }
-            Err(_) => return,
+            // Read again at its next change, not over and over now.
+            Err(_) => {
+                session.behind = false;
+                return;
+            }
         };
         for line in lines {
             if let Some(record) = Record::read(&line) {
@@ -1026,5 +1030,13 @@ mod tests {
         assert!(source.behind());
         source.changed(&replay.kernel, None);
         assert!(!source.behind());
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_leaves_nothing_behind() {
+        fixture::a_read_that_fails_leaves_nothing_behind(
+            &replay("turn_ended.file"),
+            ".junie/sessions/session-260824-174155-sm5c/events.jsonl",
+        );
     }
 }
