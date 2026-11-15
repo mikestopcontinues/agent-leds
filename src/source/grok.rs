@@ -5,10 +5,12 @@
 //! record at a time: `events.jsonl` says when a turn starts, waits and ends,
 //! and `updates.jsonl` holds what the agent wrote and the subagents it left
 //! running. The events own every boundary; the updates are read to their end
-//! when a turn ends, for its final text. No hook is needed.
+//! when a turn ends, for its final text. Beside them `plan_mode.json`,
+//! replaced whole at each change, says whether a plan waits on the user's
+//! approval. No hook is needed.
 //!
 //! Every tool writes a permission request, and nothing in the request tells
-//! one Grok approves by itself from one that waits on the user, so an
+//! one Grok approves by itself from one that waits on the user, so a tool
 //! approval wait is not told and shows as working.
 //!
 //! The files are undocumented. What they say at each moment of a session
@@ -61,6 +63,12 @@ pub const SIGNALS: &[Declared] = &[
         "probe-grok prompt_submitted, runs a, e",
     ),
     file(
+        Signal::PermissionAsked,
+        Evidence::Observed,
+        "plan_mode.json awaiting_plan_approval true while a turn is open, as exit_plan_mode's plan card waits on the user; a tool's approval card is not told",
+        "gaps p3",
+    ),
+    file(
         Signal::QuestionAsked,
         Evidence::Observed,
         "events.jsonl tool_started for ask_user_question",
@@ -69,8 +77,8 @@ pub const SIGNALS: &[Declared] = &[
     file(
         Signal::Answered,
         Evidence::Observed,
-        "events.jsonl tool_completed for ask_user_question",
-        "probe-grok question_pending, grok5",
+        "events.jsonl tool_completed for ask_user_question, or plan_mode.json awaiting_plan_approval false again while the turn goes on",
+        "probe-grok question_pending, grok5; gaps p3",
     ),
     file(
         Signal::TurnEnded,
@@ -159,6 +167,10 @@ impl Record {
         serde_json::from_slice(line).ok()
     }
 
+    fn starts_turn(line: &[u8]) -> bool {
+        Record::read(line).is_some_and(|record| record.kind == "turn_started")
+    }
+
     /// Whether an earlier process wrote the record, before the one that
     /// started at `start` (a Unix second) resumed the session.
     fn before(&self, start: i64) -> bool {
@@ -215,6 +227,12 @@ impl Update {
     }
 }
 
+/// `plan_mode.json`, with only the field that carries state.
+#[derive(Deserialize)]
+struct PlanMode {
+    awaiting_plan_approval: bool,
+}
+
 /// The two logs of a session.
 #[derive(Clone, Copy, PartialEq)]
 enum Log {
@@ -227,6 +245,27 @@ impl Log {
         match self {
             Log::Events => "events.jsonl",
             Log::Updates => "updates.jsonl",
+        }
+    }
+}
+
+/// A file of a session's folder that the source reads.
+#[derive(Clone, Copy, PartialEq)]
+enum File {
+    Log(Log),
+    Plan,
+}
+
+impl File {
+    /// In the order they are read: the updates before the events, so a turn
+    /// end has its text, and the plan after them, against the turn as the
+    /// events leave it.
+    const ALL: [File; 3] = [File::Log(Log::Updates), File::Log(Log::Events), File::Plan];
+
+    fn name(self) -> &'static str {
+        match self {
+            File::Log(log) => log.name(),
+            File::Plan => "plan_mode.json",
         }
     }
 }
@@ -254,6 +293,8 @@ struct Session {
     turn: Option<TurnKey>,
     /// Whether an ask_user_question waits on the user.
     question: bool,
+    /// Whether a plan waits on the user's approval.
+    plan: bool,
     /// The subagents spawned and not finished.
     children: HashSet<String>,
     /// The last thing the agent wrote since the latest prompt.
@@ -348,7 +389,7 @@ impl Grok {
 
     /// Starts following the session a row names, if its process runs, and
     /// reads what that process has written of it so far, saying which of
-    /// its logs it could not read.
+    /// its files it could not read.
     fn start(&mut self, k: &dyn Kernel, row: &Row, out: &mut Vec<Observation>) -> Vec<Unread> {
         let liveness = Liveness::Process {
             pid: row.pid,
@@ -381,17 +422,15 @@ impl Grok {
                 open: None,
                 turn: None,
                 question: false,
+                plan: false,
                 children: HashSet::new(),
                 text: String::new(),
                 told: Told::default(),
             },
         );
-        // The updates first, so a turn end in the events has its text.
-        let updates = self.read(&id, Log::Updates, out);
-        let events = self.read(&id, Log::Events, out);
-        [updates, events]
+        File::ALL
             .into_iter()
-            .filter_map(Result::err)
+            .filter_map(|file| self.read(&id, file, out).err())
             .collect()
     }
 
@@ -405,25 +444,32 @@ impl Grok {
             .find(|dir| dir.is_dir())
     }
 
-    /// The session and log a path is, if it is one. A subagent's folder is a
-    /// sibling of its parent's, under an id no row names, so it is never read.
-    fn log_of(&self, path: &Path) -> Option<(String, Log)> {
+    /// The session and file a path is, if it is one. A subagent's folder is
+    /// a sibling of its parent's, under an id no row names, so it is never
+    /// read.
+    fn file_of(&self, path: &Path) -> Option<(String, File)> {
         let relative = path.strip_prefix(&self.sessions_dir).ok()?;
         let parts: Vec<&str> = relative.iter().filter_map(|part| part.to_str()).collect();
         let [_, id, name] = parts[..] else {
             return None;
         };
-        let log = [Log::Events, Log::Updates]
-            .into_iter()
-            .find(|log| log.name() == name)?;
-        Some((id.to_owned(), log))
+        let file = File::ALL.into_iter().find(|file| file.name() == name)?;
+        Some((id.to_owned(), file))
+    }
+
+    /// Reads what changed in one of a session's files. A file that cannot be
+    /// read is read again at its next change.
+    fn read(&mut self, id: &str, file: File, out: &mut Vec<Observation>) -> Result<(), Unread> {
+        match file {
+            File::Log(log) => self.tail(id, log, out),
+            File::Plan => self.plan(id, out),
+        }
     }
 
     /// Reads what was appended to one of a session's logs. A log read for
     /// the first time is read back to where the session's last turn began,
-    /// counting only what its own process wrote. A log that cannot be read
-    /// is read again at its next change.
-    fn read(&mut self, id: &str, log: Log, out: &mut Vec<Observation>) -> Result<(), Unread> {
+    /// counting only what its own process wrote.
+    fn tail(&mut self, id: &str, log: Log, out: &mut Vec<Observation>) -> Result<(), Unread> {
         let Some(session) = self.sessions.get_mut(id) else {
             return Ok(());
         };
@@ -436,9 +482,10 @@ impl Grok {
         let lines = match &mut reader.tail {
             None => {
                 let anchors = |line: &[u8]| match log {
-                    Log::Events => Record::read(line).is_some_and(|record| {
-                        record.kind == "turn_started" || record.before(start)
-                    }),
+                    Log::Events => {
+                        Record::starts_turn(line)
+                            || Record::read(line).is_some_and(|record| record.before(start))
+                    }
                     Log::Updates => Update::read(line)
                         .is_some_and(|update| update.is_prompt() || update.before(start)),
                 };
@@ -482,6 +529,42 @@ impl Grok {
         Ok(())
     }
 
+    /// Reads whether a plan waits on the user's approval, which counts only
+    /// while a turn is open: the events are read first, so the turn is known
+    /// as it stands whatever order the changes came in.
+    fn plan(&mut self, id: &str, out: &mut Vec<Observation>) -> Result<(), Unread> {
+        // What cannot be read now is read at its next change.
+        let _ = self.tail(id, Log::Events, out);
+        let Some(session) = self.sessions.get_mut(id) else {
+            return Ok(());
+        };
+        let Some(dir) = &session.dir else {
+            return Ok(());
+        };
+        let path = dir.join(File::Plan.name());
+        let awaiting = match fs::read(&path) {
+            Ok(bytes) => {
+                let plan: PlanMode =
+                    serde_json::from_slice(&bytes).map_err(|error| Unread::new(&path, error))?;
+                plan.awaiting_plan_approval
+            }
+            // Never in plan mode.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(Unread::new(&path, error)),
+        };
+        let waits = awaiting && session.open.is_some();
+        if waits != session.plan {
+            session.plan = waits;
+            let signal = if waits {
+                Signal::PermissionAsked
+            } else {
+                Signal::Answered
+            };
+            tell(id, session, [signal], out);
+        }
+        Ok(())
+    }
+
     /// What one events record says.
     fn event(&mut self, id: &str, line: &[u8], out: &mut Vec<Observation>) {
         let Some(record) = Record::read(line) else {
@@ -497,6 +580,7 @@ impl Grok {
                 session.open = record.turn_number;
                 session.turn = record.turn_number.map(|n| TurnKey(n.to_string()));
                 session.question = false;
+                session.plan = false;
                 tell(id, session, [Signal::Prompted], out);
             }
             _ if session.open.is_none() => {}
@@ -518,7 +602,7 @@ impl Grok {
     fn end(&mut self, id: &str, record: &Record, out: &mut Vec<Observation>) {
         loop {
             // What cannot be read now is read at its next change.
-            let _ = self.read(id, Log::Updates, out);
+            let _ = self.tail(id, Log::Updates, out);
             if !self.sessions[id].updates.behind {
                 break;
             }
@@ -526,6 +610,7 @@ impl Grok {
         let session = self.sessions.get_mut(id).expect("tracked");
         session.open = None;
         session.question = false;
+        session.plan = false;
         let mut end = BTreeSet::from([Signal::TurnEnded]);
         match record.outcome.as_deref() {
             Some("completed") if ends_on_question(&session.text) => {
@@ -555,19 +640,16 @@ impl Grok {
             return;
         }
         let change = update.params.update;
-        let text = || {
-            let text = change
-                .content
-                .as_ref()
-                .and_then(|content| content.get("text"));
-            text.and_then(Value::as_str).unwrap_or_default().to_owned()
-        };
         match change.kind.as_str() {
             "user_message_chunk" => session.text.clear(),
-            "agent_message_chunk" => session.text = text(),
-            "subagent_spawned" => {
-                session.children.extend(change.child_session_id.clone());
+            "agent_message_chunk" => {
+                let text = change
+                    .content
+                    .as_ref()
+                    .and_then(|content| content.get("text"));
+                session.text = text.and_then(Value::as_str).unwrap_or_default().to_owned();
             }
+            "subagent_spawned" => session.children.extend(change.child_session_id),
             "subagent_finished" => {
                 if let Some(child) = &change.child_session_id {
                     session.children.remove(child);
@@ -649,17 +731,17 @@ impl Source for Grok {
         } else {
             Vec::new()
         };
-        let logs: Vec<(String, Log)> = match paths {
-            Some(paths) => paths.iter().filter_map(|path| self.log_of(path)).collect(),
+        let files: Vec<(String, File)> = match paths {
+            Some(paths) => paths.iter().filter_map(|path| self.file_of(path)).collect(),
             None => {
                 let mut ids: Vec<&String> = self.sessions.keys().collect();
                 ids.sort();
                 ids.into_iter()
-                    .flat_map(|id| [(id.clone(), Log::Updates), (id.clone(), Log::Events)])
+                    .flat_map(|id| File::ALL.map(|file| (id.clone(), file)))
                     .collect()
             }
         };
-        for (id, log) in logs {
+        for (id, file) in files {
             let found = match self.sessions.get(&id) {
                 Some(session) if session.dir.is_none() => self.find(&id),
                 _ => None,
@@ -668,7 +750,7 @@ impl Source for Grok {
                 self.sessions.get_mut(&id).expect("tracked").dir = Some(dir);
             }
             // Read again at its next change.
-            let _ = self.read(&id, log, &mut out);
+            let _ = self.read(&id, file, &mut out);
         }
         for id in gone {
             self.sessions.remove(&id);
@@ -785,6 +867,35 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_awaiting_approval_blocks_until_the_user_decides() {
+        let replay = replay("permission_asked.file");
+        let told = told(&replay);
+        let asked = told
+            .iter()
+            .position(|signals| signals.contains(&Signal::PermissionAsked))
+            .expect("the plan card is told");
+        assert_eq!(told[asked + 1], BTreeSet::from([Signal::Answered]));
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn a_plan_sent_back_and_shown_again_blocks_again() {
+        let replay = replay("a_plan_sent_back_and_shown_again_blocks_again");
+        let asked = told(&replay)
+            .iter()
+            .filter(|signals| signals.contains(&Signal::PermissionAsked))
+            .count();
+        assert_eq!(asked, 2);
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn a_turn_that_ends_on_an_api_error_fails() {
+        let replay = replay("turn_failed.file");
+        assert_eq!(phase(&replay), Phase::Failed);
+    }
+
+    #[test]
     fn a_subagent_finished_inside_its_turn_leaves_it_working() {
         let replay = replay("a_subagent_finished_inside_its_turn_leaves_it_working");
         let (finished, step) = replay
@@ -813,12 +924,6 @@ mod tests {
         let replay = replay("quit_mid_turn_ends_the_session");
         assert!(replay.phases().is_empty());
         assert_eq!(told(&replay).last(), Some(&BTreeSet::from([Signal::Ended])));
-    }
-
-    #[test]
-    fn a_turn_that_ends_on_an_api_error_fails() {
-        let replay = replay("turn_failed.file");
-        assert_eq!(phase(&replay), Phase::Failed);
     }
 
     #[test]

@@ -56,14 +56,15 @@ A thread whose `session_meta` names a subagent, by its `source` or its `thread_s
 
 ## Grok
 
-`~/.grok/active_sessions.json` lists each running Grok session with its process's pid and the microsecond that process started. Each session keeps a folder, `~/.grok/sessions/<cwd folder>/<session>/`, with two logs: `events.jsonl` says when a turn starts, waits and ends, and `updates.jsonl` holds what the agent wrote and the subagents it started. The daemon reads all three as they change. The events decide every move; the updates are read to their end when a turn ends, for its last message and the subagents still running. No hook is registered, and an install removes the `~/.grok/hooks/agent-leds.json` an older version wrote.
+`~/.grok/active_sessions.json` lists each running Grok session with its process's pid and the microsecond that process started. Each session keeps a folder, `~/.grok/sessions/<cwd folder>/<session>/`, with two logs and a state file: `events.jsonl` says when a turn starts, waits and ends, `updates.jsonl` holds what the agent wrote and the subagents it started, and `plan_mode.json`, replaced whole at each change, says whether a plan waits on the user's approval. The daemon reads them all as they change. The events decide every move; the updates are read to their end when a turn ends, for its last message and the subagents still running. No hook is registered, and an install removes the `~/.grok/hooks/agent-leds.json` an older version wrote.
 
 | What Grok writes | Session becomes |
 | --- | --- |
 | A row in `active_sessions.json` whose process runs | tracked |
 | `turn_started` in the events, typed or after a background subagent finishes | working |
 | `tool_started` for `ask_user_question` | question |
-| `tool_completed` for `ask_user_question` | working |
+| `awaiting_plan_approval` true in `plan_mode.json` during a turn, as `exit_plan_mode` shows its plan card | question |
+| `tool_completed` for `ask_user_question`, or `awaiting_plan_approval` false again during the turn | working |
 | `turn_ended` completed, whose last message's last line ends in a question mark | question, as a weak signal |
 | `turn_ended` while the updates hold a subagent spawned and not finished | working, in the background |
 | `turn_ended` with outcome `error`, as an API error ends the turn | error |
@@ -73,11 +74,13 @@ A thread whose `session_meta` names a subagent, by its `source` or its `thread_s
 
 A row left by a process that was killed stays in the registry until another session starts, so a row counts only while its pid runs with the start it records. A subagent runs in a session folder of its own, beside its parent's, under an id the registry never lists, so it is never followed; the parent shows its work. The files are undocumented; the fixtures in `tests/fixtures/grok/`, recorded from Grok 1.0.77, pin what the daemon expects of them. The gaps:
 
-- A wait for the user's approval shows as working. Every tool, read-only ones too, writes a permission request and then its answer, and a request Grok approves by itself looks the same as one that waits on the user until the answer comes: the answer comes within 7 ms, or after the user has decided. Telling them apart by how long the answer takes would be a guess.
+- A wait for a tool's approval shows as working. Every tool, read-only ones too, writes a permission request and then its answer, and a request Grok approves by itself looks the same as one that waits on the user until the answer comes: the answer comes within 7 ms, or after the user has decided. Telling them apart by how long the answer takes would be a guess. `enter_plan_mode` was approved by itself even in the default permission mode.
+- A plan approval counts only while its turn is open. A message typed at the plan card answers it, and the agent may show the plan again, which blocks again. Ctrl-C did nothing at the card, so what a cancel there leaves in `plan_mode.json` is unknown.
+- No diff review card was seen: in the default permission mode, after a plan was approved, file writes were approved by themselves.
 - A turn that fails is known from its `turn_ended`, written before Grok runs its `StopFailure` hooks. That was seen for a 400; whether a refusal or a `max_output_tokens` end writes outcome `error` is unverified. A request that cannot connect retries without end and never ends the turn, so the session stays green.
 - A run with `grok -p` gets no row, so it is not shown.
 - A subagent that finishes after its parent's turn without waking it should show the session as stopped. That was never seen: the one that finished after its turn woke its parent, which started a turn, and the ones that did not wake it finished inside the turn.
-- Plan approval, the leader process (`use_leader`) and several windows on one session have not been tried.
+- The leader process (`use_leader`) and several windows on one session have not been tried.
 
 ## Cursor
 
