@@ -51,12 +51,12 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::PermissionAsked,
-        "the session file going to status waiting, for anything but input needed",
+        "the session file going to status waiting, for anything but input needed; or a prompt read while the session file says so",
         "probe-claude cc1, cc4, cc10",
     ),
     file(
         Signal::QuestionAsked,
-        "the session file going to status waiting for input needed",
+        "the session file going to status waiting for input needed; or a prompt read while the session file says so",
         "probe-claude cc2, cc9",
     ),
     file(
@@ -66,7 +66,7 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::TurnEnded,
-        "an end_turn record with text, or a tool result marked claude/endTurn, while the session file is idle; or waiting to idle after the turn closed while waiting",
+        "an end_turn record with text, or a tool result marked claude/endTurn; or waiting to idle after the turn closed while waiting",
         "probe-claude cc1, cc4; desktop transcripts 2.1.299–2.1.321",
     ),
     file(
@@ -86,7 +86,7 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Backgrounded,
-        "an end_turn record while the session file stays busy with delegated work, or waiting to busy after the turn closed",
+        "an end_turn record while the session file is busy with delegated work, or waiting to busy after the turn closed",
         "probe-claude cc3, cc4, cc5",
     ),
     file(
@@ -303,9 +303,9 @@ struct Session {
     /// Whether a turn started and has not ended.
     open: bool,
     turn: Option<TurnKey>,
-    /// The end of a turn that closed while the process waited on the user,
+    /// How a turn that closed while the process waited on the user ended,
     /// told once the wait is over.
-    closed_waiting: Option<Signal>,
+    closed_waiting: Option<BTreeSet<Signal>>,
     /// Whether the last turn ended with delegated work still running.
     background: bool,
     told: Told,
@@ -599,7 +599,8 @@ impl Claude {
         }
         // The model writing after its turn closed goes on with that turn, as
         // after a Stop hook that blocks or a compaction: what ends it is
-        // still to come.
+        // still to come. That is told before what the record itself says,
+        // which can be the end.
         let goes_on = !session.open && record.is_model();
         if record.is_prompt() || goes_on {
             session.open = true;
@@ -609,45 +610,48 @@ impl Claude {
             session.closed_waiting = None;
             session.background = false;
             // A prompt written after the session file said it waits, as a
-            // permission asked at once is, is still waiting.
-            let signal = match session.status {
-                Status::Waiting(wait) => wait,
-                _ => Signal::Prompted,
-            };
-            tell(id, session, signal, out);
+            // permission asked at once is, is told with the wait.
+            let mut started = BTreeSet::from([Signal::Prompted]);
+            if let Status::Waiting(wait) = session.status {
+                started.insert(wait);
+            }
+            tell(id, session, started, out);
         }
         // A turn whose start was not read is named by its other records.
         if session.open && session.turn.is_none() {
             session.turn = record.prompt_id.clone().map(TurnKey);
         }
+        // Only a turn that is open ends.
+        if !session.open {
+            return;
+        }
+        let mut end = BTreeSet::new();
         if record.is_interrupt() {
-            if session.open {
-                session.open = false;
-                tell(id, session, Signal::Interrupted, out);
+            end.insert(Signal::Interrupted);
+        }
+        if record.is_error() {
+            end.insert(Signal::TurnFailed);
+        }
+        if let Some(text) = record.end() {
+            end.insert(Signal::TurnEnded);
+            if ends_on_question(text) {
+                end.insert(Signal::TurnEndedAsking);
             }
-        } else if record.is_error() {
-            if session.open {
-                session.open = false;
-                tell(id, session, Signal::TurnFailed, out);
+            // Work the turn delegated runs on.
+            if session.status == Status::Busy {
+                end.insert(Signal::Backgrounded);
             }
-        } else if let Some(text) = record.end()
-            && session.open
-        {
-            session.open = false;
-            let end = if ends_on_question(text) {
-                Signal::TurnEndedAsking
-            } else {
-                Signal::TurnEnded
-            };
-            match session.status {
-                // A subagent's request holds the session up after its turn.
-                Status::Waiting(_) => session.closed_waiting = Some(end),
-                Status::Busy if end == Signal::TurnEnded => {
-                    session.background = true;
-                    tell(id, session, Signal::Backgrounded, out);
-                }
-                _ => tell(id, session, end, out),
-            }
+        }
+        if end.is_empty() {
+            return;
+        }
+        session.open = false;
+        session.background = end.contains(&Signal::Backgrounded);
+        match session.status {
+            // A subagent's request holds the session up after its turn: how
+            // the turn ended is told once the wait is over.
+            Status::Waiting(_) => session.closed_waiting = Some(end),
+            _ => tell(id, session, end, out),
         }
     }
 
@@ -669,7 +673,7 @@ impl Claude {
         let work = |record: &Record| record.is_model() || record.is_tool_result();
         if !records.iter().any(anchors) && records.iter().any(work) {
             session.open = true;
-            tell(id, session, Signal::Prompted, &mut history);
+            tell(id, session, [Signal::Prompted], &mut history);
         }
         for record in &records {
             self.record(id, record, &mut history);
@@ -684,24 +688,28 @@ impl Claude {
             return;
         };
         match (from, to) {
-            (_, Status::Waiting(wait)) if from != to => tell(id, session, wait, out),
+            (_, Status::Waiting(wait)) if from != to => tell(id, session, [wait], out),
             (Status::Waiting(_), Status::Busy) if session.open => {
-                tell(id, session, Signal::Answered, out)
+                tell(id, session, [Signal::Answered], out)
             }
             // Denied or dismissed: the turn's end, an interrupt, follows.
             (Status::Waiting(_), Status::Idle | Status::Starting) if session.open => {
-                tell(id, session, Signal::Answered, out)
+                tell(id, session, [Signal::Answered], out)
             }
-            // A subagent was let go on after the turn ended.
+            // A subagent was let go on after the turn ended: the wait is
+            // over, then how the turn ended is told, with the work going on.
             (Status::Waiting(_), Status::Busy) => {
-                session.closed_waiting = None;
+                let mut end = session.closed_waiting.take().unwrap_or_default();
+                end.insert(Signal::Backgrounded);
                 session.background = true;
-                tell(id, session, Signal::Answered, out);
-                tell(id, session, Signal::Backgrounded, out);
+                tell(id, session, [Signal::Answered], out);
+                tell(id, session, end, out);
             }
             (Status::Waiting(_), Status::Idle | Status::Starting) if !session.open => {
                 let end = session.closed_waiting.take();
-                let end = end.or(session.background.then_some(Signal::TurnEnded));
+                let end = end.or(session
+                    .background
+                    .then(|| BTreeSet::from([Signal::TurnEnded])));
                 session.background = false;
                 if let Some(end) = end {
                     tell(id, session, end, out);
@@ -711,7 +719,7 @@ impl Claude {
                 if !session.open && session.background =>
             {
                 session.background = false;
-                tell(id, session, Signal::BackgroundDone, out);
+                tell(id, session, [Signal::BackgroundDone], out);
             }
             _ => {}
         }
@@ -747,8 +755,14 @@ fn observation(id: &str, event: Event, turn: Option<TurnKey>) -> Observation {
     }
 }
 
-fn tell(id: &str, session: &mut Session, signal: Signal, out: &mut Vec<Observation>) {
-    let signals = BTreeSet::from([signal]);
+/// Tells what one record or one change of the session file says.
+fn tell(
+    id: &str,
+    session: &mut Session,
+    signals: impl IntoIterator<Item = Signal>,
+    out: &mut Vec<Observation>,
+) {
+    let signals: BTreeSet<Signal> = signals.into_iter().collect();
     session.told.tell(&signals);
     out.push(observation(
         id,

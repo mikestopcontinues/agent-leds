@@ -71,14 +71,14 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### PermissionAsked
 
-- Claude Code, file, observed: the session file going to status waiting, for anything but input needed (probe-claude cc1, cc4, cc10)
+- Claude Code, file, observed: the session file going to status waiting, for anything but input needed; or a prompt read while the session file says so (probe-claude cc1, cc4, cc10)
 - Codex, hook, observed: PermissionRequest (0.5.0 hooks, probe-codex runA)
 - Grok, hook, observed: notification of a permission_prompt (0.5.0 hooks, probe-grok runs a–l)
 - OpenCode, hook, observed: permission.asked (0.5.0 plugin, probe-opencode T2–T17)
 
 ### QuestionAsked
 
-- Claude Code, file, observed: the session file going to status waiting for input needed (probe-claude cc2, cc9)
+- Claude Code, file, observed: the session file going to status waiting for input needed; or a prompt read while the session file says so (probe-claude cc2, cc9)
 - Codex, hook, observed: PreToolUse for request_user_input or request_user_input_async (0.5.0 hooks, probe-codex runA)
 - Grok, hook, observed: pre_tool_use for ask_user_question (0.5.0 hooks, probe-grok runs a–l)
 - OpenCode, hook, observed: question.asked (0.5.0 plugin, probe-opencode T2–T17)
@@ -90,7 +90,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### TurnEnded
 
-- Claude Code, file, observed: an end_turn record with text, or a tool result marked claude/endTurn, while the session file is idle; or waiting to idle after the turn closed while waiting (probe-claude cc1, cc4; desktop transcripts 2.1.299–2.1.321)
+- Claude Code, file, observed: an end_turn record with text, or a tool result marked claude/endTurn; or waiting to idle after the turn closed while waiting (probe-claude cc1, cc4; desktop transcripts 2.1.299–2.1.321)
 - Codex, hook, observed: Stop (0.5.0 hooks, probe-codex runA)
 - Grok, hook, observed: stop with reason end_turn, or stop_cancelled that Grok gave up on itself (0.5.0 hooks, probe-grok runs a–l)
 - Cursor, hook, observed: stop with status completed (0.5.0 hooks, probe-cursor runs A–I)
@@ -127,7 +127,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### Backgrounded
 
-- Claude Code, file, observed: an end_turn record while the session file stays busy with delegated work, or waiting to busy after the turn closed (probe-claude cc3, cc4, cc5)
+- Claude Code, file, observed: an end_turn record while the session file is busy with delegated work, or waiting to busy after the turn closed (probe-claude cc3, cc4, cc5)
 - Codex, hook, inferred: any hook a subagent sends, with agent_id; Codex runs none for its subagents (0.5.0 hooks)
 - OpenCode, hook, observed: any event of a subagent's session, put to its parent (0.5.0 plugin, probe-opencode T2–T17)
 
