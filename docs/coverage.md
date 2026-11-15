@@ -52,7 +52,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 | [Backgrounded](#backgrounded) | file | file | file | — | — | file | — |
 | [BackgroundDone](#backgrounddone) | file | file | file* | — | — | — | — |
 | [Ended](#ended) | file | file | file | file+hook | file* | file+hook | hook |
-| [Looked](#looked) | daemon | — | — | — | — | file | — |
+| [Looked](#looked) | daemon | file* | — | — | — | file | — |
 
 ### Started
 
@@ -192,6 +192,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 ### Looked
 
 - Claude Code, daemon, observed: the desktop app's file for the session, ~/Library/Application Support/Claude/claude-code-sessions/*.json, with a lastFocusedAt since the light took its state; or the session it names opened last while the app is in front and the keyboard or pointer was used in the last five seconds; not for a session run in a terminal, which the desktop app keeps no file for (the desktop app's session files, as desktop.rs reads them; a desktop session's file, 2026-11-15 (looked.daemon.json))
+- Codex, file, inferred: a thread's id leaving a list under electron-thread-read-state-v1's unreadByIdentity in .codex-global-state.json, which the desktop app keeps by account and host, while the list stays; the file read whole, unchanged across the read; not for a thread the desktop app does not show, as one a terminal runs (the desktop app's bundle (app.asar, 2026-10-16) and the global state it left on 2026-10-18; no change seen)
 - OpenCode, file, observed: 2.x: the session seen idle since it last went idle, as the terminal interface writes once it shows the session while its terminal has focus; not for a 1.x session, whose rows record no viewing, or a 2.x session no terminal interface shows, as one `opencode run` or another client runs through the service (gaps oc8 (2.3.0 session.viewed))
 
 ## Moves each harness cannot make
@@ -243,8 +244,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 **Looked**: looking at a session never marks it read.
 
 - Claude Code, for a session run in a terminal, which the desktop app keeps no file for
-- Codex: Stopped → StoppedRead
-- Codex: Asked → AskedRead
+- Codex, for a thread the desktop app does not show, as one a terminal runs
 - Grok: Stopped → StoppedRead
 - Grok: Asked → AskedRead
 - Cursor: Stopped → StoppedRead
@@ -260,7 +260,6 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 Searched from `Gone` over the signals a harness declares and those the daemon tells of every session.
 
 - Claude Code: Unattended
-- Codex: AskedRead, StoppedRead
 - Grok: Unattended, AskedRead, StoppedRead
 - Cursor: Unattended, Background, Blocked, AskedRead, StoppedRead
 - Junie: Unattended, Background, AskedRead, StoppedRead
@@ -273,8 +272,8 @@ Phases with a light that a harness reaches but leaves only when its process ends
 
 - Claude Code, Asked: never read, for a session run in a terminal, which the desktop app keeps no file for
 - Claude Code, Stopped: never read, for a session run in a terminal, which the desktop app keeps no file for
-- Codex, Asked: never read
-- Codex, Stopped: never read
+- Codex, Asked: never read, for a thread the desktop app does not show, as one a terminal runs
+- Codex, Stopped: never read, for a thread the desktop app does not show, as one a terminal runs
 - Grok, Asked: never read
 - Grok, Stopped: never read
 - Cursor, Asked: never read

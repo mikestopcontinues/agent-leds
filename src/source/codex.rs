@@ -9,13 +9,14 @@
 //! goal by itself or the goal waits on the user, and `queue_1.sqlite`,
 //! whether a prompt the user queued starts next. A turn nobody typed, an
 //! automation's heartbeat or a message from another thread, ends quietly
-//! unless it has something for the user.
+//! unless it has something for the user. The desktop app's global state
+//! says which threads its sidebar shows unread, and so when the user looked.
 //!
 //! The files are undocumented. What they say at each moment of a session
 //! was taken from Codex 0.153.2, and the desktop app's rollouts and
 //! databases up to 0.162.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read};
 use std::mem;
@@ -130,6 +131,14 @@ pub const SIGNALS: &[Declared] = &[
         "the thread's lock deleted, or taken again by another process; or left unlocked, as a killed process leaves it",
         "probe-codex runA, runB (kill -9), runC",
     ),
+    Declared::new(
+        Signal::Looked,
+        Channel::File,
+        Evidence::Inferred,
+        "a thread's id leaving a list under electron-thread-read-state-v1's unreadByIdentity in .codex-global-state.json, which the desktop app keeps by account and host, while the list stays; the file read whole, unchanged across the read",
+        "the desktop app's bundle (app.asar, 2026-10-16) and the global state it left on 2026-10-18; no change seen",
+    )
+    .untold("a thread the desktop app does not show, as one a terminal runs"),
     Declared {
         signal: Signal::PermissionAsked,
         channel: Channel::Hook,
@@ -645,6 +654,49 @@ impl Databases {
     }
 }
 
+/// The threads the desktop app's sidebar shows unread, in each list it
+/// keeps, by account and host.
+type Marks = BTreeMap<(String, String), BTreeSet<String>>;
+
+/// The marks in the desktop app's global state, `.codex-global-state.json`:
+/// `"electron-thread-read-state-v1": {"unreadByIdentity": {<account>:
+/// {<host>: [<thread>, …]}}}`. The app marks a thread unread as a turn that
+/// wants the user ends, and takes the mark off once the thread is shown in
+/// a focused window. None when the file is not all JSON, as half written.
+fn marks(bytes: &[u8]) -> Option<Marks> {
+    #[derive(Deserialize)]
+    struct State {
+        #[serde(rename = "electron-thread-read-state-v1")]
+        read: Option<ReadState>,
+    }
+    #[derive(Deserialize)]
+    struct ReadState {
+        #[serde(rename = "unreadByIdentity", default)]
+        unread: HashMap<String, HashMap<String, Vec<String>>>,
+    }
+    let state: State = serde_json::from_slice(bytes).ok()?;
+    let unread = state.read.map(|read| read.unread).unwrap_or_default();
+    let lists = unread.into_iter().flat_map(|(account, hosts)| {
+        let lists = hosts.into_iter();
+        lists.map(move |(host, ids)| ((account.clone(), host), ids.into_iter().collect()))
+    });
+    Some(lists.collect())
+}
+
+/// The threads whose mark came off between two reads of the marks: those
+/// the user looked at. Only a mark taken off a list that is still there
+/// counts, so a list that goes, as when the user signs in to another
+/// account, marks nothing read; and a mark there all along says nothing,
+/// as the app leaves hundreds of them.
+fn looked(before: &Marks, after: &Marks) -> BTreeSet<String> {
+    let lists = before
+        .iter()
+        .filter_map(|(list, ids)| Some((ids, after.get(list)?)));
+    lists
+        .flat_map(|(before, after)| before.difference(after).cloned())
+        .collect()
+}
+
 /// The write-ahead log of the database at `path`.
 fn wal(path: &Path) -> PathBuf {
     let mut wal = path.as_os_str().to_owned();
@@ -786,6 +838,10 @@ pub struct Codex {
     locks_dir: PathBuf,
     sessions_dir: PathBuf,
     databases: Databases,
+    /// The desktop app's global state, `.codex-global-state.json`.
+    state: PathBuf,
+    /// Its marks as last read, which only a change to counts against.
+    marks: Option<Marks>,
     threads: HashMap<String, Thread>,
     /// Threads that are not the user's, by their rollout, never read again.
     others: HashSet<String>,
@@ -793,12 +849,13 @@ pub struct Codex {
     strange: Strange,
 }
 
-/// What a changed path is to the source: a thread's lock, its rollout, or
-/// the goals.
+/// What a changed path is to the source: a thread's lock, its rollout, the
+/// goals, or the desktop app's global state.
 enum Changed {
     Lock(String),
     Rollout(String, PathBuf),
     Goals,
+    State,
 }
 
 impl Codex {
@@ -808,6 +865,8 @@ impl Codex {
             locks_dir: dir.join("thread-writer-locks"),
             sessions_dir: dir.join("sessions"),
             databases: Databases::new(&dir),
+            state: dir.join(".codex-global-state.json"),
+            marks: None,
             dir,
             threads: HashMap::new(),
             others: HashSet::new(),
@@ -822,6 +881,9 @@ impl Codex {
     fn changed_path(&self, path: &Path) -> Option<Changed> {
         if self.databases.goals_changed(path) {
             return Some(Changed::Goals);
+        }
+        if path == self.state {
+            return Some(Changed::State);
         }
         let name = path.file_name()?.to_str()?;
         if path.parent() == Some(&self.locks_dir) {
@@ -1026,6 +1088,38 @@ impl Codex {
                 });
             }
         }
+    }
+
+    /// The desktop app's marks as they are now: none when it has no global
+    /// state, and None when the file changed while it was read, is half
+    /// written, or cannot be read, which is said.
+    fn read_marks(&self) -> Option<Marks> {
+        match tail::stable(&self.state) {
+            Ok(Some(bytes)) => marks(&bytes),
+            Ok(None) => None,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Some(Marks::new()),
+            Err(error) => {
+                eprintln!("agent-leds: reading {}: {error}", self.state.display());
+                None
+            }
+        }
+    }
+
+    /// Tells that the user looked at each thread followed whose mark the
+    /// desktop app took off since its marks were last read, and keeps them
+    /// to read the next change against. A read that fails keeps the last.
+    fn remark(&mut self, out: &mut Vec<Observation>) {
+        let Some(marks) = self.read_marks() else {
+            return;
+        };
+        if let Some(before) = &self.marks {
+            for id in looked(before, &marks) {
+                if let Some(thread) = self.threads.get_mut(&id) {
+                    tell(&id, thread, Channel::File, [Signal::Looked], out);
+                }
+            }
+        }
+        self.marks = Some(marks);
     }
 
     /// Reads the rollout of a thread `look` started following back from its
@@ -1289,6 +1383,8 @@ impl Source for Codex {
     }
 
     fn seed(&mut self, k: &dyn Kernel, _bound: &[(String, Liveness)]) -> Result<Seed> {
+        // A mark there already says nothing: only one taken off counts.
+        self.marks = self.read_marks();
         let mut seeded = Vec::new();
         let mut unread = Vec::new();
         for id in self.locked_ids() {
@@ -1330,6 +1426,7 @@ impl Source for Codex {
             None => changed.push((id, rollout)),
         };
         let mut goals = paths.is_none();
+        let mut state = paths.is_none();
         match paths {
             Some(paths) => {
                 for path in paths {
@@ -1340,6 +1437,7 @@ impl Source for Codex {
                         Some(Changed::Rollout(id, _)) if self.others.contains(&id) => {}
                         Some(Changed::Rollout(id, path)) => add(id, Some(path)),
                         Some(Changed::Goals) => goals = true,
+                        Some(Changed::State) => state = true,
                         None => {}
                     }
                 }
@@ -1355,9 +1453,13 @@ impl Source for Codex {
         for (id, rollout) in changed {
             self.follow(k, &id, rollout.as_deref(), &mut out);
         }
-        // After the rollouts, whose turn ends read the goals as they are.
+        // After the rollouts, whose turn ends read the goals as they are,
+        // and which a look may come after.
         if goals {
             self.regoal(&mut out);
+        }
+        if state {
+            self.remark(&mut out);
         }
         out
     }
@@ -1450,6 +1552,11 @@ mod tests {
             queue.apply(&o, 0);
         }
         println!("{} running threads", queue.sessions().len());
+        let marked = codex
+            .marks
+            .as_ref()
+            .map(|marks| marks.values().map(BTreeSet::len).sum::<usize>());
+        println!("{marked:?} threads the desktop app marks unread");
         for session in queue.sessions() {
             println!(
                 "{:<36}  {:<11}  {:<20}  turn {}",
@@ -1468,25 +1575,83 @@ mod tests {
         }
     }
 
+    /// The files alone say where each session stands, but for a look: only
+    /// a mark coming off says that, so the files show the light unread, and
+    /// the queue the daemon saved keeps it read.
     #[test]
     fn a_daemon_started_after_any_fixture_seeds_the_phases_it_reached() {
+        let unread = |phase| match phase {
+            Phase::StoppedRead => Phase::Stopped,
+            Phase::AskedRead => Phase::Asked,
+            phase => phase,
+        };
         for name in fixture::names(Harness::Codex) {
             let replay = replay(&name);
-            let where_ = |queue: &crate::queue::Queue| -> Vec<(Key, Phase, Option<TurnKey>)> {
+            let where_ = |queue: &crate::queue::Queue,
+                          read: &dyn Fn(Phase) -> Phase|
+             -> Vec<(Key, Phase, Option<TurnKey>)> {
                 let mut sessions: Vec<_> = queue
                     .sessions()
                     .iter()
-                    .map(|session| (session.key.clone(), session.phase, session.turn.clone()))
+                    .map(|session| {
+                        (
+                            session.key.clone(),
+                            read(session.phase),
+                            session.turn.clone(),
+                        )
+                    })
                     .collect();
                 sessions.sort_by(|a, b| a.0.cmp(&b.0));
                 sessions
             };
             assert_eq!(
-                where_(&fixture::seed(&replay)),
-                where_(&replay.queue),
+                where_(&fixture::seed(&replay), &|phase| phase),
+                where_(&replay.queue, &unread),
+                "{name}"
+            );
+            assert_eq!(
+                where_(&fixture::restart(&replay), &|phase| phase),
+                where_(&replay.queue, &|phase| phase),
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn a_thread_shown_in_the_desktop_app_is_read() {
+        let replay = replay("looked.file");
+        assert_eq!(phase(&replay), Phase::StoppedRead);
+    }
+
+    #[test]
+    fn only_a_mark_taken_off_a_list_still_kept_is_a_look() {
+        let list = |account: &str, host: &str, ids: &[&str]| {
+            let ids = ids.iter().map(|id| id.to_string()).collect();
+            ((account.to_owned(), host.to_owned()), ids)
+        };
+        let before = Marks::from([
+            list("a", "local", &["t", "u"]),
+            list("a", "durable", &["v"]),
+        ]);
+        let after = Marks::from([list("a", "local", &["u", "w"])]);
+        assert_eq!(looked(&before, &after), BTreeSet::from(["t".to_owned()]));
+        // Another account's lists, which a sign-in swaps for these.
+        let other = Marks::from([list("b", "local", &[])]);
+        assert!(looked(&before, &other).is_empty());
+        assert!(looked(&Marks::new(), &after).is_empty());
+    }
+
+    #[test]
+    fn the_marks_are_read_from_the_desktop_apps_global_state() {
+        let state = br#"{"other": {"x": 1}, "electron-thread-read-state-v1": {"version": 1, "unreadByIdentity": {"a": {"local:1": ["t"], "durable:2": []}}, "legacyMigration": {}}}"#;
+        let read = marks(state).unwrap();
+        assert_eq!(read.len(), 2);
+        assert_eq!(
+            read[&("a".to_owned(), "local:1".to_owned())],
+            BTreeSet::from(["t".to_owned()])
+        );
+        assert_eq!(marks(br#"{"other": 1}"#), Some(Marks::new()));
+        assert_eq!(marks(br#"{"electron-thread-read-state-v1": {"#), None);
     }
 
     #[test]
