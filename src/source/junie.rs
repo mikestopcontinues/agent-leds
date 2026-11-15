@@ -375,6 +375,9 @@ pub struct Junie {
     sessions_dir: PathBuf,
     /// Every sidecar read, by its path.
     sidecars: HashMap<PathBuf, Sidecar>,
+    /// The newest startedAt read for each pid, so that an older sidecar
+    /// left after the newest is deleted never takes its process back.
+    newest: HashMap<i32, u64>,
     sessions: HashMap<String, Session>,
     /// What its reads could not make sense of, since it was last asked.
     strange: Strange,
@@ -387,6 +390,7 @@ impl Junie {
             processes_dir: root.join("processes"),
             sessions_dir: root.join("sessions"),
             sidecars: HashMap::new(),
+            newest: HashMap::new(),
             sessions: HashMap::new(),
             strange: Strange::default(),
         }
@@ -436,6 +440,8 @@ impl Junie {
             Ok(bytes) => {
                 let sidecar: Sidecar =
                     serde_json::from_slice(&bytes).map_err(|e| Unread::new(path, e))?;
+                let newest = self.newest.entry(sidecar.pid).or_default();
+                *newest = (*newest).max(sidecar.started_at);
                 self.sidecars.insert(path.to_owned(), sidecar);
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -448,7 +454,8 @@ impl Junie {
 
     /// The session each process runs, by the newest sidecar for its pid,
     /// with that sidecar: the newest of them when several processes name one
-    /// session. Ties go to the greater path, so every read agrees.
+    /// session. Ties go to the greater path, so every read agrees. A pid
+    /// whose newest sidecar is gone runs none.
     fn running(&self) -> Vec<(String, PathBuf, Sidecar)> {
         let newer = |(path, sidecar): (&PathBuf, &Sidecar), than: (&PathBuf, &Sidecar)| {
             (sidecar.started_at, path) > (than.1.started_at, than.0)
@@ -456,6 +463,9 @@ impl Junie {
         let mut owners: HashMap<i32, (&PathBuf, &Sidecar)> = HashMap::new();
         for entry in &self.sidecars {
             let (_, sidecar) = entry;
+            if sidecar.started_at < self.newest[&sidecar.pid] {
+                continue;
+            }
             match owners.get(&sidecar.pid) {
                 Some(&owner) if !newer(entry, owner) => {}
                 _ => {
@@ -1070,6 +1080,30 @@ mod tests {
         let replay = replay("a_newer_sidecar_for_the_pid_ends_the_older_session");
         let ids: Vec<String> = replay.phases().into_keys().map(|key| key.id).collect();
         assert_eq!(ids, ["session-260830-194120-17p0"]);
+    }
+
+    #[test]
+    fn deleting_the_newest_sidecar_for_a_pid_never_brings_an_older_one_back() {
+        let replay = replay("a_newer_sidecar_for_the_pid_ends_the_older_session");
+        let mut source = replay.source();
+        source.seed(&replay.kernel, &[]).unwrap();
+        let newest = replay
+            .home
+            .path()
+            .join(".junie/processes/82188-session-260830-194120-17p0-1a81776c70f7.json");
+        fs::remove_file(&newest).unwrap();
+        let told: Vec<(String, BTreeSet<Signal>)> = source
+            .changed(&replay.kernel, Some(&[newest]))
+            .iter()
+            .map(|o| (o.key.id.clone(), o.event.signals()))
+            .collect();
+        assert_eq!(
+            told,
+            [(
+                "session-260830-194120-17p0".to_owned(),
+                BTreeSet::from([Signal::Ended])
+            )]
+        );
     }
 
     #[test]
