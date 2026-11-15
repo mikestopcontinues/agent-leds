@@ -8,7 +8,7 @@
 //! The files are undocumented. What they say at each moment of a session
 //! was taken from Claude Code 2.1.325 and the desktop app's 2.1.321.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -517,7 +517,7 @@ impl Claude {
         });
         let Some((other, start, liveness)) = other else {
             self.sessions.remove(id);
-            out.push(observation(id, Event::Signal(Signal::Ended), None));
+            out.push(observation(id, Event::one(Signal::Ended), None));
             return;
         };
         // The same session resumed in another process, which goes on with it.
@@ -748,8 +748,13 @@ fn observation(id: &str, event: Event, turn: Option<TurnKey>) -> Observation {
 }
 
 fn tell(id: &str, session: &mut Session, signal: Signal, out: &mut Vec<Observation>) {
-    session.told.tell(signal);
-    out.push(observation(id, Event::Signal(signal), session.turn.clone()));
+    let signals = BTreeSet::from([signal]);
+    session.told.tell(&signals);
+    out.push(observation(
+        id,
+        Event::Signals(signals),
+        session.turn.clone(),
+    ));
 }
 
 impl Source for Claude {
@@ -793,7 +798,7 @@ impl Source for Claude {
             seeded.extend(
                 current
                     .into_iter()
-                    .map(|(signal, _)| observation(&id, Event::Signal(signal), turn.clone())),
+                    .map(|(signal, _)| observation(&id, Event::one(signal), turn.clone())),
             );
         }
         for o in &mut seeded {
@@ -946,12 +951,17 @@ mod tests {
     #[test]
     fn a_busy_write_before_the_pid_file_is_deleted_never_shows_working() {
         let replay = replay("a_busy_write_before_the_pid_file_is_deleted_never_shows_working");
-        let signals: Vec<Signal> = replay
+        let signals: Vec<BTreeSet<Signal>> = replay
             .yielded
             .iter()
-            .map(|(o, _)| o.event.signal())
+            .map(|(o, _)| o.event.signals())
             .collect();
-        assert!(!signals.contains(&Signal::Backgrounded), "{signals:?}");
+        assert!(
+            signals
+                .iter()
+                .all(|told| !told.contains(&Signal::Backgrounded)),
+            "{signals:?}"
+        );
         assert!(replay.phases().is_empty());
     }
 
@@ -987,14 +997,15 @@ mod tests {
     #[test]
     fn a_resumed_transcript_does_not_replay() {
         let replay = replay("a_resumed_transcript_does_not_replay");
-        let signals: Vec<Signal> = replay
+        let signals: Vec<BTreeSet<Signal>> = replay
             .yielded
             .iter()
-            .map(|(o, _)| o.event.signal())
+            .map(|(o, _)| o.event.signals())
             .collect();
         assert_eq!(
             signals,
             [Signal::Started, Signal::Prompted, Signal::TurnEnded]
+                .map(|signal| BTreeSet::from([signal]))
         );
     }
 

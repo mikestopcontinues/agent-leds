@@ -12,6 +12,7 @@ pub mod fixture;
 pub mod interim;
 pub mod tail;
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
@@ -42,15 +43,22 @@ pub struct Observation {
 pub enum Event {
     /// A process of the harness runs the session.
     Started(Start),
-    Signal(Signal),
+    /// What one record says, each signal a fact of its own; the table's
+    /// order decides what they come to.
+    Signals(BTreeSet<Signal>),
 }
 
 impl Event {
-    /// The signal the event stands for in the table.
-    pub fn signal(&self) -> Signal {
+    /// One signal, told alone.
+    pub fn one(signal: Signal) -> Event {
+        Event::Signals(BTreeSet::from([signal]))
+    }
+
+    /// The signals the event stands for in the table.
+    pub fn signals(&self) -> BTreeSet<Signal> {
         match self {
-            Event::Started(_) => Signal::Started,
-            Event::Signal(signal) => *signal,
+            Event::Started(_) => BTreeSet::from([Signal::Started]),
+            Event::Signals(signals) => signals.clone(),
         }
     }
 }
@@ -112,12 +120,13 @@ impl Default for Told {
 }
 
 impl Told {
-    pub fn tell(&mut self, signal: Signal) {
-        if let Some(to) = fsm::next(self.phase, signal) {
-            self.phase = to;
-        }
-        if matches!(signal, Signal::PermissionAsked | Signal::QuestionAsked) {
-            self.wait = signal;
+    pub fn tell(&mut self, signals: &BTreeSet<Signal>) {
+        let Some(rule) = fsm::next(self.phase, signals) else {
+            return;
+        };
+        self.phase = rule.to;
+        if matches!(rule.on, Signal::PermissionAsked | Signal::QuestionAsked) {
+            self.wait = rule.on;
         }
     }
 

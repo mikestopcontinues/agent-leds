@@ -270,13 +270,85 @@ const SHOWN: &[Phase] = &[
     Failed,
 ];
 
-/// Every move a session can make. A pair of phase and signal with no rule
-/// changes nothing.
+/// Every move a session can make, in priority order. One record can tell
+/// several signals, each a fact of its own, and the first row here that
+/// matches the session's phase and one of them is the move. A pair of
+/// phase and signal with no row changes nothing; a row that leaves the
+/// phase as it is holds the session there against the rows after it.
 pub const TABLE: &[Rule] = &[
     Rule {
-        from: &[Gone],
-        on: Started,
+        from: TRACKED,
+        on: Ended,
+        to: Gone,
+    },
+    // A second failure is not news: Failed holds, and is not announced again.
+    Rule {
+        from: TRACKED,
+        on: TurnFailed,
+        to: Failed,
+    },
+    Rule {
+        from: TRACKED,
+        on: Interrupted,
         to: Idle,
+    },
+    Rule {
+        from: TRACKED,
+        on: PermissionAsked,
+        to: Blocked,
+    },
+    Rule {
+        from: TRACKED,
+        on: QuestionAsked,
+        to: Blocked,
+    },
+    Rule {
+        from: &[Blocked],
+        on: Answered,
+        to: Working,
+    },
+    // A question beats work going on in the background.
+    Rule {
+        from: TRACKED,
+        on: TurnEndedAsking,
+        to: Asked,
+    },
+    Rule {
+        from: &[Idle, Working, Background, Stopped, StoppedRead],
+        on: Backgrounded,
+        to: Background,
+    },
+    // A wait on the user, a question or an error beats work going on in
+    // the background, and holds against a turn end told with it.
+    Rule {
+        from: &[Blocked],
+        on: Backgrounded,
+        to: Blocked,
+    },
+    Rule {
+        from: &[Asked],
+        on: Backgrounded,
+        to: Asked,
+    },
+    Rule {
+        from: &[AskedRead],
+        on: Backgrounded,
+        to: AskedRead,
+    },
+    Rule {
+        from: &[Failed],
+        on: Backgrounded,
+        to: Failed,
+    },
+    Rule {
+        from: &[Background],
+        on: BackgroundDone,
+        to: Stopped,
+    },
+    Rule {
+        from: TRACKED,
+        on: TurnEnded,
+        to: Stopped,
     },
     Rule {
         from: &[
@@ -293,84 +365,24 @@ pub const TABLE: &[Rule] = &[
         to: Working,
     },
     Rule {
-        from: &[
-            Idle,
-            Working,
-            Background,
-            Asked,
-            AskedRead,
-            Stopped,
-            StoppedRead,
-            Failed,
-        ],
-        on: PermissionAsked,
-        to: Blocked,
-    },
-    Rule {
-        from: &[
-            Idle,
-            Working,
-            Background,
-            Asked,
-            AskedRead,
-            Stopped,
-            StoppedRead,
-            Failed,
-        ],
-        on: QuestionAsked,
-        to: Blocked,
-    },
-    Rule {
-        from: &[Blocked],
-        on: Answered,
-        to: Working,
-    },
-    Rule {
-        from: TRACKED,
-        on: TurnEnded,
-        to: Stopped,
-    },
-    Rule {
-        from: TRACKED,
-        on: TurnEndedAsking,
-        to: Asked,
-    },
-    // A second failure is not news.
-    Rule {
-        from: &[
-            Idle,
-            Working,
-            Background,
-            Blocked,
-            Asked,
-            AskedRead,
-            Stopped,
-            StoppedRead,
-        ],
-        on: TurnFailed,
-        to: Failed,
+        from: &[Gone],
+        on: Started,
+        to: Idle,
     },
     Rule {
         from: SHOWN,
-        on: Interrupted,
+        on: Dismissed,
         to: Idle,
     },
-    // A wait on the user, a question or an error beats work going on in
-    // the background.
     Rule {
-        from: &[Idle, Working, Stopped, StoppedRead],
-        on: Backgrounded,
-        to: Background,
+        from: SHOWN,
+        on: Abandoned,
+        to: Idle,
     },
     Rule {
-        from: &[Background],
-        on: BackgroundDone,
-        to: Stopped,
-    },
-    Rule {
-        from: TRACKED,
-        on: Ended,
-        to: Gone,
+        from: &[StoppedRead, AskedRead],
+        on: ReadExpired,
+        to: Idle,
     },
     // Reading settles a weak question, never a blocked one.
     Rule {
@@ -383,33 +395,77 @@ pub const TABLE: &[Rule] = &[
         on: Looked,
         to: AskedRead,
     },
-    Rule {
-        from: &[StoppedRead, AskedRead],
-        on: ReadExpired,
-        to: Idle,
-    },
-    Rule {
-        from: SHOWN,
-        on: Abandoned,
-        to: Idle,
-    },
-    Rule {
-        from: SHOWN,
-        on: Dismissed,
-        to: Idle,
-    },
 ];
 
-/// The phase the signal moves to, or None: the signal means nothing here.
-pub fn next(from: Phase, on: Signal) -> Option<Phase> {
-    TABLE
+/// The signals one record can tell together, each family a set of facts
+/// that are true at once of a sound session. Signals told together that
+/// share no family overlap: the table still decides, and the daemon counts
+/// and logs it, since a source told it something it did not expect.
+pub const FAMILIES: &[&[Signal]] = &[
+    // How a turn ended: on a question, with work running on, on an error,
+    // or cut short by the user, all of them an end.
+    &[
+        TurnEnded,
+        TurnEndedAsking,
+        Backgrounded,
+        TurnFailed,
+        Interrupted,
+    ],
+    // A turn held up on the user. Prompted belongs here because a turn can
+    // start already held up: Claude Code writes a prompt after its session
+    // file says it waits when a permission is asked at once, and a hook
+    // that runs a tool that asks says that the turn runs too.
+    &[Prompted, PermissionAsked, QuestionAsked],
+];
+
+/// The move the signals, told together, make from `from`: the first row of
+/// the table that matches. None means they change nothing.
+pub fn next(from: Phase, signals: &BTreeSet<Signal>) -> Option<&'static Rule> {
+    first(TABLE, from, signals)
+}
+
+/// The phase one signal told alone moves to.
+pub fn step(from: Phase, on: Signal) -> Option<Phase> {
+    next(from, &BTreeSet::from([on])).map(|rule| rule.to)
+}
+
+fn first<'a>(table: &'a [Rule], from: Phase, signals: &BTreeSet<Signal>) -> Option<&'a Rule> {
+    table
         .iter()
-        .find(|rule| rule.on == on && rule.from.contains(&from))
-        .map(|rule| rule.to)
+        .find(|rule| signals.contains(&rule.on) && rule.from.contains(&from))
+}
+
+/// Whether the signals, told together to a session in `from`, overlap:
+/// more than one row matches, and one that loses is of no family with the
+/// one that wins.
+pub fn overlaps(from: Phase, signals: &BTreeSet<Signal>) -> bool {
+    let mut matching = TABLE
+        .iter()
+        .filter(|rule| signals.contains(&rule.on) && rule.from.contains(&from));
+    let Some(winner) = matching.next() else {
+        return false;
+    };
+    matching.any(|loser| {
+        !FAMILIES
+            .iter()
+            .any(|family| family.contains(&winner.on) && family.contains(&loser.on))
+    })
+}
+
+/// The signals in the order the table ranks them, each once.
+pub fn priority() -> Vec<Signal> {
+    let mut order = Vec::new();
+    for rule in TABLE {
+        if !order.contains(&rule.on) {
+            order.push(rule.on);
+        }
+    }
+    order
 }
 
 /// Whether the move is news the user should see. A turn that ends again is
-/// news, even to a session that had already stopped.
+/// news, even to a session that had already stopped; a wait or a failure
+/// told again is not.
 pub fn announces(from: Phase, on: Signal, to: Phase) -> bool {
     to.wants_user() && (to != from || matches!(on, TurnEnded | TurnEndedAsking))
 }
@@ -420,8 +476,8 @@ pub fn announces(from: Phase, on: Signal, to: Phase) -> bool {
 pub fn idempotent(on: Signal) -> bool {
     Phase::ALL
         .into_iter()
-        .filter_map(|from| next(from, on))
-        .all(|once| match next(once, on) {
+        .filter_map(|from| step(from, on))
+        .all(|once| match step(once, on) {
             None => true,
             Some(twice) => twice == once && !announces(once, on, twice),
         })
@@ -434,7 +490,7 @@ pub fn reachable(from: Phase, signals: &[Signal]) -> BTreeSet<Phase> {
     let mut queue = VecDeque::from([from]);
     while let Some(phase) = queue.pop_front() {
         for &signal in signals {
-            if let Some(to) = next(phase, signal)
+            if let Some(to) = step(phase, signal)
                 && reached.insert(to)
             {
                 queue.push_back(to);
@@ -452,17 +508,113 @@ mod tests {
         Signal::ALL.into_iter().filter(|s| s.daemon()).collect()
     }
 
+    fn told(signals: &[Signal]) -> BTreeSet<Signal> {
+        signals.iter().copied().collect()
+    }
+
     #[test]
-    fn the_table_is_deterministic() {
-        for from in Phase::ALL {
-            for on in Signal::ALL {
-                let rules = TABLE
+    fn every_row_of_the_table_can_win() {
+        for (index, rule) in TABLE.iter().enumerate() {
+            for &from in rule.from {
+                let earlier = TABLE[..index]
                     .iter()
-                    .filter(|rule| rule.on == on && rule.from.contains(&from))
-                    .count();
-                assert!(rules <= 1, "{rules} rules move {from:?} on {on:?}");
+                    .position(|other| other.on == rule.on && other.from.contains(&from));
+                assert!(
+                    earlier.is_none(),
+                    "row {index} ({:?} from {from:?}) can never win: row {} comes first",
+                    rule.on,
+                    earlier.unwrap_or_default()
+                );
             }
         }
+    }
+
+    #[test]
+    fn the_order_of_the_rows_decides_which_signal_told_together_wins() {
+        const ENDS: Rule = Rule {
+            from: &[Working],
+            on: TurnEnded,
+            to: Stopped,
+        };
+        const GOES_ON: Rule = Rule {
+            from: &[Working],
+            on: Backgrounded,
+            to: Background,
+        };
+        let both = told(&[TurnEnded, Backgrounded]);
+        let to = |table: &[Rule]| first(table, Working, &both).map(|rule| rule.to);
+        assert_eq!(to(&[ENDS, GOES_ON]), Some(Stopped));
+        assert_eq!(to(&[GOES_ON, ENDS]), Some(Background));
+    }
+
+    #[test]
+    fn the_table_ranks_the_signals_in_the_order_it_states() {
+        assert_eq!(
+            priority(),
+            [
+                Ended,
+                TurnFailed,
+                Interrupted,
+                PermissionAsked,
+                QuestionAsked,
+                Answered,
+                TurnEndedAsking,
+                Backgrounded,
+                BackgroundDone,
+                TurnEnded,
+                Prompted,
+                Started,
+                Dismissed,
+                Abandoned,
+                ReadExpired,
+                Looked,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_question_or_an_error_told_with_work_going_on_wins() {
+        let to = |from, signals: &[Signal]| next(from, &told(signals)).map(|rule| rule.to);
+        assert_eq!(to(Working, &[TurnEnded, Backgrounded]), Some(Background));
+        assert_eq!(
+            to(Working, &[TurnEnded, TurnEndedAsking, Backgrounded]),
+            Some(Asked)
+        );
+        assert_eq!(to(Working, &[TurnEnded, TurnFailed]), Some(Failed));
+        assert_eq!(to(Working, &[TurnEnded, Interrupted]), Some(Idle));
+        // A wait already shown holds against a turn end told with work.
+        assert_eq!(to(Blocked, &[TurnEnded, Backgrounded]), Some(Blocked));
+        assert_eq!(to(Asked, &[TurnEnded, Backgrounded]), Some(Asked));
+        // A turn that starts already held up is held up.
+        assert_eq!(to(Idle, &[Prompted, PermissionAsked]), Some(Blocked));
+        assert_eq!(to(Blocked, &[Prompted, QuestionAsked]), Some(Blocked));
+    }
+
+    #[test]
+    fn a_second_failure_told_with_a_turn_end_is_not_news() {
+        let rule = next(Failed, &told(&[TurnEnded, TurnFailed])).unwrap();
+        assert_eq!((rule.on, rule.to), (TurnFailed, Failed));
+        assert!(!announces(Failed, rule.on, rule.to));
+    }
+
+    #[test]
+    fn signals_of_one_family_told_together_do_not_overlap() {
+        assert!(!overlaps(Working, &told(&[TurnEnded, TurnEndedAsking])));
+        assert!(!overlaps(
+            Working,
+            &told(&[TurnEnded, Backgrounded, TurnFailed])
+        ));
+        assert!(!overlaps(Idle, &told(&[Prompted, PermissionAsked])));
+        assert!(!overlaps(Working, &told(&[TurnEnded])));
+    }
+
+    #[test]
+    fn signals_of_different_families_told_together_overlap() {
+        assert!(overlaps(Working, &told(&[TurnEnded, PermissionAsked])));
+        assert!(overlaps(Blocked, &told(&[Answered, PermissionAsked])));
+        assert!(overlaps(Working, &told(&[Ended, Prompted, TurnEnded])));
+        // A signal that matches no row from the phase loses nothing.
+        assert!(!overlaps(Working, &told(&[Prompted, Answered])));
     }
 
     #[test]
@@ -479,17 +631,17 @@ mod tests {
     fn gone_is_left_only_by_started_and_reached_only_by_ended() {
         for on in Signal::ALL {
             let expected = (on == Started).then_some(Idle);
-            assert_eq!(next(Gone, on), expected, "{on:?} from Gone");
+            assert_eq!(step(Gone, on), expected, "{on:?} from Gone");
         }
         for from in Phase::ALL {
             for on in Signal::ALL {
-                if next(from, on) == Some(Gone) {
+                if step(from, on) == Some(Gone) {
                     assert_eq!(on, Ended, "{on:?} from {from:?} reaches Gone");
                 }
             }
         }
         for &from in TRACKED {
-            assert_eq!(next(from, Ended), Some(Gone), "Ended from {from:?}");
+            assert_eq!(step(from, Ended), Some(Gone), "Ended from {from:?}");
         }
     }
 
@@ -556,7 +708,9 @@ mod tests {
 
     #[test]
     fn a_wait_that_is_told_again_is_not_announced_again() {
+        assert_eq!(step(Blocked, PermissionAsked), Some(Blocked));
         assert!(!announces(Blocked, PermissionAsked, Blocked));
+        assert_eq!(step(Failed, TurnFailed), Some(Failed));
         assert!(!announces(Failed, TurnFailed, Failed));
     }
 

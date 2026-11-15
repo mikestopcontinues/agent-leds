@@ -14,7 +14,9 @@
 //!   end a process, and `{"lock": "<path>"}` and `{"unlock": "<path>"}` take
 //!   and drop a lock, for the fake kernel the source and the sweep ask;
 //! - `{"expect": [["<signal>", "<channel>"], ...]}` says what every step
-//!   since the last `expect` yielded, in order, and with `"restart":
+//!   since the last `expect` yielded, in order, one observation each; an
+//!   observation of several signals is `[["<signal>", ...], "<channel>"]`.
+//!   With `"restart":
 //!   "<phase>"` that a daemon started after one of those steps shows that
 //!   phase instead: a moment its files cannot tell from another.
 //!
@@ -23,7 +25,7 @@
 //! yields nothing, a daemon started then shows the phases the observations
 //! reached, and reading the file steps two at a time ends in the same phases.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -103,9 +105,26 @@ enum Step {
         unlock: String,
     },
     Expect {
-        expect: Vec<(Signal, Channel)>,
+        expect: Vec<(Told, Channel)>,
         restart: Option<Phase>,
     },
+}
+
+/// What one observation an `expect` names told: one signal, or several.
+#[derive(Clone, Deserialize)]
+#[serde(untagged)]
+enum Told {
+    One(Signal),
+    Several(BTreeSet<Signal>),
+}
+
+impl Told {
+    fn signals(&self) -> BTreeSet<Signal> {
+        match self {
+            Told::One(signal) => BTreeSet::from([*signal]),
+            Told::Several(signals) => signals.clone(),
+        }
+    }
 }
 
 impl Step {
@@ -246,20 +265,33 @@ impl Replay {
         }
     }
 
-    /// Applies what one step yielded, after checking each is declared.
-    fn take(&mut self, observations: Vec<Observation>, step: usize) -> Vec<(Signal, Channel)> {
+    /// Applies what one step yielded, after checking that every signal is
+    /// declared and that none told together overlap.
+    fn take(
+        &mut self,
+        observations: Vec<Observation>,
+        step: usize,
+    ) -> Vec<(BTreeSet<Signal>, Channel)> {
         let mut took = Vec::new();
         for o in observations {
-            let signal = o.event.signal();
+            let signals = o.event.signals();
+            for &signal in &signals {
+                assert!(
+                    harness::declares(self.harness, signal, o.channel),
+                    "{}: step {step} yielded {signal:?} on {:?}, which {} does not declare",
+                    self.name,
+                    o.channel,
+                    self.harness.title()
+                );
+            }
+            let from = self.queue.phase(&o.key);
             assert!(
-                harness::declares(self.harness, signal, o.channel),
-                "{}: step {step} yielded {signal:?} on {:?}, which {} does not declare",
-                self.name,
-                o.channel,
-                self.harness.title()
+                !fsm::overlaps(from, &signals),
+                "{}: step {step} yielded {signals:?} from {from:?}, which overlap",
+                self.name
             );
             self.queue.apply(&o, step as u64);
-            took.push((signal, o.channel));
+            took.push((signals, o.channel));
             self.yielded.push((o, step));
         }
         took
@@ -296,7 +328,11 @@ pub fn replay(harness: Harness, name: &str) -> Replay {
         let number = index + 1;
         let observations = match step {
             Step::Expect { expect, restart } => {
-                assert_eq!(&since, expect, "{name}: what led to step {number}");
+                let expect: Vec<(BTreeSet<Signal>, Channel)> = expect
+                    .iter()
+                    .map(|(told, channel)| (told.signals(), *channel))
+                    .collect();
+                assert_eq!(since, expect, "{name}: what led to step {number}");
                 for (after, shown) in &differs {
                     assert_eq!(
                         Some(*shown),
@@ -334,7 +370,7 @@ pub fn replay(harness: Harness, name: &str) -> Replay {
         assert!(
             again.is_empty(),
             "{name}: a rescan after step {number} yielded {:?}",
-            again.iter().map(|o| o.event.signal()).collect::<Vec<_>>()
+            again.iter().map(|o| o.event.signals()).collect::<Vec<_>>()
         );
         let restarted = phases(&restart(&replay));
         let live = replay.phases();
@@ -492,11 +528,11 @@ mod tests {
                 );
                 let replay = replay(harness, &name);
                 assert!(
-                    replay
-                        .yielded
-                        .iter()
-                        .any(|(o, _)| o.event.signal() == declared.signal
-                            && o.channel == declared.channel),
+                    replay.yielded.iter().any(|(o, _)| o
+                        .event
+                        .signals()
+                        .contains(&declared.signal)
+                        && o.channel == declared.channel),
                     "{}: {name} never yields what it demonstrates",
                     harness.title()
                 );
@@ -603,7 +639,7 @@ mod tests {
                         events.contains(&event.as_str()),
                         "{}: {name} yields {:?} from {event}, which install does not register",
                         harness.title(),
-                        o.event.signal()
+                        o.event.signals()
                     );
                     heard.insert(event);
                 }

@@ -3,7 +3,7 @@
 //! lights play is the player's call; everything the daemon reads or changes
 //! outside itself goes through a `World`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -20,9 +20,9 @@ use crate::desktop::Desktop;
 use crate::device;
 use crate::eject;
 use crate::files;
-use crate::fsm::{Channel, Signal};
+use crate::fsm::{self, Channel, Signal};
 use crate::harness::{self, Harness};
-use crate::ipc::{self, Request, Status, View};
+use crate::ipc::{self, Overlap, Request, Status, View};
 use crate::liveness::{self, Liveness};
 use crate::player::Player;
 use crate::queue::{Change, Expiry, Queue};
@@ -194,6 +194,9 @@ struct Daemon<W: World> {
     undeclared: u64,
     /// The undeclared kinds already logged, each logged once.
     logged: HashSet<(Harness, Signal, Channel)>,
+    /// How often each harness told each set of signals that overlap, which
+    /// the table resolved by its order. Each set is logged the first time.
+    overlaps: BTreeMap<(Harness, BTreeSet<Signal>), u64>,
 }
 
 /// What wakes the daemon: a request on the socket, files the watcher says
@@ -288,13 +291,11 @@ impl<W: World> Daemon<W> {
             replaced: false,
             undeclared: 0,
             logged: HashSet::new(),
+            overlaps: BTreeMap::new(),
         };
         let seeded = daemon.world.read(Read::Seed(&saved.bound()));
-        let now = daemon.world.now_ms();
         for o in seeded {
-            if daemon.declared(&o) {
-                daemon.queue.apply(&o, now);
-            }
+            daemon.apply(&o);
         }
         daemon.queue = Queue::restore(saved, std::mem::take(&mut daemon.queue));
         daemon
@@ -368,6 +369,15 @@ impl<W: World> Daemon<W> {
                 device: self.world.card(),
                 device_uptime_ms: self.world.uptime_ms().ok(),
                 undeclared: self.undeclared,
+                overlaps: self
+                    .overlaps
+                    .iter()
+                    .map(|((harness, signals), &count)| Overlap {
+                        harness: *harness,
+                        signals: signals.clone(),
+                        count,
+                    })
+                    .collect(),
             })),
             Request::Dismiss { session } => {
                 let dismissed = self.queue.dismissed(session.as_deref());
@@ -411,23 +421,49 @@ impl<W: World> Daemon<W> {
         }
     }
 
-    /// Whether the observation's harness declares it, or the daemon told it.
-    /// One that is not declared is dropped, counted, and logged once per
-    /// kind: a source produced something its harness does not claim.
-    fn declared(&mut self, o: &Observation) -> bool {
-        let (harness, signal) = (o.key.harness, o.event.signal());
-        if o.channel == Channel::Daemon || harness::declares(harness, signal, o.channel) {
-            return true;
+    /// Applies one observation, if its harness declares every signal in
+    /// it. One that is not declared is dropped, counted, and logged once per
+    /// kind: a source produced something its harness does not claim. One
+    /// whose signals overlap is applied as the table's order says, counted,
+    /// and logged once per set: a source told what it should not together,
+    /// as when a harness's format changes.
+    fn apply(&mut self, o: &Observation) -> Change {
+        let harness = o.key.harness;
+        let signals = o.event.signals();
+        if o.channel != Channel::Daemon {
+            let undeclared: Vec<Signal> = signals
+                .iter()
+                .copied()
+                .filter(|&signal| !harness::declares(harness, signal, o.channel))
+                .collect();
+            if !undeclared.is_empty() {
+                self.undeclared += 1;
+                for signal in undeclared {
+                    if self.logged.insert((harness, signal, o.channel)) {
+                        eprintln!(
+                            "agent-leds: {} produced {signal:?} through {:?}, which it does not declare",
+                            harness.title(),
+                            o.channel
+                        );
+                    }
+                }
+                return Change::None;
+            }
         }
-        self.undeclared += 1;
-        if self.logged.insert((harness, signal, o.channel)) {
-            eprintln!(
-                "agent-leds: {} produced {signal:?} through {:?}, which it does not declare",
-                harness.title(),
-                o.channel
-            );
+        let from = self.queue.phase(&o.key);
+        if fsm::overlaps(from, &signals) {
+            let count = self.overlaps.entry((harness, signals.clone())).or_default();
+            if *count == 0 {
+                let winner = fsm::next(from, &signals).expect("an overlap has a winner");
+                eprintln!(
+                    "agent-leds: {} told {signals:?} together, which overlap; from {from:?}, {:?} wins",
+                    harness.title(),
+                    winner.on
+                );
+            }
+            *count += 1;
         }
-        false
+        self.queue.apply(o, self.world.now_ms())
     }
 
     /// Applies a batch of observations, then saves and shows the result
@@ -436,10 +472,7 @@ impl<W: World> Daemon<W> {
         let mut wants: Option<State> = None;
         let (mut save, mut settle) = (false, false);
         for o in observations {
-            if !self.declared(&o) {
-                continue;
-            }
-            match self.queue.apply(&o, self.world.now_ms()) {
+            match self.apply(&o) {
                 Change::None => {}
                 Change::Saved => save = true,
                 Change::Settle => {
@@ -604,6 +637,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::fsm::Phase;
     use crate::liveness::StartCheck;
     use crate::queue::Key;
     use crate::source::{Event, Hook, Start};
@@ -758,7 +792,7 @@ mod tests {
         found.extend(
             signals
                 .iter()
-                .map(|&signal| observation(session, Event::Signal(signal))),
+                .map(|&signal| observation(session, Event::one(signal))),
         );
         daemon.world.reads.push_back(found);
         daemon.take(vec![Input::Files(vec!["/Users/me/.claude".into()])]);
@@ -835,7 +869,7 @@ mod tests {
         let mut world = world();
         let mut seeded = vec![
             started("s1"),
-            observation("s1", Event::Signal(Signal::TurnEnded)),
+            observation("s1", Event::one(Signal::TurnEnded)),
         ];
         for o in &mut seeded {
             o.quiet = true;
@@ -999,11 +1033,102 @@ mod tests {
     }
 
     #[test]
+    fn an_observation_with_one_undeclared_signal_is_dropped_whole() {
+        let mut daemon = daemon();
+        // Cursor declares turn ends through its hook, and no waits.
+        let cursor = |event| Observation {
+            key: Key {
+                harness: Harness::Cursor,
+                id: "c1".into(),
+            },
+            channel: Channel::Hook,
+            event,
+            turn: None,
+            quiet: false,
+        };
+        let mut start = started("c1");
+        start.key.harness = Harness::Cursor;
+        start.channel = Channel::Hook;
+        let told = BTreeSet::from([Signal::TurnEnded, Signal::PermissionAsked]);
+        daemon
+            .world
+            .reads
+            .push_back(vec![start, cursor(Event::Signals(told))]);
+        daemon.take(vec![Input::Rescan]);
+        assert!(states(&daemon).is_empty());
+        assert_eq!(status(&mut daemon).undeclared, 1);
+        assert_eq!(
+            daemon.logged,
+            HashSet::from([(Harness::Cursor, Signal::PermissionAsked, Channel::Hook)])
+        );
+    }
+
+    /// What Claude Code's files say of a session in one batch: that it
+    /// runs, then one record that tells `signals` together.
+    fn tell_together(daemon: &mut Daemon<Fake>, session: &str, signals: &[Signal]) {
+        let told = signals.iter().copied().collect();
+        daemon.world.reads.push_back(vec![
+            started(session),
+            observation(session, Event::one(Signal::Prompted)),
+            observation(session, Event::Signals(told)),
+        ]);
+        daemon.take(vec![Input::Files(vec!["/Users/me/.claude".into()])]);
+    }
+
+    #[test]
+    fn signals_of_one_family_told_together_are_not_counted() {
+        let mut daemon = daemon();
+        tell_together(
+            &mut daemon,
+            "s1",
+            &[
+                Signal::TurnEnded,
+                Signal::TurnEndedAsking,
+                Signal::Backgrounded,
+            ],
+        );
+        assert_eq!(states(&daemon), [State::Question]);
+        assert!(status(&mut daemon).overlaps.is_empty());
+    }
+
+    #[test]
+    fn signals_that_overlap_are_resolved_by_the_table_and_counted_per_set() {
+        let mut daemon = daemon();
+        let overlap = [Signal::TurnEnded, Signal::PermissionAsked];
+        tell_together(&mut daemon, "s1", &overlap);
+        tell_together(&mut daemon, "s22", &overlap);
+        tell_together(
+            &mut daemon,
+            "s333",
+            &[Signal::Interrupted, Signal::QuestionAsked],
+        );
+        // A wait ranks before a turn end, and an interrupt before a wait.
+        assert_eq!(states(&daemon), [State::Question, State::Question]);
+        assert_eq!(daemon.queue.phase(&started("s333").key), Phase::Idle);
+        let set = |signals: &[Signal]| signals.iter().copied().collect::<BTreeSet<_>>();
+        assert_eq!(
+            status(&mut daemon).overlaps,
+            [
+                Overlap {
+                    harness: Harness::Claude,
+                    signals: set(&overlap),
+                    count: 2
+                },
+                Overlap {
+                    harness: Harness::Claude,
+                    signals: set(&[Signal::Interrupted, Signal::QuestionAsked]),
+                    count: 1
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn files_are_read_before_a_request_in_the_same_drain() {
         let mut daemon = daemon();
         daemon.world.reads.push_back(vec![
             started("s1"),
-            observation("s1", Event::Signal(Signal::Prompted)),
+            observation("s1", Event::one(Signal::Prompted)),
         ]);
         let (reply, replied) = mpsc::channel();
         daemon.take(vec![
@@ -1042,7 +1167,7 @@ mod tests {
         let mut daemon = daemon();
         daemon.world.reads.push_back(vec![
             started("s1"),
-            observation("s1", Event::Signal(Signal::TurnEnded)),
+            observation("s1", Event::one(Signal::TurnEnded)),
         ]);
         let hook = Hook {
             harness: Harness::Claude,

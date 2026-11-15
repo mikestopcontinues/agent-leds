@@ -2,7 +2,7 @@
 
 ## Outcome and acceptance
 
-Today the daemon learns what each session is doing from hooks, and fills the gaps hooks leave with two timers: a working session silent for 30 minutes is dropped, and a Claude Code session whose process has been idle for 5 seconds counts as interrupted. The change makes each harness's own files the primary source for all seven harnesses, keeps a hook only for a moment no file records, and drops both timers. Session state lives in one explicit finite state machine whose transition table is data.
+Today the daemon learns what each session is doing from hooks, and fills the gaps hooks leave with two timers: a working session silent for 30 minutes is dropped, and a Claude Code session whose process has been idle for 5 seconds counts as interrupted. The change makes each harness's own files the primary source for all seven harnesses, keeps a hook only for a moment no file records, and drops both timers. Session state lives in one explicit finite state machine whose transition table is data, its rows in priority order: a source reports each fact a record establishes, and the first row that matches one of them decides. Facts told together that share no declared family overlap; they are resolved the same way, counted in `status` and reported by `doctor`.
 
 It is done when:
 
@@ -39,7 +39,7 @@ What each harness's files record was established with real sessions on 2026-11-1
 
 ## Verification
 
-- Unit tests over the table (deterministic, complete, `Gone` left only by a start), the queue, the readers and each source's fixtures, including a rescan after every step yielding nothing and a seed giving the same phase as replaying the records.
+- Unit tests over the table (every row can win, its order decides, complete, `Gone` left only by a start), the queue, the readers and each source's fixtures, including a rescan after every step yielding nothing and a seed giving the same phase as replaying the records.
 - One real FSEvents test, since CI runs on macOS.
 - Real sessions per harness after install, watching `agent-leds status` through prompt, approval, question, end, error, interrupt, quit and kill.
 - Harness configs diffed before and after install and uninstall.

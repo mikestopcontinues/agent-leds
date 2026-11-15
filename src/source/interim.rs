@@ -133,7 +133,7 @@ impl Source for Interim {
         {
             out.push(observation(Event::Started(Start { cwd, liveness })));
         }
-        out.push(observation(Event::Signal(signal)));
+        out.push(observation(Event::one(signal)));
         out
     }
 

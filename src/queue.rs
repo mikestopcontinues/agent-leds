@@ -84,7 +84,6 @@ pub struct Expiry {
 impl Queue {
     /// Moves a session by the table. The only place phases change.
     pub fn apply(&mut self, o: &Observation, now: u64) -> Change {
-        let signal = o.event.signal();
         let position = self.sessions.iter().position(|s| s.key == o.key);
         if let (Event::Started(start), Some(index)) = (&o.event, position) {
             // A resume in a new process, or a folder learned later.
@@ -116,10 +115,15 @@ impl Queue {
                 session.turn = o.turn.clone();
             }
         }
-        let Some(to) = fsm::next(from, signal) else {
+        let Some(rule) = fsm::next(from, &o.event.signals()) else {
             return Change::None;
         };
-        let announce = fsm::announces(from, signal, to);
+        let to = rule.to;
+        let announce = fsm::announces(from, rule.on, to);
+        // A row that holds the phase changes nothing.
+        if to == from && !announce {
+            return Change::None;
+        }
         let light = to.state() != from.state();
         match (position, &o.event) {
             (None, Event::Started(start)) => self.sessions.push(Session {
@@ -133,7 +137,7 @@ impl Queue {
                 liveness: start.liveness.clone(),
                 bound: o.channel,
             }),
-            (None, Event::Signal(_)) => unreachable!("only Started leaves Gone"),
+            (None, Event::Signals(_)) => unreachable!("only Started leaves Gone"),
             (Some(index), _) if to == Phase::Gone => {
                 self.sessions.remove(index);
             }
@@ -151,6 +155,12 @@ impl Queue {
             _ if light => Change::Settle,
             _ => Change::Saved,
         }
+    }
+
+    /// Where a session stands: Gone if it is not tracked.
+    pub fn phase(&self, key: &Key) -> Phase {
+        let session = self.sessions.iter().find(|s| s.key == *key);
+        session.map_or(Phase::Gone, |s| s.phase)
     }
 
     /// Every session, with a light or not.
@@ -233,7 +243,7 @@ impl Queue {
             .map(|s| Observation {
                 key: s.key.clone(),
                 channel: s.bound,
-                event: Event::Signal(Signal::Ended),
+                event: Event::one(Signal::Ended),
                 turn: None,
                 quiet: false,
             })
@@ -287,7 +297,7 @@ fn told(session: &Session, signal: Signal) -> Observation {
     Observation {
         key: session.key.clone(),
         channel: Channel::Daemon,
-        event: Event::Signal(signal),
+        event: Event::one(signal),
         turn: None,
         quiet: false,
     }
@@ -350,7 +360,7 @@ mod tests {
         Observation {
             key: key(id),
             channel: Channel::File,
-            event: Event::Signal(signal),
+            event: Event::one(signal),
             turn: turn.map(|turn| TurnKey(turn.into())),
             quiet: false,
         }
@@ -384,11 +394,7 @@ mod tests {
     }
 
     fn phase(queue: &Queue, id: &str) -> Phase {
-        queue
-            .sessions
-            .iter()
-            .find(|s| s.key.id == id)
-            .map_or(Gone, |s| s.phase)
+        queue.phase(&key(id))
     }
 
     #[test]
@@ -467,7 +473,7 @@ mod tests {
         let mut ended = signal("a", TurnEnded, Some("t1"));
         ended.quiet = true;
         assert_eq!(queue.apply(&ended, 2), Change::Settle);
-        ended.event = Event::Signal(TurnEndedAsking);
+        ended.event = Event::one(TurnEndedAsking);
         assert_eq!(queue.apply(&ended, 3), Change::Settle);
         // A turn that ends again on the same light only moves it to the back.
         assert_eq!(queue.apply(&ended, 4), Change::Saved);

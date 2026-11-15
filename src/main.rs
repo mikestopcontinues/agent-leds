@@ -389,6 +389,7 @@ mod tests {
             device: Some("/Volumes/SidePulse".into()),
             device_uptime_ms: Some(1),
             undeclared: 0,
+            overlaps: Vec::new(),
         };
         let text = status_text(&status);
         let lines: Vec<&str> = text.lines().collect();
@@ -408,6 +409,7 @@ mod tests {
             device: None,
             device_uptime_ms: None,
             undeclared: 0,
+            overlaps: Vec::new(),
         };
         assert_eq!(
             status_text(&status),

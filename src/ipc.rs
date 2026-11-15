@@ -1,6 +1,7 @@
 //! How the command line and the hooks talk to the daemon: one JSON request
 //! and one JSON reply per connection to a Unix socket.
 
+use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -12,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::config::{Config, state_dir};
-use crate::fsm::Phase;
+use crate::fsm::{Phase, Signal};
 use crate::harness::Harness;
 use crate::queue::Session;
 use crate::render::Scene;
@@ -63,6 +64,17 @@ pub struct Status {
     /// How many observations a source made that its harness does not
     /// declare, which the daemon dropped.
     pub undeclared: u64,
+    /// The sets of signals a harness told together that overlap, which the
+    /// table's order resolved.
+    pub overlaps: Vec<Overlap>,
+}
+
+/// A set of signals one harness told together that overlap, and how often.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct Overlap {
+    pub harness: Harness,
+    pub signals: BTreeSet<Signal>,
+    pub count: u64,
 }
 
 /// One light in the queue, as `agent-leds status` shows it.
