@@ -7,13 +7,16 @@
 //! `PermissionRequest` hook says that. Two of its databases say what a turn
 //! end leads to: `goals_1.sqlite`, whether Codex goes on with the thread's
 //! goal by itself or the goal waits on the user, and `queue_1.sqlite`,
-//! whether a prompt the user queued starts next.
+//! whether a prompt the user queued starts next. A turn nobody typed, an
+//! automation's heartbeat or a message from another thread, ends quietly
+//! unless it has something for the user. The desktop app's global state
+//! says which threads its sidebar shows unread, and so when the user looked.
 //!
 //! The files are undocumented. What they say at each moment of a session
 //! was taken from Codex 0.153.2, and the desktop app's rollouts and
 //! databases up to 0.162.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read};
 use std::mem;
@@ -56,8 +59,18 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Prompted,
-        "event_msg task_started, keyed by its turn_id",
+        "event_msg task_started, keyed by its turn_id, of any turn but those that tell Woke",
         "probe-codex runA, runB, runC",
+    ),
+    file(
+        Signal::Woke,
+        "task_started whose turn_trigger is automation_heartbeat_scheduled or app_tool_send_message, or capacity_retry_automatic after such a turn the user wrote nothing in",
+        "desktop rollouts 0.162, 2026-10-12 to 2026-10-19: 211 heartbeat, 394 message and 5 retry turns",
+    ),
+    file(
+        Signal::Retried,
+        "task_started whose turn_trigger is capacity_retry_automatic after a turn that told Woke, which the user wrote nothing in",
+        "desktop rollout 0.162, 2026-10-13T12:29: a message from another thread that failed at capacity, and the app's retry 11 s later",
     ),
     Declared::new(
         Signal::Prompted,
@@ -87,6 +100,11 @@ pub const SIGNALS: &[Declared] = &[
         "probe-codex runA PROMPT6; desktop rollouts 0.162 and goals_1.sqlite, 2026-10-14 and 2026-10-15",
     ),
     file(
+        Signal::TurnEndedQuietly,
+        "task_complete of a turn that started with Woke and holds no user message but what Codex wraps around a turn, whose last_agent_message's last <heartbeat> block does not decide NOTIFY, and, for a message, whose goal in goals_1.sqlite was not complete or paused at or after the turn's started_at",
+        "desktop rollouts 0.162, 2026-10-13: a heartbeat deciding DONT_NOTIFY",
+    ),
+    file(
         Signal::TurnFailed,
         "task_complete with an error",
         "probe-codex runC; 119 such records in earlier rollouts",
@@ -98,7 +116,7 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Backgrounded,
-        "task_complete while a subagent the turn started, or gave a followup_task, has not completed, or while the thread's goal in goals_1.sqlite is active with no continuation deferral, which Codex goes on with by itself",
+        "task_complete while a subagent the turn started, or gave a followup_task, has not completed, or while the thread's goal in goals_1.sqlite is active with no continuation deferral, which Codex goes on with by itself, unless the last_agent_message decides NOTIFY",
         "probe-codex runA PROMPT5; desktop rollouts 2026-10-13 and 2026-10-15",
     ),
     file(
@@ -118,6 +136,14 @@ pub const SIGNALS: &[Declared] = &[
         "the thread's lock deleted, or taken again by another process; or left unlocked, as a killed process leaves it",
         "probe-codex runA, runB (kill -9), runC",
     ),
+    Declared::new(
+        Signal::Looked,
+        Channel::File,
+        Evidence::Inferred,
+        "a thread's id leaving a list under electron-thread-read-state-v1's unreadByIdentity in .codex-global-state.json, which the desktop app keeps by account and host, while the list stays; the file read whole, unchanged across the read",
+        "the desktop app's bundle (app.asar, 2026-10-16) and the global state it left on 2026-10-18; no change seen",
+    )
+    .untold("a thread the desktop app does not show, as one a terminal runs"),
     Declared {
         signal: Signal::PermissionAsked,
         channel: Channel::Hook,
@@ -178,6 +204,9 @@ struct Record {
     /// The async question items a user message answers.
     #[serde(skip)]
     answers: Vec<(String, usize)>,
+    /// Whether a user message holds text the user wrote.
+    #[serde(skip)]
+    own: bool,
 }
 
 #[derive(Default, Deserialize)]
@@ -216,6 +245,54 @@ struct Attribution {
 /// composer, queued while a turn ran, or from the phone.
 const TYPED: &[&str] = &["composer", "queue", "remote_android"];
 
+/// The trigger of the desktop app's retry of a turn that failed at capacity.
+const RETRY: &str = "capacity_retry_automatic";
+
+/// What started a turn, as far as how it ends goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Origin {
+    /// The user, or anything that is not one of the others: a typed prompt,
+    /// an answer to an async question, a goal, `codex exec`, or a turn
+    /// whose start names no trigger. It ends as a typed turn does.
+    #[default]
+    User,
+    /// An automation's heartbeat (`automation_heartbeat_scheduled`).
+    Heartbeat,
+    /// A message another thread sent with `send_message_to_thread`
+    /// (`app_tool_send_message`).
+    Message,
+}
+
+impl Origin {
+    /// The origin of a turn started by `trigger`, after a turn of `last`:
+    /// the desktop app's retry after a capacity error is the turn it
+    /// retries.
+    fn of(trigger: Option<&str>, last: Origin) -> Origin {
+        match trigger {
+            Some("automation_heartbeat_scheduled") => Origin::Heartbeat,
+            Some("app_tool_send_message") => Origin::Message,
+            Some(RETRY) => last,
+            _ => Origin::User,
+        }
+    }
+}
+
+/// What Codex writes as a user message around a turn, which the user did
+/// not write, by how its text begins: the project's instructions, its own
+/// context, the environment, a page the desktop app opened with it, a
+/// heartbeat's prompt, plugins it suggests, and the answers to an async
+/// question. These are every kind of user message the rollouts on the
+/// author's Mac hold; any other text is the user's own.
+const WRAPPERS: &[&str] = &[
+    "# AGENTS.md",
+    "<codex_internal_context",
+    "<environment_context",
+    "<external_codex_apps_open_page",
+    "<heartbeat",
+    "<recommended_plugins",
+    "<send_user_message_question_reply",
+];
+
 /// The desktop app's question, which does not stop the turn.
 const ASYNC_QUESTION: &str = "request_user_input_async";
 
@@ -223,11 +300,8 @@ const ASYNC_QUESTION: &str = "request_user_input_async";
 const ANSWER_OPEN: &str = "<send_user_message_question_reply>";
 const ANSWER_CLOSE: &str = "</send_user_message_question_reply>";
 
-/// The question items a user message answers, as the desktop app writes an
-/// answer to `request_user_input_async`: a block of JSON naming each item as
-/// a JSON array in a string, `[{"questionItemId":
-/// "[\"request_user_input_async\",\"call_…\",0]", "answer": …}]`.
-fn answers(line: &[u8]) -> Vec<(String, usize)> {
+/// The texts of a user message's content.
+fn texts(line: &[u8]) -> Vec<String> {
     #[derive(Deserialize)]
     struct Message {
         payload: Content,
@@ -240,21 +314,34 @@ fn answers(line: &[u8]) -> Vec<(String, usize)> {
     struct Text {
         text: Option<String>,
     }
+    let Ok(message) = serde_json::from_slice::<Message>(line) else {
+        return Vec::new();
+    };
+    let texts = message.payload.content.into_iter();
+    texts.filter_map(|text| text.text).collect()
+}
+
+/// Whether a user message's texts hold one the user wrote, not only what
+/// Codex wraps around a turn.
+fn own(texts: &[String]) -> bool {
+    texts
+        .iter()
+        .map(|text| text.trim_start())
+        .any(|text| !text.is_empty() && !WRAPPERS.iter().any(|wrapper| text.starts_with(wrapper)))
+}
+
+/// The question items a user message answers, as the desktop app writes an
+/// answer to `request_user_input_async`: a block of JSON naming each item as
+/// a JSON array in a string, `[{"questionItemId":
+/// "[\"request_user_input_async\",\"call_…\",0]", "answer": …}]`.
+fn answers(texts: &[String]) -> Vec<(String, usize)> {
     #[derive(Deserialize)]
     struct Answer {
         #[serde(rename = "questionItemId")]
         item: String,
     }
-    let Ok(message) = serde_json::from_slice::<Message>(line) else {
-        return Vec::new();
-    };
     let mut answered = Vec::new();
-    for text in message
-        .payload
-        .content
-        .iter()
-        .filter_map(|t| t.text.as_deref())
-    {
+    for text in texts {
         let block = text
             .split_once(ANSWER_OPEN)
             .and_then(|(_, rest)| rest.split_once(ANSWER_CLOSE));
@@ -352,7 +439,9 @@ impl Record {
     fn read(line: &[u8]) -> Option<Record> {
         let mut record: Record = serde_json::from_slice(line).ok()?;
         if record.is("response_item", "message") && record.payload.role.as_deref() == Some("user") {
-            record.answers = answers(line);
+            let texts = texts(line);
+            record.answers = answers(&texts);
+            record.own = own(&texts);
         }
         Some(record)
     }
@@ -371,11 +460,18 @@ impl Record {
         self.is("event_msg", "task_started")
     }
 
+    /// What started the turn, if the record starts one.
+    fn trigger(&self) -> Option<&str> {
+        let trigger = self.payload.turn_attribution.as_ref();
+        trigger.and_then(|attribution| attribution.turn_trigger.as_deref())
+    }
+
     /// Whether the record starts a turn the user typed the prompt of.
     fn starts_typed_turn(&self) -> bool {
-        let trigger = self.payload.turn_attribution.as_ref();
-        let trigger = trigger.and_then(|attribution| attribution.turn_trigger.as_deref());
-        self.starts_turn() && trigger.is_some_and(|trigger| TYPED.contains(&trigger))
+        self.starts_turn()
+            && self
+                .trigger()
+                .is_some_and(|trigger| TYPED.contains(&trigger))
     }
 
     fn ends_turn(&self) -> bool {
@@ -439,6 +535,43 @@ impl Record {
     }
 }
 
+/// Whether a final message decides that the user should be told of the
+/// turn, as the desktop app reads it: the `<decision>` of the last
+/// `<heartbeat>…</heartbeat>` block in it, ignoring case, is NOTIFY. The app
+/// also reads a heartbeat's message that is only `DONT_NOTIFY`, or that in
+/// a CDATA section, as not to, which is never NOTIFY either; and it takes a
+/// heartbeat that completed with no message, or with no decision, as it
+/// takes any turn without one.
+fn notifies(message: &str) -> bool {
+    let text = message.trim().to_ascii_lowercase();
+    let (open, close) = ("<heartbeat>", "</heartbeat>");
+    let mut last = None;
+    let mut from = 0;
+    while let Some(start) = text[from..].find(open).map(|at| from + at) {
+        let Some(end) = text[start + open.len()..].find(close) else {
+            break;
+        };
+        let end = start + open.len() + end + close.len();
+        last = Some(&text[start..end]);
+        from = end;
+    }
+    let Some(block) = last else {
+        return false;
+    };
+    // The first `<decision>` that holds one, with whitespace around it.
+    for (at, tag) in block.match_indices("<decision>") {
+        let rest = block[at + tag.len()..].trim_start();
+        for (decision, notify) in [("notify", true), ("dont_notify", false)] {
+            if let Some(rest) = rest.strip_prefix(decision)
+                && rest.trim_start().starts_with("</decision>")
+            {
+                return notify;
+            }
+        }
+    }
+    false
+}
+
 /// Whether a final message is a plan put to the user for review.
 fn proposes_plan(message: &str) -> bool {
     let mut lines = message.lines().map(str::trim);
@@ -459,6 +592,9 @@ enum Goal {
     /// user goes on in the thread, and a goal that stopped before the turn
     /// is no news at its end.
     Waiting,
+    /// Complete or paused since the turn began: nothing goes on by itself,
+    /// and a message's turn that saw it stop does not end quietly.
+    Left,
 }
 
 /// Codex's databases, each opened read-only for one read and closed again.
@@ -502,6 +638,7 @@ impl Databases {
             Ok(Some((status, updated, deferred))) => match status.as_str() {
                 "active" if !deferred => Goal::Active,
                 "blocked" | "usage_limited" | "budget_limited" if lately(updated) => Goal::Waiting,
+                "complete" | "paused" if lately(updated) => Goal::Left,
                 _ => Goal::Quiet,
             },
             Ok(None) => Goal::Quiet,
@@ -523,6 +660,49 @@ impl Databases {
             }
         }
     }
+}
+
+/// The threads the desktop app's sidebar shows unread, in each list it
+/// keeps, by account and host.
+type Marks = BTreeMap<(String, String), BTreeSet<String>>;
+
+/// The marks in the desktop app's global state, `.codex-global-state.json`:
+/// `"electron-thread-read-state-v1": {"unreadByIdentity": {<account>:
+/// {<host>: [<thread>, …]}}}`. The app marks a thread unread as a turn that
+/// wants the user ends, and takes the mark off once the thread is shown in
+/// a focused window. None when the file is not all JSON, as half written.
+fn marks(bytes: &[u8]) -> Option<Marks> {
+    #[derive(Deserialize)]
+    struct State {
+        #[serde(rename = "electron-thread-read-state-v1")]
+        read: Option<ReadState>,
+    }
+    #[derive(Deserialize)]
+    struct ReadState {
+        #[serde(rename = "unreadByIdentity", default)]
+        unread: HashMap<String, HashMap<String, Vec<String>>>,
+    }
+    let state: State = serde_json::from_slice(bytes).ok()?;
+    let unread = state.read.map(|read| read.unread).unwrap_or_default();
+    let lists = unread.into_iter().flat_map(|(account, hosts)| {
+        let lists = hosts.into_iter();
+        lists.map(move |(host, ids)| ((account.clone(), host), ids.into_iter().collect()))
+    });
+    Some(lists.collect())
+}
+
+/// The threads whose mark came off between two reads of the marks: those
+/// the user looked at. Only a mark taken off a list that is still there
+/// counts, so a list that goes, as when the user signs in to another
+/// account, marks nothing read; and a mark there all along says nothing,
+/// as the app leaves hundreds of them.
+fn looked(before: &Marks, after: &Marks) -> BTreeSet<String> {
+    let lists = before
+        .iter()
+        .filter_map(|(list, ids)| Some((ids, after.get(list)?)));
+    lists
+        .flat_map(|(before, after)| before.difference(after).cloned())
+        .collect()
 }
 
 /// The write-ahead log of the database at `path`.
@@ -577,6 +757,24 @@ struct Rest {
     started: Option<i64>,
     /// The goal, which changes after the turn ended.
     goal: Goal,
+    /// What started the turn, the user if they wrote in it.
+    origin: Origin,
+    /// Whether its last message decides that the user is to be told.
+    notify: bool,
+}
+
+impl Rest {
+    /// Whether the turn has nothing for the user, as the author chose: a heartbeat
+    /// unless it decides to notify, whether it decides not to or decides
+    /// nothing; a message unless it decides to notify or its goal stopped.
+    /// A failure, a question or work going on is told with it, and wins.
+    fn quiet(&self) -> bool {
+        match self.origin {
+            Origin::User => false,
+            Origin::Heartbeat => !self.notify,
+            Origin::Message => !self.notify && self.goal != Goal::Left,
+        }
+    }
 }
 
 /// The phase a turn that ended on `signals` comes to.
@@ -613,6 +811,10 @@ struct Thread {
     asks: BTreeSet<(String, usize)>,
     /// How the last turn ended, while no other has started.
     rest: Option<Rest>,
+    /// What started the turn, and the last one once it ended.
+    origin: Origin,
+    /// Whether the user wrote a message of their own in the turn.
+    own: bool,
     told: Told,
 }
 
@@ -623,11 +825,15 @@ impl Thread {
     fn end(&self) -> Option<BTreeSet<Signal>> {
         let rest = self.rest.as_ref()?;
         let mut end = rest.told.clone();
-        if !self.children.is_empty() || rest.goal == Goal::Active {
+        // A turn that decides to notify ends, though its goal goes on.
+        if !self.children.is_empty() || (rest.goal == Goal::Active && !rest.notify) {
             end.insert(Signal::Backgrounded);
         }
         if rest.goal == Goal::Waiting {
             end.insert(Signal::TurnEndedAsking);
+        }
+        if rest.quiet() {
+            end.insert(Signal::TurnEndedQuietly);
         }
         Some(end)
     }
@@ -640,6 +846,10 @@ pub struct Codex {
     locks_dir: PathBuf,
     sessions_dir: PathBuf,
     databases: Databases,
+    /// The desktop app's global state, `.codex-global-state.json`.
+    state: PathBuf,
+    /// Its marks as last read, which only a change to counts against.
+    marks: Option<Marks>,
     threads: HashMap<String, Thread>,
     /// Threads that are not the user's, by their rollout, never read again.
     others: HashSet<String>,
@@ -647,12 +857,13 @@ pub struct Codex {
     strange: Strange,
 }
 
-/// What a changed path is to the source: a thread's lock, its rollout, or
-/// the goals.
+/// What a changed path is to the source: a thread's lock, its rollout, the
+/// goals, or the desktop app's global state.
 enum Changed {
     Lock(String),
     Rollout(String, PathBuf),
     Goals,
+    State,
 }
 
 impl Codex {
@@ -662,6 +873,8 @@ impl Codex {
             locks_dir: dir.join("thread-writer-locks"),
             sessions_dir: dir.join("sessions"),
             databases: Databases::new(&dir),
+            state: dir.join(".codex-global-state.json"),
+            marks: None,
             dir,
             threads: HashMap::new(),
             others: HashSet::new(),
@@ -676,6 +889,9 @@ impl Codex {
     fn changed_path(&self, path: &Path) -> Option<Changed> {
         if self.databases.goals_changed(path) {
             return Some(Changed::Goals);
+        }
+        if path == self.state {
+            return Some(Changed::State);
         }
         let name = path.file_name()?.to_str()?;
         if path.parent() == Some(&self.locks_dir) {
@@ -812,6 +1028,8 @@ impl Codex {
                 followups: HashSet::new(),
                 asks: BTreeSet::new(),
                 rest: None,
+                origin: Origin::User,
+                own: false,
                 told: Told::default(),
             },
         );
@@ -878,6 +1096,38 @@ impl Codex {
                 });
             }
         }
+    }
+
+    /// The desktop app's marks as they are now: none when it has no global
+    /// state, and None when the file changed while it was read, is half
+    /// written, or cannot be read, which is said.
+    fn read_marks(&self) -> Option<Marks> {
+        match tail::stable(&self.state) {
+            Ok(Some(bytes)) => marks(&bytes),
+            Ok(None) => None,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Some(Marks::new()),
+            Err(error) => {
+                eprintln!("agent-leds: reading {}: {error}", self.state.display());
+                None
+            }
+        }
+    }
+
+    /// Tells that the user looked at each thread followed whose mark the
+    /// desktop app took off since its marks were last read, and keeps them
+    /// to read the next change against. A read that fails keeps the last.
+    fn remark(&mut self, out: &mut Vec<Observation>) {
+        let Some(marks) = self.read_marks() else {
+            return;
+        };
+        if let Some(before) = &self.marks {
+            for id in looked(before, &marks) {
+                if let Some(thread) = self.threads.get_mut(&id) {
+                    tell(&id, thread, Channel::File, [Signal::Looked], out);
+                }
+            }
+        }
+        self.marks = Some(marks);
     }
 
     /// Reads the rollout of a thread `look` started following back from its
@@ -964,6 +1214,10 @@ fn says(
     if thread.open && thread.turn.is_none() {
         thread.turn = payload.turn_id.clone().map(TurnKey);
     }
+    // A turn the user wrote in is theirs, whatever started it.
+    if record.own && thread.open {
+        thread.own = true;
+    }
     if record.starts_turn() {
         // Also after a crash left a turn open: the new one is what runs.
         thread.open = true;
@@ -978,7 +1232,14 @@ fn says(
         if record.starts_typed_turn() {
             thread.asks.clear();
         }
-        tell(id, thread, Channel::File, [Signal::Prompted], out);
+        thread.origin = Origin::of(record.trigger(), thread.origin);
+        thread.own = false;
+        let started: &[Signal] = match thread.origin {
+            Origin::User => &[Signal::Prompted],
+            _ if record.trigger() == Some(RETRY) => &[Signal::Woke, Signal::Retried],
+            Origin::Heartbeat | Origin::Message => &[Signal::Woke],
+        };
+        tell(id, thread, Channel::File, started.iter().copied(), out);
     } else if record.is("event_msg", "task_complete") {
         // No approval outlasts its turn, which would otherwise hold the
         // wait against an end told with work running on.
@@ -1000,6 +1261,8 @@ fn says(
             told,
             started: payload.started_at,
             goal: databases.goal(id, payload.started_at),
+            origin: thread.origin,
+            notify: notifies(message),
         });
         // The prompt the user queued starts next, so the session works on;
         // whether Codex starts it after a failure is not known, and the
@@ -1062,6 +1325,9 @@ fn says(
 /// Closes the turn a record ends.
 fn close(thread: &mut Thread, payload: &Payload) {
     thread.open = false;
+    if thread.own {
+        thread.origin = Origin::User;
+    }
     if let Some(turn) = &payload.turn_id {
         thread.turn = Some(TurnKey(turn.clone()));
     }
@@ -1126,6 +1392,8 @@ impl Source for Codex {
     }
 
     fn seed(&mut self, k: &dyn Kernel, _bound: &[(String, Liveness)]) -> Result<Seed> {
+        // A mark there already says nothing: only one taken off counts.
+        self.marks = self.read_marks();
         let mut seeded = Vec::new();
         let mut unread = Vec::new();
         for id in self.locked_ids() {
@@ -1167,6 +1435,7 @@ impl Source for Codex {
             None => changed.push((id, rollout)),
         };
         let mut goals = paths.is_none();
+        let mut state = paths.is_none();
         match paths {
             Some(paths) => {
                 for path in paths {
@@ -1177,6 +1446,7 @@ impl Source for Codex {
                         Some(Changed::Rollout(id, _)) if self.others.contains(&id) => {}
                         Some(Changed::Rollout(id, path)) => add(id, Some(path)),
                         Some(Changed::Goals) => goals = true,
+                        Some(Changed::State) => state = true,
                         None => {}
                     }
                 }
@@ -1192,9 +1462,13 @@ impl Source for Codex {
         for (id, rollout) in changed {
             self.follow(k, &id, rollout.as_deref(), &mut out);
         }
-        // After the rollouts, whose turn ends read the goals as they are.
+        // After the rollouts, whose turn ends read the goals as they are,
+        // and which a look may come after.
         if goals {
             self.regoal(&mut out);
+        }
+        if state {
+            self.remark(&mut out);
         }
         out
     }
@@ -1287,6 +1561,11 @@ mod tests {
             queue.apply(&o, 0);
         }
         println!("{} running threads", queue.sessions().len());
+        let marked = codex
+            .marks
+            .as_ref()
+            .map(|marks| marks.values().map(BTreeSet::len).sum::<usize>());
+        println!("{marked:?} threads the desktop app marks unread");
         for session in queue.sessions() {
             println!(
                 "{:<36}  {:<11}  {:<20}  turn {}",
@@ -1305,25 +1584,89 @@ mod tests {
         }
     }
 
+    /// The files alone say where each session stands, but for a look: only
+    /// a mark coming off says that, so the files show the light unread, and
+    /// the queue the daemon saved keeps it read.
     #[test]
     fn a_daemon_started_after_any_fixture_seeds_the_phases_it_reached() {
+        let unread = |phase| match phase {
+            Phase::StoppedRead => Phase::Stopped,
+            Phase::AskedRead => Phase::Asked,
+            phase => phase,
+        };
         for name in fixture::names(Harness::Codex) {
             let replay = replay(&name);
-            let where_ = |queue: &crate::queue::Queue| -> Vec<(Key, Phase, Option<TurnKey>)> {
+            let where_ = |queue: &crate::queue::Queue,
+                          read: &dyn Fn(Phase) -> Phase|
+             -> Vec<(Key, Phase, Option<TurnKey>)> {
                 let mut sessions: Vec<_> = queue
                     .sessions()
                     .iter()
-                    .map(|session| (session.key.clone(), session.phase, session.turn.clone()))
+                    .map(|session| {
+                        (
+                            session.key.clone(),
+                            read(session.phase),
+                            session.turn.clone(),
+                        )
+                    })
                     .collect();
                 sessions.sort_by(|a, b| a.0.cmp(&b.0));
                 sessions
             };
             assert_eq!(
-                where_(&fixture::seed(&replay)),
-                where_(&replay.queue),
+                where_(&fixture::seed(&replay), &|phase| phase),
+                where_(&replay.queue, &unread),
+                "{name}"
+            );
+            assert_eq!(
+                where_(&fixture::restart(&replay), &|phase| phase),
+                where_(&replay.queue, &|phase| phase),
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn a_thread_shown_in_the_desktop_app_is_read() {
+        let replay = replay("looked.file");
+        assert_eq!(phase(&replay), Phase::StoppedRead);
+    }
+
+    #[test]
+    fn a_look_while_a_message_turn_runs_reads_the_stop_it_goes_back_to() {
+        let replay = replay("a_look_while_a_message_turn_runs_reads_the_stop_it_goes_back_to");
+        assert_eq!(phase(&replay), Phase::StoppedRead);
+    }
+
+    #[test]
+    fn only_a_mark_taken_off_a_list_still_kept_is_a_look() {
+        let list = |account: &str, host: &str, ids: &[&str]| {
+            let ids = ids.iter().map(|id| id.to_string()).collect();
+            ((account.to_owned(), host.to_owned()), ids)
+        };
+        let before = Marks::from([
+            list("a", "local", &["t", "u"]),
+            list("a", "durable", &["v"]),
+        ]);
+        let after = Marks::from([list("a", "local", &["u", "w"])]);
+        assert_eq!(looked(&before, &after), BTreeSet::from(["t".to_owned()]));
+        // Another account's lists, which a sign-in swaps for these.
+        let other = Marks::from([list("b", "local", &[])]);
+        assert!(looked(&before, &other).is_empty());
+        assert!(looked(&Marks::new(), &after).is_empty());
+    }
+
+    #[test]
+    fn the_marks_are_read_from_the_desktop_apps_global_state() {
+        let state = br#"{"other": {"x": 1}, "electron-thread-read-state-v1": {"version": 1, "unreadByIdentity": {"a": {"local:1": ["t"], "durable:2": []}}, "legacyMigration": {}}}"#;
+        let read = marks(state).unwrap();
+        assert_eq!(read.len(), 2);
+        assert_eq!(
+            read[&("a".to_owned(), "local:1".to_owned())],
+            BTreeSet::from(["t".to_owned()])
+        );
+        assert_eq!(marks(br#"{"other": 1}"#), Some(Marks::new()));
+        assert_eq!(marks(br#"{"electron-thread-read-state-v1": {"#), None);
     }
 
     #[test]
@@ -1613,6 +1956,164 @@ mod tests {
         );
         assert_eq!(items(Some("{\"questions\":[{},{}]}")), 2);
         assert_eq!(items(Some("not json")), 1);
+    }
+
+    #[test]
+    fn a_turn_nobody_typed_that_decides_to_notify_stops() {
+        assert_eq!(phase(&replay("woke.file")), Phase::Stopped);
+    }
+
+    #[test]
+    fn turns_nobody_typed_that_have_nothing_for_the_user_leave_the_session_dark() {
+        let replay = replay("turn_ended_quietly.file");
+        assert_eq!(phase(&replay), Phase::Idle);
+        assert!(
+            replay
+                .yielded
+                .iter()
+                .all(|(o, _)| !o.event.signals().contains(&Signal::Prompted))
+        );
+    }
+
+    /// The typed turn's stop is announced, and so is the end of the message
+    /// the user wrote into; the quiet end goes back to that stop, unread.
+    #[test]
+    fn a_message_turn_the_user_wrote_in_ends_as_their_own_do() {
+        let replay = replay("a_message_turn_the_user_wrote_in_ends_as_their_own_do");
+        assert_eq!(phase(&replay), Phase::Stopped);
+        let mut queue = crate::queue::Queue::default();
+        let changes: Vec<crate::queue::Change> = replay
+            .yielded
+            .iter()
+            .map(|(o, step)| queue.apply(o, *step as u64))
+            .collect();
+        use crate::queue::Change::*;
+        use crate::state::State;
+        assert_eq!(
+            changes,
+            [
+                Saved,
+                Settle,
+                Announce(State::Stopped),
+                Settle,
+                Announce(State::Stopped),
+                Settle,
+                Settle,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_heartbeat_that_fails_shows_the_error() {
+        let replay = replay("a_heartbeat_that_fails_shows_the_error");
+        assert_eq!(phase(&replay), Phase::Failed);
+    }
+
+    /// The error is announced; the retry, which ends with nothing for the
+    /// user, goes back past it to the dark session the failed turn found.
+    #[test]
+    fn a_retry_after_a_capacity_error_is_the_turn_it_retries() {
+        let replay = replay("retried.file");
+        assert_eq!(phase(&replay), Phase::Idle);
+        let mut queue = crate::queue::Queue::default();
+        let changes: Vec<crate::queue::Change> = replay
+            .yielded
+            .iter()
+            .map(|(o, step)| queue.apply(o, *step as u64))
+            .collect();
+        use crate::queue::Change::*;
+        use crate::state::State;
+        assert_eq!(
+            changes,
+            [Saved, Settle, Announce(State::Error), Settle, Settle]
+        );
+    }
+
+    #[test]
+    fn a_goal_turn_that_decides_to_notify_ends() {
+        let replay = replay("a_goal_turn_that_decides_to_notify_ends");
+        assert_eq!(phase(&replay), Phase::Background);
+    }
+
+    #[test]
+    fn the_last_heartbeat_block_decides_as_the_desktop_app_reads_it() {
+        let block = |decision: &str| {
+            format!(
+                "<heartbeat>\n  <automation_id>a</automation_id>\n  <decision>{decision}</decision>\n  <message>m</message>\n</heartbeat>"
+            )
+        };
+        assert!(notifies(&block("NOTIFY")));
+        assert!(notifies(&format!("Text before.\n\n{}", block("notify"))));
+        assert!(notifies(&block("\n NOTIFY \n")));
+        assert!(!notifies(&block("DONT_NOTIFY")));
+        assert!(!notifies(&format!(
+            "{}\n{}",
+            block("NOTIFY"),
+            block("DONT_NOTIFY")
+        )));
+        assert!(notifies(&format!(
+            "{}\n{}",
+            block("DONT_NOTIFY"),
+            block("NOTIFY")
+        )));
+        // A decision outside a block, or no block, decides nothing.
+        assert!(!notifies("<decision>NOTIFY</decision>"));
+        assert!(!notifies("<heartbeat><decision>NOTIFY</decision>"));
+        assert!(!notifies(
+            "<heartbeat><decision>MAYBE</decision></heartbeat>"
+        ));
+        // The forms only a heartbeat's message is read in say not to.
+        assert!(!notifies("DONT_NOTIFY"));
+        assert!(!notifies("<![CDATA[ DONT_NOTIFY ]]>"));
+        assert!(!notifies(""));
+    }
+
+    #[test]
+    fn only_text_the_user_wrote_makes_a_turn_theirs() {
+        let own = |texts: &[&str]| own(&texts.iter().map(|t| t.to_string()).collect::<Vec<_>>());
+        assert!(own(&["Is the deploy done?"]));
+        assert!(own(&[
+            "<external_codex_apps_open_page>p</external_codex_apps_open_page>",
+            "Why?"
+        ]));
+        for wrapper in WRAPPERS {
+            assert!(!own(&[&format!("  {wrapper} rest")]), "{wrapper}");
+        }
+        assert!(!own(&["", "  \n"]));
+    }
+
+    #[test]
+    fn a_message_turn_ends_quietly_unless_it_notifies_or_its_goal_stops() {
+        let rest = |origin, notify, goal| Rest {
+            told: BTreeSet::from([Signal::TurnEnded]),
+            started: Some(0),
+            goal,
+            origin,
+            notify,
+        };
+        assert!(rest(Origin::Message, false, Goal::Quiet).quiet());
+        assert!(rest(Origin::Message, false, Goal::Waiting).quiet());
+        assert!(!rest(Origin::Message, false, Goal::Left).quiet());
+        assert!(!rest(Origin::Message, true, Goal::Quiet).quiet());
+        assert!(rest(Origin::Heartbeat, false, Goal::Left).quiet());
+        assert!(!rest(Origin::Heartbeat, true, Goal::Quiet).quiet());
+        assert!(!rest(Origin::User, false, Goal::Quiet).quiet());
+    }
+
+    #[test]
+    fn a_goal_completed_or_paused_since_the_turn_began_has_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = goals(dir.path(), "complete");
+        writer
+            .execute("update thread_goals set updated_at_ms = 42000", [])
+            .unwrap();
+        let databases = Databases::new(dir.path());
+        assert_eq!(databases.goal("t", Some(42)), Goal::Left);
+        assert_eq!(databases.goal("t", Some(43)), Goal::Quiet);
+        writer
+            .execute("update thread_goals set status = 'paused'", [])
+            .unwrap();
+        assert_eq!(databases.goal("t", Some(42)), Goal::Left);
     }
 
     #[test]

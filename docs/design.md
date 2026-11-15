@@ -41,18 +41,20 @@ The lights have to mean something, so every one of them has a way out:
 
 | Light | Clears |
 | --- | --- |
-| Working | When the turn ends with no subagent or workflow left running, when it is interrupted, or when it waits on the user; and, like every light, after `abandon_days` without a word from the session. |
+| Working | When the turn ends with no subagent or workflow left running, when it is interrupted, or when it waits on the user; for a turn nobody typed, such as a Codex heartbeat, that ends with nothing for the user, by going back, unannounced, to the light the turn found; and, like every light, after `abandon_days` without a word from the session. |
 | Stopped | At the next prompt, or `keep_read_minutes` after you have looked at the session. |
 | Question, weak: the turn ended on a question | The same as stopped. You may read it and leave it unanswered. |
 | Question, strong: a permission request, `AskUserQuestion` or an elicitation | When it is answered. The agent is blocked on it. One that work running after its turn made goes back, once answered, to the light it covered, as you left it: read, dismissed or not. |
-| Error | At the next prompt. |
+| Error | At the next prompt; or, for a turn nobody typed that its harness starts again by itself, as the Codex desktop app does after a capacity error, when that retry ends with nothing for the user, by going back, unannounced, to the light the failed turn found. |
 | Any | When the session ends, or the process its harness names does, which the daemon checks every few seconds; at `agent-leds dismiss`; or after `abandon_days` without a word from the session. |
+
+A light that a released wait or a quiet end goes back to keeps its place in the queue, and a read one the time it was read, so `keep_read_minutes` runs from the look however often turns nobody typed cover it.
 
 A turn that ends again in a session that had already stopped counts as new: the light is unread again and the change is announced.
 
 The daemon applies everything one read finds before it shows anything, and announces only a state its session still holds after all of it. A turn that ends while a prompt you queued starts the next one in the same read goes on working without a snake.
 
-No harness has a hook for a session being read. OpenCode 2.x records it in its database, which the daemon reads with the session (see `docs/harnesses.md`). For Claude Code the daemon reads the desktop app's own session files, under `~/Library/Application Support/Claude/claude-code-sessions/`. Each records the session id Claude Code's own files name and when the session was last opened. A session counts as read when it was opened after its turn ended, or when you are using the app with that session open: it is the session opened last, the app is the frontmost one (the daemon asks `lsappinfo`), and you touched the keyboard, mouse or trackpad in the last five seconds. The app being in front is not enough, since you may be away from the screen. The daemon looks when a turn ends and every 3 seconds while a session is unread. `agent-leds status` shows when each was read.
+No harness has a hook for a session being read. OpenCode 2.x records it in its database, and the Codex desktop app in the marks its sidebar keeps, which the daemon reads with the session (see `docs/harnesses.md`). For Claude Code the daemon reads the desktop app's own session files, under `~/Library/Application Support/Claude/claude-code-sessions/`. Each records the session id Claude Code's own files name and when the session was last opened. A session counts as read when it was opened after its turn ended, or when you are using the app with that session open: it is the session opened last, the app is the frontmost one (the daemon asks `lsappinfo`), and you touched the keyboard, mouse or trackpad in the last five seconds. The app being in front is not enough, since you may be away from the screen. The daemon looks when a turn ends and every 3 seconds while a session is unread. `agent-leds status` shows when each was read.
 
 The files are undocumented. If the app changes them, or a session runs in a terminal or in another harness that records no reading, the session is never read: its light stays until its next prompt, until the session ends, until you dismiss it, or until `abandon_days` pass. `docs/coverage.md` lists these under its stuck phases. If the daemon cannot tell which session is open, because the newest file is half written or is not a Claude Code session, it marks none.
 
