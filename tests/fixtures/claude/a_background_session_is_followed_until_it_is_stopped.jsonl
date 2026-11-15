@@ -1,0 +1,12 @@
+{"cite":"gaps/bg bg.log, 2.1.325: claude --bg, then claude stop, with the fake API and an isolated CLAUDE_CONFIG_DIR","evidence":"observed"}
+{"alive":78286,"started_us":1794756044100000}
+{"write":".claude/sessions/78286.json","text":{"pid":78286,"sessionId":"8fa86a79-20b9-471d-87be-f1544031685f","cwd":"/Users/me/Code/app","startedAt":1794756044282,"procStart":"Sun Nov 15 15:20:44 2026","version":"2.1.325","peerProtocol":1,"kind":"bg","entrypoint":"cli","pidDomain":"darwin","name":"PROBE_PLAIN hello","nameSince":1794756044282,"jobId":"8fa86a79","status":"busy","updatedAt":1794756044290,"statusUpdatedAt":1794756044290}}
+{"expect":[["started","file"]]}
+{"append":".claude/projects/-Users-me-Code-app/8fa86a79-20b9-471d-87be-f1544031685f.jsonl","line":{"parentUuid":null,"isSidechain":false,"promptId":"ea7d4f4e-ad40-432c-a8e6-9c5546262e9c","type":"user","message":{"role":"user","content":"PROBE_PLAIN hello"},"uuid":"f4b3b042-7692-4b11-859d-9b8786c07e89","timestamp":"2026-11-15T15:20:44.284Z","permissionMode":"auto","origin":{"kind":"human"},"promptSource":"typed","turnOrigin":"human","sessionKind":"bg","entrypoint":"cli","sessionId":"8fa86a79-20b9-471d-87be-f1544031685f","version":"2.1.325"}}
+{"expect":[["prompted","file"]]}
+{"write":".claude/sessions/78286.json","text":{"pid":78286,"sessionId":"8fa86a79-20b9-471d-87be-f1544031685f","cwd":"/Users/me/Code/app","startedAt":1794756044282,"procStart":"Sun Nov 15 15:20:44 2026","version":"2.1.325","peerProtocol":1,"kind":"bg","entrypoint":"cli","pidDomain":"darwin","name":"ok","nameSince":1794756044282,"jobId":"8fa86a79","status":"idle","updatedAt":1794756044352,"statusUpdatedAt":1794756044352}}
+{"append":".claude/projects/-Users-me-Code-app/8fa86a79-20b9-471d-87be-f1544031685f.jsonl","line":{"parentUuid":"37d2e023-ed0c-4df9-95c5-c020ee72e154","isSidechain":false,"message":{"id":"msg_fake_1794756044346","type":"message","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","stop_sequence":null},"type":"assistant","uuid":"9b0b8e86-658e-49cd-85db-d8fabefec4f2","timestamp":"2026-11-15T15:20:44.349Z","entrypoint":"cli","sessionId":"8fa86a79-20b9-471d-87be-f1544031685f","version":"2.1.325"}}
+{"expect":[["turn_ended","file"]]}
+{"delete":".claude/sessions/78286.json"}
+{"exit":78286}
+{"expect":[["ended","file"]]}

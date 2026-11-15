@@ -43,8 +43,8 @@ const fn file(signal: Signal, record: &'static str, cite: &'static str) -> Decla
 pub const SIGNALS: &[Declared] = &[
     file(
         Signal::Started,
-        "a session file naming a new pid or session, whose process started at its procStart; not a spare, a bg session, or a run of claude -p or the Agent SDK (entrypoint sdk-*)",
-        "probe-claude cc0–cc11; gaps/h1",
+        "a session file naming a new pid or session, whose process started at its procStart; a claude --bg session too (kind bg); not a spare, a daemon or daemon-worker, or a run of claude -p or the Agent SDK (entrypoint sdk-*)",
+        "probe-claude cc0–cc11; gaps/h1; gaps/bg (claude --bg, 2.1.325)",
     ),
     file(
         Signal::Prompted,
@@ -129,7 +129,8 @@ struct Process {
     cwd: String,
     /// When the process started, as `ps` prints lstart, in UTC.
     proc_start: Option<String>,
-    /// `interactive`, or `bg` for the desktop app's own sessions.
+    /// `interactive`, `bg` for a session `claude --bg` started, or `daemon`
+    /// and `daemon-worker` for the processes that supervise those.
     kind: Option<String>,
     /// What started the process: `cli` for a terminal, `claude-desktop`, or
     /// `sdk-cli`, `sdk-ts` or `sdk-py` for `claude -p` and the Agent SDK.
@@ -474,7 +475,8 @@ impl Claude {
             .entrypoint
             .as_deref()
             .is_some_and(|entrypoint| entrypoint.starts_with("sdk-"));
-        if process.spare || process.kind.as_deref() == Some("bg") || unwatched {
+        let daemon = matches!(process.kind.as_deref(), Some("daemon" | "daemon-worker"));
+        if process.spare || daemon || unwatched {
             return Ok(None);
         }
         // A start it cannot read is a format it does not know.
@@ -1133,10 +1135,30 @@ mod tests {
     }
 
     #[test]
-    fn a_spare_is_never_started() {
-        let replay = replay("a_spare_is_never_started");
+    fn a_spare_or_a_daemon_is_never_started() {
+        let replay = replay("a_spare_or_a_daemon_is_never_started");
         let ids: Vec<String> = replay.phases().into_keys().map(|key| key.id).collect();
         assert_eq!(ids, ["0d9a0d3c-5b1e-4e0b-9a51-6f1f2f3e4d5c"]);
+    }
+
+    #[test]
+    fn a_background_session_is_followed_until_it_is_stopped() {
+        let replay = replay("a_background_session_is_followed_until_it_is_stopped");
+        let signals: Vec<BTreeSet<Signal>> = replay
+            .yielded
+            .iter()
+            .map(|(o, _)| o.event.signals())
+            .collect();
+        assert_eq!(
+            signals,
+            [
+                Signal::Started,
+                Signal::Prompted,
+                Signal::TurnEnded,
+                Signal::Ended
+            ]
+            .map(|signal| BTreeSet::from([signal]))
+        );
     }
 
     #[test]

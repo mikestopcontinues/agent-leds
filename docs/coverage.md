@@ -51,7 +51,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### Started
 
-- Claude Code, file, observed: a session file naming a new pid or session, whose process started at its procStart; not a spare, a bg session, or a run of claude -p or the Agent SDK (entrypoint sdk-*) (probe-claude cc0–cc11; gaps/h1)
+- Claude Code, file, observed: a session file naming a new pid or session, whose process started at its procStart; a claude --bg session too (kind bg); not a spare, a daemon or daemon-worker, or a run of claude -p or the Agent SDK (entrypoint sdk-*) (probe-claude cc0–cc11; gaps/h1; gaps/bg (claude --bg, 2.1.325))
 - Codex, file, observed: a thread's lock held, with a rollout whose session_meta is not a subagent's: neither its source nor its thread_source names one (probe-codex runA, runB, runD; desktop rollouts 0.162)
 - Grok, file, observed: a new row in active_sessions.json whose process started at its pid_start, to the microsecond; a headless run and a subagent get none (probe-grok session_start, runs a, j)
 - Cursor, hook, observed: beforeSubmitPrompt, run under a process Cursor marked running in .running with the second it started, the outermost of the marked processes in a row, so the CLI and not its node worker (probe-cursor runs A–I (markers, lsof); the bundle's install-in-use-marker; 0.5.0 hooks)
