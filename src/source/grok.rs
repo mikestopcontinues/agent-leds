@@ -101,20 +101,20 @@ pub const SIGNALS: &[Declared] = &[
     file(
         Signal::Backgrounded,
         Evidence::Observed,
-        "a turn_ended while updates.jsonl has a subagent_spawned with no subagent_finished",
-        "probe-grok subagent, run e",
+        "a turn_ended while updates.jsonl has a subagent_spawned with no subagent_finished, or a task_backgrounded (a background command) with no task_completed",
+        "probe-grok subagent, run e; gaps grok-x a",
     ),
     file(
         Signal::BackgroundDone,
         Evidence::Inferred,
-        "updates.jsonl subagent_finished with will_wake false, leaving no subagent running; will_wake false was seen only for subagents that finished inside the turn, and the one that finished after its turn ended had will_wake true and started a turn, so this may never fire",
-        "probe-grok subagent, run e; session 01a1db59-934f",
+        "updates.jsonl subagent_finished or task_completed with will_wake false, leaving nothing running; will_wake false was seen only for work that finished inside the turn, a subagent and a background command killed with kill_command_or_subagent, and work that finished after its turn ended had will_wake true and started a turn, so this may never fire",
+        "probe-grok subagent, run e; session 01a1db59-934f; gaps grok-x a",
     ),
     file(
         Signal::Interrupted,
         Evidence::Observed,
-        "a cancelled turn_ended triggered by ctrl_c, the stop button or the dashboard, or cancelled as permission_rejected or permission_cancelled",
-        "probe-grok interrupted, runs a, h",
+        "a cancelled turn_ended triggered by ctrl_c, the stop button, the dashboard or send_now (the user's next prompt, whose turn_started follows at once), or cancelled as permission_rejected or permission_cancelled",
+        "probe-grok interrupted, runs a, h; gaps grok-x a",
     ),
     file(
         Signal::Ended,
@@ -124,9 +124,10 @@ pub const SIGNALS: &[Declared] = &[
     ),
 ];
 
-/// The gestures that cancel a turn for the user, as the pager names them.
-/// A cancel Grok makes itself, such as `shutdown`, is not one.
-const USER_TRIGGERS: [&str; 3] = ["ctrl_c", "mouse", "dashboard_stop"];
+/// The gestures that cancel a turn for the user, as the pager names them:
+/// `send_now` cancels it to run the user's next prompt at once. A cancel
+/// Grok makes itself, such as `shutdown`, is not one.
+const USER_TRIGGERS: [&str; 4] = ["ctrl_c", "mouse", "dashboard_stop", "send_now"];
 
 /// The cancellations that are the user turning a tool call down.
 const USER_CATEGORIES: [&str; 2] = ["permission_rejected", "permission_cancelled"];
@@ -209,8 +210,17 @@ struct Change {
     kind: String,
     content: Option<Value>,
     child_session_id: Option<String>,
+    /// The background task a `task_backgrounded` started.
+    task_id: Option<String>,
+    /// The background task a `task_completed` ended.
+    task_snapshot: Option<Task>,
     #[serde(default)]
     will_wake: bool,
+}
+
+#[derive(Deserialize)]
+struct Task {
+    task_id: String,
 }
 
 impl Update {
@@ -295,7 +305,7 @@ struct Session {
     question: bool,
     /// Whether a plan waits on the user's approval.
     plan: bool,
-    /// The subagents spawned and not finished.
+    /// The subagents and background tasks started and not finished.
     children: HashSet<String>,
     /// The last thing the agent wrote since the latest prompt.
     text: String,
@@ -650,11 +660,14 @@ impl Grok {
                 session.text = text.and_then(Value::as_str).unwrap_or_default().to_owned();
             }
             "subagent_spawned" => session.children.extend(change.child_session_id),
-            "subagent_finished" => {
-                if let Some(child) = &change.child_session_id {
+            "task_backgrounded" => session.children.extend(change.task_id),
+            "subagent_finished" | "task_completed" => {
+                let child = change.child_session_id;
+                let task = change.task_snapshot.map(|task| task.task_id);
+                for child in child.iter().chain(&task) {
                     session.children.remove(child);
                 }
-                // A subagent that wakes its parent starts a turn instead.
+                // Work that wakes its parent starts a turn instead.
                 if session.children.is_empty() && !change.will_wake {
                     tell(id, session, [Signal::BackgroundDone], out);
                 }

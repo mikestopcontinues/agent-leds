@@ -135,7 +135,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 - Claude Code, file, observed: a user text starting [Request interrupted by user (probe-claude cc1–cc4)
 - Codex, file, observed: event_msg turn_aborted for any reason but replaced, which a new turn follows; a cancelled approval writes it too (probe-codex runA CTRLC-INTERRUPT, DENY-ESC; codex2)
-- Grok, file, observed: a cancelled turn_ended triggered by ctrl_c, the stop button or the dashboard, or cancelled as permission_rejected or permission_cancelled (probe-grok interrupted, runs a, h)
+- Grok, file, observed: a cancelled turn_ended triggered by ctrl_c, the stop button, the dashboard or send_now (the user's next prompt, whose turn_started follows at once), or cancelled as permission_rejected or permission_cancelled (probe-grok interrupted, runs a, h; gaps grok-x a)
 - Cursor, hook, inferred: stop with status aborted, for a chat bound to its process; Cursor runs it on every interrupt, from the bundle's code (probe-cursor run B, turn 3 (no write); bundle 2986.index.js, the abort path)
 - Cursor, file, observed: turn_ended with status aborted, including the previous turn's end rewritten to aborted (probe-cursor runs B, H)
 - Junie, file, inferred: TaskState after a task started that had a CancelAgentEvent (probe-junie interrupted; Irrlicht parser_test.go)
@@ -148,13 +148,13 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 - Claude Code, file, observed: an end_turn record while the session file is busy with delegated work, or waiting to busy after the turn closed (probe-claude cc3, cc4, cc5)
 - Codex, file, observed: task_complete while a subagent the turn started, or gave a followup_task, has not completed (probe-codex runA PROMPT5; desktop rollout 2026-10-13)
-- Grok, file, observed: a turn_ended while updates.jsonl has a subagent_spawned with no subagent_finished (probe-grok subagent, run e)
+- Grok, file, observed: a turn_ended while updates.jsonl has a subagent_spawned with no subagent_finished, or a task_backgrounded (a background command) with no task_completed (probe-grok subagent, run e; gaps grok-x a)
 
 ### BackgroundDone
 
 - Claude Code, file, observed: the session file going from busy to idle after a backgrounded turn (probe-claude cc3)
 - Codex, file, observed: the last such subagent's SubAgentActivity completed or interrupted, after the turn ended (probe-codex runA PROMPT5; desktop rollout 2026-10-13)
-- Grok, file, inferred: updates.jsonl subagent_finished with will_wake false, leaving no subagent running; will_wake false was seen only for subagents that finished inside the turn, and the one that finished after its turn ended had will_wake true and started a turn, so this may never fire (probe-grok subagent, run e; session 01a1db59-934f)
+- Grok, file, inferred: updates.jsonl subagent_finished or task_completed with will_wake false, leaving nothing running; will_wake false was seen only for work that finished inside the turn, a subagent and a background command killed with kill_command_or_subagent, and work that finished after its turn ended had will_wake true and started a turn, so this may never fire (probe-grok subagent, run e; session 01a1db59-934f; gaps grok-x a)
 
 ### Ended
 
