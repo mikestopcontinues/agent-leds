@@ -2,7 +2,7 @@
 
 What each agent harness reports to the service and where it falls short. [design.md](design.md) covers what the service does with the reports.
 
-The service reads every harness's own files as they change. Claude Code's and Junie's files say all it needs, so it registers no hooks with them. With Codex, Grok and Cursor, `agent-leds install` registers `agent-leds hook <harness>` for the one or two events listed below that their files do not record; OpenCode and Pi load a plugin of ours that runs it for what their files leave out. The hook passes the event to the daemon with the processes it runs under, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked. Whatever the hooks say, a session leaves when the process its harness names ends; each section says how that process is known. Nothing is guessed from time or from the process table, so a moment that neither a file nor a hook records is a gap, listed under its harness.
+The service reads every harness's own files as they change. Claude Code's and Junie's files say all it needs, so it registers no hooks with them. With Codex, Grok and Cursor, `agent-leds install` registers `agent-leds hook <harness>` for the one or two events listed below that their files do not record; OpenCode and Pi load a plugin of ours that runs it for what their files leave out. The hook passes the event to the daemon with the processes it runs under, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked. Whatever the hooks say, a session leaves when the process its harness names ends; each section says how that process is known. No timer guesses what a session is doing and the process table is never listed, so a moment that neither a file nor a hook records is a gap, listed under its harness. An interrupt leaves the session tracked with no light, idle until its next prompt.
 
 [coverage.md](coverage.md) lists every signal each harness gives, how each is known, and the moves each cannot make. `agent-leds doctor` reads each harness's files with the same readers and says how many sessions they show running, or what keeps it from reading them.
 
@@ -19,7 +19,7 @@ Each running Claude Code process, in a terminal or the desktop app, keeps a file
 | The end of a turn while the session file stays busy | working, in the background |
 | The end of a turn otherwise, or a background turn going idle | stopped |
 | An API error in the transcript | error |
-| An interrupt in the transcript | removed |
+| An interrupt in the transcript | idle (no light) |
 | The session file gone or naming another session, or its process gone | removed |
 
 A turn that ends with a subagent or a workflow running in the background is not the session's last word: Claude Code keeps the session file busy until that work is done, so the session stays green until it goes idle, and then it shows as stopped. The files are undocumented; the fixtures in `tests/fixtures/claude/`, recorded from real sessions, pin what the daemon expects of them. A session never seen running, such as one run with `claude -p`, is not shown.
@@ -37,7 +37,7 @@ A Codex process holds a lock on `~/.codex/thread-writer-locks/<thread>.lock` for
 | `task_complete` while a subagent the turn started, or gave a `followup_task`, is still at work | working, in the background |
 | `task_complete` otherwise, or the last such subagent completed after the turn ended | stopped |
 | `task_complete` with an error | error |
-| `turn_aborted`, which a cancelled approval writes too | removed |
+| `turn_aborted`, which a cancelled approval writes too | idle (no light) |
 | The lock deleted or left unlocked | removed |
 
 Nothing is written while an approval waits, so `agent-leds install` registers the hook for `PermissionRequest` alone, and removes the others an earlier version registered with their trust records. The hook makes the session a question only while its rollout has that turn open; the next tool output, completed item or `task_complete` in the rollout answers it. A daemon that starts inside a turn takes the same record to answer an approval the hook told before it started. Codex runs a hook only once its hash is recorded under `[hooks.state]`, so the install asks `codex app-server` for the hash and records it, which needs `codex` on the `PATH`. Codex keys that record by the hook's place among the groups of its event, so a group of ours keeps its place, and if another tool reorders the groups, run `agent-leds install` again.
@@ -68,7 +68,7 @@ A thread whose `session_meta` names a subagent, by its `source` or its `thread_s
 | `turn_ended` while the updates hold a subagent spawned and not finished | working, in the background |
 | `turn_ended` otherwise, including a cancel Grok made itself such as `max_turns` | stopped |
 | The `StopFailure` hook, for the newest turn | error |
-| `turn_ended` cancelled by Ctrl-C, the stop button or the dashboard, or by rejecting or cancelling a permission | removed |
+| `turn_ended` cancelled by Ctrl-C, the stop button or the dashboard, or by rejecting or cancelling a permission | idle (no light) |
 | The row gone from `active_sessions.json`, as `/quit` leaves it even mid-turn, or its process gone | removed |
 
 A row left by a process that was killed stays in the registry until another session starts, so a row counts only while its pid runs with the start it records. A subagent runs in a session folder of its own, beside its parent's, under an id the registry never lists, so it is never followed; the parent shows its work. The files are undocumented; the fixtures in `tests/fixtures/grok/`, recorded from Grok 1.0.77, pin what the daemon expects of them. The gaps:
@@ -90,8 +90,8 @@ The daemon reads two things Cursor's CLI writes. Each chat's transcript, `~/.cur
 | A transcript ending in a user or assistant record, after the turn's end or with more user records | working |
 | A transcript ending in `turn_ended` with status `success` | stopped, or question as a weak signal when the last assistant text ends in a question mark |
 | `turn_ended` with status `error` | error |
-| `turn_ended` with status `aborted` | removed |
-| `stop` with status `aborted`, for a bound chat | removed |
+| `turn_ended` with status `aborted` | idle (no light) |
+| `stop` with status `aborted`, for a bound chat | idle (no light) |
 | The bound process's marker unlinked, or the process gone | removed |
 
 The transcript is not appended to only. The first checkpoint of every turn truncates the file in place and writes it again whole, without the earlier turns' `turn_ended` records. So the daemon reads the whole file each time it changes and takes a read only if it is unchanged across the read, ends in a newline, and is not the start of the read taken before. A read caught in the middle of a rewrite is the start of that earlier read, so it is skipped. Only the last record and the count of user records matter, so rewritten history changes nothing. An interrupt before the turn's first checkpoint rewrites the previous turn's `success` as `aborted`; that reads as an interrupt. When the previous turn had already ended `aborted`, the rewrite leaves the file as it was, so only the `stop` hook tells of the interrupt. A `stop` that completes or fails is ignored, since the transcript says the same. Subagent transcripts, in the chat's `subagents/` folder, are never read. The files are undocumented; the fixtures in `tests/fixtures/cursor/`, recorded from Cursor 2026.11.13, pin what the daemon expects of them.
@@ -103,11 +103,12 @@ The gaps:
 - Cursor writes a reply's reasoning after its text, in the same block. With a reasoning model, the question test reads the reasoning's last line instead of the reply's, so a question can show as stopped and a statement as a question. The probe used the Auto model, which wrote no reasoning.
 - A chat no hook bound names no process, so it does not show. That includes every chat already running when the daemon first starts with this version: it shows from its next prompt.
 - After `/new`, the old chat stays bound to the process until it exits.
+- Work a turn leaves running, such as a background job, is not seen: the turn's `turn_ended` shows the session stopped until that work starts a new turn.
 - A process killed with `kill -9` leaves its marker. The daemon sees that the process is gone at its next liveness check, within seconds.
 
 ## Junie
 
-Junie keeps its folder at `$JUNIE_HOME`, or at `~/.junie` in the account's home directory, which it takes from the system and never from `$HOME`; the daemon finds it the same way. Each Junie process writes a sidecar to `processes/` naming the session it takes, and each session appends its events to `sessions/<session>/events.jsonl`, which its first prompt creates. The daemon reads both as they change, and registers no hooks: an install removes the ones an older agent-leds registered in `~/.junie/config.json`, with the file their hook kept, `~/.local/state/agent-leds/junie-session.json`.
+Junie keeps its folder at `$JUNIE_HOME`, or at `~/.junie` in the account's home directory, which it takes from the system and never from `$HOME`. The daemon finds it the same way, from the environment launchd starts it with, which a `JUNIE_HOME` exported in a shell's profile never reaches: set it there too with `launchctl setenv JUNIE_HOME <folder>`, then run `agent-leds install` to restart the service. `agent-leds doctor` reads the folder the service reads, says when the shell's `JUNIE_HOME` names another, and has a Junie line only once `~/.junie` exists. Each Junie process writes a sidecar to `processes/` naming the session it takes, and each session appends its events to `sessions/<session>/events.jsonl`, which its first prompt creates. The daemon reads both as they change, and registers no hooks: an install removes the ones an older agent-leds registered in `~/.junie/config.json`, with the file their hook kept, `~/.local/state/agent-leds/junie-session.json`.
 
 | What Junie writes | Session becomes |
 | --- | --- |
@@ -116,7 +117,7 @@ Junie keeps its folder at `$JUNIE_HOME`, or at `~/.junie` in the account's home 
 | An `AskAsyncRequestUpdatedEvent` or `ChoiceRequestUpdatedEvent` waiting in state `INPUT_REQUIRED` | question |
 | The waiting step written again as `COMPLETED` or outside `INPUT_REQUIRED`, or the user's response | working |
 | `TaskState FAILED`, or `TaskState` after an `AgentFailureEvent` or `AgentTaskFailedEvent` | error |
-| `TaskState` after a `CancelAgentEvent` | removed |
+| `TaskState` after a `CancelAgentEvent` | idle (no light) |
 | `TaskState` whose result's last line ends in a question mark | question, as a weak signal |
 | `TaskState` otherwise | stopped |
 | A newer sidecar for the pid naming another session, the sidecar deleted, or its process gone | removed |
@@ -145,7 +146,7 @@ The database names no process and records no permission request, so the install 
 | The latest assistant message completed, other than a step that finished on `tool-calls` or `unknown` with no error and no tool the user refused or dismissed | stopped |
 | The same, its last text part ending in a question mark | question, as a weak signal |
 | An error on that message, or the plugin's `session.error` | error |
-| A `MessageAbortedError`, or the message completed with neither finish nor error | removed |
+| A `MessageAbortedError`, or the message completed with neither finish nor error | idle (no light) |
 | The session's row deleted or archived, or the OpenCode process gone | removed |
 
 The rule is OpenCode's own: its loop goes on after a step that finished on `tool-calls` or `unknown`, however its tools fared, and writes the next step's message only after it has read the session's messages again, so such a step can be the latest message for a while. A turn the user rejected a permission in, or dismissed a question in, ends on `tool-calls` with that tool errored and nothing after it, which counts as stopped; a permission rejected with feedback lets the turn go on. A subagent runs in a session of its own whose `parent_id` names the session that started it; its questions and permissions hold that session up, and its own runs say nothing more of it. Each turn's end is told once, so the title OpenCode writes after the first turn does not announce it again. The database is undocumented; the fixtures in `tests/fixtures/opencode/`, taken from real sessions, pin what the daemon expects of it.
@@ -173,7 +174,7 @@ Pi writes each session to a file, `~/.pi/agent/sessions/--<cwd>--/<time>_<sessio
 | An assistant entry that ends the turn on a line ending in a question mark | question, as a weak signal |
 | An assistant entry that ends the turn otherwise | stopped |
 | `agent_settled` after an error | error |
-| An assistant entry the user stopped, or `agent_settled` after a stop | removed |
+| An assistant entry the user stopped, or `agent_settled` after a stop | idle (no light) |
 | `session_shutdown` other than a reload, or the Pi process gone | removed |
 
 An error entry in the file settles nothing, because Pi may retry it; only `agent_settled`, which comes once nothing will run by itself, says the turn failed. Pi 0.84.4 writes a stop during a tool as an error with the abort's text, so an entry the user stopped is told by its text, never by a provider's error that only mentions an abort. 0.84.4 also writes a new session's first prompt to no file until the reply ends, so `agent_start` says the turn runs. A background subagent's report is written whether or not it wakes Pi, so only a reply after it says a run began. A fork or clone copies the turns before it into its new file, and those are never read as new; a session resumed, in a new Pi or with `/resume` in the same one, starts where its file ends.
@@ -184,6 +185,7 @@ What it cannot see:
 - A daemon started while a session writes to its own `sessionDir` cannot find the file, so the session shows nothing until its next prompt names the file again.
 - A Pi process started before the extension was installed, or before an upgrade changed it, runs the extension it loaded then, and its sessions are not shown until it is restarted or runs `/reload`.
 - The hook does not wait for the daemon, which reads the file before each hook it handles. A reply written before the daemon handles that run's `agent_start` would leave the session working until its next event; no real provider answers that fast.
+- A background subagent still at work when the turn ends is not seen: the session shows stopped until its report wakes Pi and a reply starts a run.
 - Pi has no permission prompts of its own; extensions that add them ask through dialogs, which show as a question. A session Pi keeps no file of, as with `--no-session`, is not shown.
 
 Checked against Pi 0.84.4 and 1.5.2 in RPC mode, with this extension installed. Pi Durable, Pi's library for long-running agent apps, is a framework rather than a harness and is not covered.

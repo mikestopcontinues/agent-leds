@@ -10,9 +10,9 @@ The daemon learns what each session does from the harness's own files. Each harn
 
 A source reports what each record says as signals, each a fact of its own: a prompt, a wait on the user, the end of a turn, an error. Every signal goes through one table, in `src/fsm.rs`, whose rows are in priority order: from the session's phase, the first row that matches one of the signals decides. Some signals belong together, as the ways a turn can end. Others told together overlap, as when a harness's format changes; the table's order still decides, and the daemon logs each set once and counts it in `agent-leds status --json`, which `agent-leds doctor` reports. Each harness declares the signals it gives and how each is known. A signal it does not declare is dropped and counted the same way. [coverage.md](coverage.md), generated from those declarations and the table, lists what each harness cannot show.
 
-No timer infers a state. A working session stays working until its harness says otherwise, however long it is quiet. A session's process is known only by what the harness names: a pid and its start time in its own files, a file its process keeps locked, a marker, or the pid its hook or plugin passes on. The daemon looks up only that process, and never lists the process table.
+No timer infers what a session is doing. The only clocks are the two ways out in [When lights clear](#when-lights-clear): `keep_read_minutes` for a light that was read, and `abandon_days` for any light, working included, whose harness has said nothing of the session for that long. A session's process is known only by what the harness names: a pid and its start time in its own files, a file its process keeps locked, a marker, or the pid its hook or plugin passes on. The daemon looks up only that process, and never lists the process table.
 
-`agent-leds doctor` reads each harness in use with the same sources, as the daemon does when it starts, and writes nothing. It prints one line per harness: how many sessions its files show running, by light, and the folders it read, then what the check of its hooks found. A folder that cannot be read, a read that fails, or a signal the harness does not declare or that overlaps needs attention. While the daemon runs, doctor also reports what the daemon counted.
+`agent-leds doctor` reads each harness in use with the same sources, as the daemon does when it starts, restores what they show against the saved queue as the daemon does, and writes nothing. It prints a line for the saved queue, then one per harness: how many sessions run, by light, and the folders it read, then what the check of its hooks found. Cursor's, OpenCode's and Pi's files start no session, so for them the count is of the sessions their hooks or plugin reported, as the saved queue holds them. Junie's folder is the one launchd's environment gives the service. A saved queue the daemon cannot read, a folder that cannot be read, a file a seed cannot read or make sense of, or a signal the harness does not declare or that overlaps needs attention. While the daemon runs, doctor also reports what the daemon counted since it last started.
 
 The device runs whatever program is written to its `LEDS.LED` file, in SidePulse's own animation language, limited to 512 bytes and 20 lines. The daemon writes programs only when the queue changes, so a steady display costs nothing on the Mac:
 
@@ -24,7 +24,7 @@ The device runs whatever program is written to its `LEDS.LED` file, in SidePulse
 - **Any other change** settles in quietly: a session going back to work, or a light leaving because its session was read, ended, was dismissed or was abandoned. The wave alone runs from the front of the queue to the back, with no fade out and no snake. Each light holds its old color until the wave reaches it, goes dark for a step, and rises in its new color. A quiet change never interrupts a snake; the snake ends on the queue as it is by then.
 - **A played program or shown scene** (`agent-leds play`, or the workshop's "Show on device") holds the lights for a few seconds, then the queue returns.
 
-The daemon saves the queue to `~/.local/state/agent-leds/queue.json` on every change and reloads it when it starts, so restarting it loses nothing.
+The daemon saves the queue to `~/.local/state/agent-leds/queue.json` on every change. When it starts, it rebuilds the queue from the harnesses' files, and keeps a saved session's read mark, dismissal or state only a hook told while that is still about the same turn and the files do not contradict it; `Queue::restore` holds the rule. A turn that ended while the daemon was down shows unread, a session whose process is gone is dropped, and a state only a hook told is lost once the files have moved past it, as [harnesses.md](harnesses.md) says of Grok's errors. A saved queue the daemon cannot read, as after an upgrade that changes its format, is ignored. The counts of undeclared and overlapping signals are not saved, and start again from nothing.
 
 The daemon reads the card's uptime every 15 seconds. The read keeps the SD reader from powering the card down, and an uptime that went backwards means the card restarted, so the queue is rewritten.
 
@@ -41,7 +41,7 @@ The lights have to mean something, so every one of them has a way out:
 
 | Light | Clears |
 | --- | --- |
-| Working | When the turn ends with no subagent or workflow left running, when it is interrupted, or when it waits on the user. No light clears on silence. |
+| Working | When the turn ends with no subagent or workflow left running, when it is interrupted, or when it waits on the user; and, like every light, after `abandon_days` without a word from the session. |
 | Stopped | At the next prompt, or `keep_read_minutes` after you have looked at the session. |
 | Question, weak: the turn ended on a question | The same as stopped. You may read it and leave it unanswered. |
 | Question, strong: a permission request, `AskUserQuestion` or an elicitation | When it is answered. The agent is blocked on it. |
@@ -63,7 +63,7 @@ A turn whose last line ends in a question mark shows as a question that reading 
 Each module owns one concern; the ones that touch the system are thin.
 
 - `main.rs`: the command line.
-- `doctor.rs`: `agent-leds doctor`, which checks the service, the card, what the daemon has read, each harness's files and hooks, and for SidePulse's own software.
+- `doctor.rs`: `agent-leds doctor`, which checks the service, the card, what the daemon has read, the queue it saved, each harness's files and hooks, and for SidePulse's own software.
 - `daemon.rs`: the service's loop. Everything it reads or changes outside itself goes through its `World` trait, which tests replace.
 - `player.rs`: what the lights play and when, given the time. No I/O.
 - `render.rs`: a queue or a change, as LEDS.LED programs. No I/O.
