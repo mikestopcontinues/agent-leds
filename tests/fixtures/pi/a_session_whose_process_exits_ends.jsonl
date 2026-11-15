@@ -1,7 +1,19 @@
-{"cite": "0.5.0 extension, probe-pi rpc1, tui1", "evidence": "observed"}
-{"alive": 71001, "started_us": 1794693357000000}
-{"expect": []}
-{"hook": {"event": "agent_start", "session": "019a-pi", "cwd": "/Users/me/Code/app"}, "ancestry": [{"pid": 71001, "started_us": 1794693357000000, "name": "node"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
-{"expect": [["started", "hook"], ["prompted", "hook"]]}
-{"exit": 71001}
-{"expect": [["ended", "hook"]]}
+{"cite": "probe-pi ext084, the session's header and a tool running; rpc5: a kill writes nothing", "evidence": "observed"}
+{"alive": 89653, "started_us": 1794745289327000}
+{"expect":[]}
+{"hook": {"event": "session_start", "session": "01a1df27-cb1f-7a4a-a17c-e6183f04fd77", "pid": 89653, "cwd": "/Users/me/Code/app", "file": "~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl"}, "ancestry": [{"pid": 89653, "started_us": 1794745289327000, "name": "node"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
+{"expect":[["started","hook"]]}
+{"append": ".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl", "line": {"type": "session", "version": 3, "id": "01a1df27-cb1f-7a4a-a17c-e6183f04fd77", "timestamp": "2026-11-15T12:21:29.503Z", "cwd": "/Users/me/Code/app"}}
+{"expect":[]}
+{"append": ".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl", "line": {"type": "model_change", "id": "8fdfe4f7", "parentId": null, "timestamp": "2026-11-15T12:21:29.540Z", "provider": "fake", "modelId": "fake"}}
+{"expect":[]}
+{"append": ".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl", "line": {"type": "thinking_level_change", "id": "e6ae1748", "parentId": "8fdfe4f7", "timestamp": "2026-11-15T12:21:29.540Z", "thinkingLevel": "off"}}
+{"expect":[]}
+{"hook": {"event": "agent_start", "session": "01a1df27-cb1f-7a4a-a17c-e6183f04fd77", "pid": 89653, "cwd": "/Users/me/Code/app", "file": "~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl"}, "ancestry": [{"pid": 89653, "started_us": 1794745289327000, "name": "node"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
+{"expect":[["started","hook"],["prompted","hook"]]}
+{"append": ".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl", "line": {"type": "message", "id": "0db03a5d", "parentId": "4e2a4e3f", "timestamp": "2026-11-15T12:21:45.338Z", "message": {"role": "user", "content": [{"type": "text", "text": "bash: sleep 20"}], "timestamp": 1794745305295}}}
+{"expect":[["prompted","file"]]}
+{"append": ".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl", "line": {"type": "message", "id": "bf5bed64", "parentId": "0db03a5d", "timestamp": "2026-11-15T12:21:45.342Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Running it."}, {"type": "toolCall", "id": "call_1794745305341", "name": "bash", "arguments": {"command": "sleep 20"}}], "api": "openai-completions", "provider": "fake", "model": "fake", "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}}, "stopReason": "toolUse", "timestamp": 1794745305339, "responseId": "c1", "rawStopReason": "tool_calls"}}}
+{"expect":[]}
+{"exit": 89653}
+{"expect":[["ended","hook"]]}

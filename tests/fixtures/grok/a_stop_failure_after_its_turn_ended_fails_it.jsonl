@@ -11,4 +11,4 @@
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/827b8089-da33-4050-8c9b-2cfe898abcd6/events.jsonl","line":{"ts":"2026-11-14T22:06:42.900Z","type":"turn_ended","outcome":"completed"}}
 {"expect":[["turn_ended","file"]]}
 {"hook":{"hookEventName":"stop_failure","sessionId":"827b8089-da33-4050-8c9b-2cfe898abcd6","cwd":"/Users/me/Code/app","workspaceRoot":"/Users/me/Code/app","permissionMode":"default","promptId":"5d0c8a51-6f2e-4b7a-9a43-0e1f2d3c4b5a","timestamp":"2026-11-14T22:12:20Z","error":"rate_limit","errorDetails":"429 Too Many Requests"}}
-{"expect":[["turn_failed","hook"]],"restart":"stopped"}
+{"expect":[["turn_failed","hook"]]}

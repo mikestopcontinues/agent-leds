@@ -73,7 +73,7 @@ A thread whose `session_meta` names a subagent, by its `source` or its `thread_s
 
 Every tool, read-only ones too, writes a permission request, and Grok writes each request and its answer as separate lines. One Grok approves by itself is answered within 7 ms; one the user answers waits seconds. So a request counts only once it has gone 250 ms unanswered, and the light turns to question that much later. The question tool's own approval is never a wait. A row left by a process that was killed stays in the registry until another session starts, so a row counts only while its pid runs with the start it records. A subagent runs in a session folder of its own, beside its parent's, under an id the registry never lists, so it is never followed; the parent shows its work. The files are undocumented; the fixtures in `tests/fixtures/grok/`, recorded from Grok 1.0.77, pin what the daemon expects of them. The gaps:
 
-- A turn that fails is known only from the hook, so a daemon started after it shows what the files say: working, or stopped once the turn's end is written. A request that cannot connect retries without end and never ends the turn, so the session stays green.
+- A turn that fails is known only from the hook. A daemon restarted after it keeps showing the error until the turn's end is written, and then shows stopped; one that was not running when the hook came shows what the files say. A request that cannot connect retries without end and never ends the turn, so the session stays green.
 - Grok sends `StopFailure` off the turn, so the hook can arrive after the turn's end is written, which shows stopped and then error, or after the next turn has started. The hook names its turn's `promptId`, and so do the agent's records in `updates.jsonl`, so a report on a turn the next one has replaced is dropped. A turn that fails before the agent writes anything has no such record: if the next turn has not written anything either when the report arrives, the next turn shows error until it writes something, and its own end still counts.
 - A run with `grok -p` gets no row, so it is not shown.
 - A subagent that finishes after its parent's turn without waking it should show the session as stopped. That was never seen: the one that finished after its turn woke its parent, which started a turn, and the ones that did not wake it finished inside the turn.
@@ -101,7 +101,6 @@ The gaps:
 - An error ending a turn is read from Cursor's code, not from a real session, as is the `stop` hook's status `aborted`.
 - Cursor writes a reply's reasoning after its text, in the same block. With a reasoning model, the question test reads the reasoning's last line instead of the reply's, so a question can show as stopped and a statement as a question. The probe used the Auto model, which wrote no reasoning.
 - A chat no hook bound names no process, so it does not show. That includes every chat already running when the daemon first starts with this version: it shows from its next prompt.
-- A daemon that restarts during a text-only turn shows the previous turn's end, because such a turn writes nothing until it ends.
 - After `/new`, the old chat stays bound to the process until it exits.
 - A process killed with `kill -9` leaves its marker. The daemon sees that the process is gone at its next liveness check, within seconds.
 
@@ -152,7 +151,7 @@ The rule is OpenCode's own: its loop goes on after a step that finished on `tool
 
 The gaps:
 
-- A pending permission is in the database only as a running tool, so only the plugin says it waits. A daemon restarted while one waits shows the session working until it moves on.
+- A pending permission is in the database only as a running tool, so only the plugin says it waits. A daemon that was not running when it was asked shows the session working until it moves on.
 - An error before a turn's first step, such as an unknown model, is in the database at most as a prompt with no reply. OpenCode 1.19.5 goes busy before it looks the model up, so the plugin's `session.error` shows it; 1.17.3 failed that way without ever going busy. A prompt that fails before the session goes busy, for an unknown agent or command, writes nothing and is not shown.
 - A turn waiting out a provider's retries shows as working, since nothing is written while it waits.
 - A step that overflowed the context and is compacted automatically is written as a step stopped with neither finish nor error, as an abort while retrying is, and its compaction is written just after. A read between the two shows the session idle for that moment.
@@ -163,15 +162,26 @@ The gaps:
 
 ## Pi
 
-Pi runs extensions rather than hook commands, so the install writes an extension, `~/.pi/agent/extensions/agent-leds.ts`, that passes Pi's events to `agent-leds hook pi`. It reports only a Pi with a UI, in its terminal interface or RPC mode, as an editor integration runs it. Print and JSON modes have no one waiting on them, and Pi's subagents run in them.
+Pi writes each session to a file, `~/.pi/agent/sessions/--<cwd>--/<time>_<session>.jsonl`, appending an entry as each message ends, and the daemon reads it as it grows. No file says which process runs a session, when an extension's dialog holds a run up, or whether an error is final, since Pi retries some, so the install also writes an extension, `~/.pi/agent/extensions/agent-leds.ts`, that passes those moments to `agent-leds hook pi`. Its `session_start` and `agent_start` name Pi's own pid and the session's file, which binds the session to its process and tells the daemon where to read, a folder set by `sessionDir` or `--session-dir` included. The extension reports only a Pi with a UI, in its terminal interface or RPC mode, as an editor integration runs it. Print and JSON modes have no one waiting on them, and pi-subagents runs its children in them, so their files, a level deeper than a cwd's folder, are never read.
 
-| Event | Session becomes |
+| What Pi writes or the extension tells | Session becomes |
 | --- | --- |
-| `agent_start`, `ui_prompt_end` | working |
+| `agent_start`, a prompt in the file, or a reply after the run ended, as when a background subagent's report wakes Pi | working |
 | `ui_prompt_start` during a run: an extension's dialog holds it up | question |
-| `agent_settled` whose last assistant message ends in a question mark | question, as a weak signal |
-| `agent_settled` otherwise | stopped |
+| `ui_prompt_end`, or the next entry after the dialog | working |
+| An assistant entry that ends the turn on a line ending in a question mark | question, as a weak signal |
+| An assistant entry that ends the turn otherwise | stopped |
 | `agent_settled` after an error | error |
-| `agent_settled` after an abort, or `session_shutdown` other than a reload | removed |
+| An assistant entry the user stopped, or `agent_settled` after a stop | removed |
+| `session_shutdown` other than a reload, or the Pi process gone | removed |
 
-Pi has no permission prompts of its own; extensions that add them ask through dialogs, which show as a question. Checked against Pi 0.84.4 and 1.5.2 in RPC mode. Pi Durable, Pi's library for long-running agent apps, is a framework rather than a harness and is not covered.
+An error entry in the file settles nothing, because Pi may retry it; only `agent_settled`, which comes once nothing will run by itself, says the turn failed. Pi 0.84.4 writes a stop during a tool as an error with the abort's text, so an entry the user stopped is told by its text, never by a provider's error that only mentions an abort. 0.84.4 also writes a new session's first prompt to no file until the reply ends, so `agent_start` says the turn runs. A background subagent's report is written whether or not it wakes Pi, so only a reply after it says a run began. A fork or clone copies the turns before it into its new file, and those are never read as new; a session resumed, in a new Pi or with `/resume` in the same one, starts where its file ends.
+
+What it cannot see:
+
+- A dialog answered while the daemon was down still shows as a question when it starts, until that turn ends, since nothing written says the dialog closed.
+- A daemon started while a session writes to its own `sessionDir` cannot find the file, so the session shows nothing until its next prompt names the file again.
+- The hook does not wait for the daemon, which reads the file before each hook it handles. A reply written before the daemon handles that run's `agent_start` would leave the session working until its next event; no real provider answers that fast.
+- Pi has no permission prompts of its own; extensions that add them ask through dialogs, which show as a question. A session Pi keeps no file of, as with `--no-session`, is not shown.
+
+Checked against Pi 0.84.4 and 1.5.2 in RPC mode, with this extension installed. Pi Durable, Pi's library for long-running agent apps, is a framework rather than a harness and is not covered.

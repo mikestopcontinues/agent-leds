@@ -21,7 +21,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::coverage::{Declared, Evidence};
+use crate::coverage::Declared;
 use crate::files;
 use crate::fsm::{Channel, Signal};
 use crate::source;
@@ -122,17 +122,8 @@ impl Harness {
         }
     }
 
-    fn event(self, payload: &Value) -> Option<Event> {
-        match self {
-            // Read by sources of their own.
-            Harness::Claude
-            | Harness::Codex
-            | Harness::Grok
-            | Harness::Cursor
-            | Harness::Junie
-            | Harness::OpenCode => None,
-            Harness::Pi => pi::event(payload),
-        }
+    fn event(self, _payload: &Value) -> Option<Event> {
+        None
     }
 
     /// The events an install registers the hook for, and the only ones. For
@@ -145,8 +136,8 @@ impl Harness {
             Harness::Cursor => cursor::HOOKS.to_vec(),
             Harness::Junie => junie::HOOKS.to_vec(),
             Harness::OpenCode => opencode::HOOKS.to_vec(),
-            // This loads a plugin of ours, which `check` looks at instead.
-            Harness::Pi => Vec::new(),
+            // An extension of ours passes these on, and `check` looks at it.
+            Harness::Pi => pi::HOOKS.to_vec(),
         }
     }
 
@@ -298,7 +289,7 @@ pub fn signals(harness: Harness) -> &'static [Declared] {
         Harness::Cursor => source::cursor::SIGNALS,
         Harness::Junie => source::junie::SIGNALS,
         Harness::OpenCode => source::opencode::SIGNALS,
-        Harness::Pi => pi::SIGNALS,
+        Harness::Pi => source::pi::SIGNALS,
     }
 }
 
@@ -375,11 +366,6 @@ struct Event {
     subagent: bool,
 }
 
-/// Reads text that may be null as empty.
-fn or_empty<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
-    Option::deserialize(deserializer).map(Option::unwrap_or_default)
-}
-
 impl Event {
     /// What the event says of its session, each fact a signal of the table,
     /// whose order decides what they come to.
@@ -431,23 +417,6 @@ pub fn interim(harness: Harness, payload: &Value) -> Option<(String, String, BTr
     let event = harness.event(payload)?;
     let signals = event.signals();
     Some((event.session, event.cwd, signals))
-}
-
-/// A signal one of the harnesses whose files are not read yet tells through
-/// its hooks.
-const fn hooked(
-    signal: Signal,
-    evidence: Evidence,
-    record: &'static str,
-    cite: &'static str,
-) -> Declared {
-    Declared {
-        signal,
-        channel: Channel::Hook,
-        evidence,
-        record,
-        cite,
-    }
 }
 
 /// Whether a final message ends by asking the user something.
@@ -631,11 +600,6 @@ mod tests {
         fn deref(&self) -> &Path {
             self.0.path()
         }
-    }
-
-    /// What a payload says, as the daemon reads it.
-    pub fn signals(harness: Harness, payload: Value) -> Option<Vec<Signal>> {
-        Some(harness.event(&payload)?.signals().into_iter().collect())
     }
 
     #[test]

@@ -49,6 +49,9 @@ pub struct Session {
     pub liveness: Liveness,
     /// The channel that started it, which a sweep's `Ended` comes through.
     pub bound: Channel,
+    /// The phase a hook moved it from, when a hook made its last move. Its
+    /// files, which no hook writes to, may show it there still.
+    pub hooked: Option<Phase>,
 }
 
 /// The sessions, as saved in queue.json. Tracked sessions without a light
@@ -125,6 +128,7 @@ impl Queue {
             return Change::None;
         }
         let light = to.state() != from.state();
+        let hooked = (o.channel == Channel::Hook).then_some(from);
         match (position, &o.event) {
             (None, Event::Started(start)) => self.sessions.push(Session {
                 key: o.key.clone(),
@@ -136,6 +140,7 @@ impl Queue {
                 seen: now,
                 liveness: start.liveness.clone(),
                 bound: o.channel,
+                hooked,
             }),
             (None, Event::Signals(_)) => unreachable!("only Started leaves Gone"),
             (Some(index), _) if to == Phase::Gone => {
@@ -144,6 +149,7 @@ impl Queue {
             (Some(index), _) => {
                 let session = &mut self.sessions[index];
                 session.phase = to;
+                session.hooked = hooked;
                 session.entered = now;
                 if light || announce {
                     session.since = now;
@@ -261,11 +267,14 @@ impl Queue {
     }
 
     /// The queue at startup: what the harnesses' files show now (`fresh`),
-    /// keeping a saved session's read mark or dismissal when it is about the
-    /// same turn and the daemon alone could have taken it there. A turn that
-    /// ended while the daemon was down shows unread, and a session whose
-    /// process is gone is not in `fresh` at all. A session only its hooks
-    /// told of, which no file can contradict, is kept as it was saved.
+    /// keeping a saved session's phase when it is about the same turn and
+    /// either the daemon alone could have taken it there, as with a read
+    /// mark or a dismissal, or a hook took it there from where the files
+    /// still show it, as with a dialog open or a failure only a hook tells.
+    /// A turn that ended while the daemon was down shows unread, and a
+    /// session whose process is gone is not in `fresh` at all. A session
+    /// only its hooks told of, which no file can contradict, is kept as it
+    /// was saved.
     pub fn restore(saved: Queue, fresh: Queue) -> Queue {
         let daemon: Vec<Signal> = Signal::ALL.into_iter().filter(|s| s.daemon()).collect();
         let mut sessions = fresh.sessions;
@@ -282,7 +291,9 @@ impl Queue {
             }
             // Nothing new was heard of it, so its silence goes on.
             session.seen = old.seen;
-            if old.turn.is_some() && fsm::reachable(session.phase, &daemon).contains(&old.phase) {
+            let kept = old.hooked == Some(session.phase)
+                || fsm::reachable(session.phase, &daemon).contains(&old.phase);
+            if old.turn.is_some() && kept {
                 session.phase = old.phase;
                 session.since = old.since;
                 session.entered = old.entered;
@@ -755,6 +766,28 @@ mod tests {
             (session.label.as_str(), session.since, session.seen),
             ("app", 2, 2)
         );
+    }
+
+    #[test]
+    fn a_restart_keeps_what_a_hook_told_of_a_turn_its_files_still_show_where_it_found_it() {
+        let hooked = |signal: Signal| {
+            let mut saved = one(&[Prompted], false, false);
+            let mut o = self::signal("a", signal, Some("t1"));
+            o.channel = Channel::Hook;
+            saved.apply(&o, 3);
+            saved
+        };
+        // A dialog still open, and a failure the files cannot tell is final.
+        let restored = Queue::restore(hooked(QuestionAsked), seeded(&[Prompted], "t1"));
+        assert_eq!(phase(&restored, "a"), Blocked);
+        let restored = Queue::restore(hooked(TurnFailed), seeded(&[Prompted], "t1"));
+        assert_eq!(phase(&restored, "a"), Failed);
+        // The turn went on to end while the daemon was down.
+        let restored = Queue::restore(hooked(QuestionAsked), seeded(&[TurnEnded], "t1"));
+        assert_eq!(phase(&restored, "a"), Stopped);
+        // What the files told is theirs to tell again.
+        let restored = Queue::restore(one(&[TurnFailed], false, false), seeded(&[Prompted], "t1"));
+        assert_eq!(phase(&restored, "a"), Working);
     }
 
     #[test]

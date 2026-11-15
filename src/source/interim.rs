@@ -25,21 +25,13 @@ impl Interim {
 }
 
 /// Which of the hook's ancestors runs the session, until the harness's own
-/// files name it: the parent for Pi, whose extension runs the hook itself.
-fn process(harness: Harness, ancestry: &[Proc]) -> Option<Liveness> {
+/// files name it.
+fn process(ancestry: &[Proc]) -> Option<Liveness> {
     let exact = |proc: &Proc| Liveness::Process {
         pid: proc.pid,
         start: StartCheck::ExactUs(proc.started_us),
     };
-    match harness {
-        Harness::Pi => ancestry.first().map(exact),
-        Harness::Claude
-        | Harness::Codex
-        | Harness::Grok
-        | Harness::Cursor
-        | Harness::Junie
-        | Harness::OpenCode => None,
-    }
+    ancestry.first().map(exact)
 }
 
 impl Source for Interim {
@@ -95,7 +87,7 @@ impl Source for Interim {
         let mut out = Vec::new();
         // Every event but the session's end says its process runs it.
         if !signals.contains(&Signal::Ended)
-            && let Some(liveness) = process(self.harness, &hook.ancestry)
+            && let Some(liveness) = process(&hook.ancestry)
         {
             out.push(observation(Event::Started(Start { cwd, liveness })));
         }

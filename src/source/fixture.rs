@@ -15,7 +15,8 @@
 //!   WAL mode, as another process committing to it, and `"from": "<file>"`
 //!   in place of `run` runs a file in the harness's fixture folder, such as
 //!   the schema of the harness's database;
-//! - `{"hook": <payload>, "ancestry": [<proc>, ...]}` delivers a hook;
+//! - `{"hook": <payload>, "ancestry": [<proc>, ...]}` delivers a hook, with
+//!   each string in the payload that starts `~/` taken as a path under home;
 //! - `{"lock": "<path>", "at": "<ISO 8601 UTC time>"}` is a process opening
 //!   a file, creating it if it is not there, and holding a lock on it: the
 //!   file's modification time is `at`, or now, and the fake kernel says it
@@ -251,6 +252,15 @@ impl Replay {
         phases(&self.queue)
     }
 
+    /// A hook step as the harness delivers it, naming paths in this home.
+    fn hook(&self, payload: &Value, ancestry: &[Proc]) -> Hook {
+        Hook {
+            harness: self.harness,
+            payload: at_home(payload, self.home.path()),
+            ancestry: ancestry.to_vec(),
+        }
+    }
+
     /// Makes a file step's change on disk, and to the fake kernel for a lock.
     fn write(&mut self, step: &Step) -> PathBuf {
         let text = |value: &Value| match value {
@@ -422,14 +432,9 @@ pub fn replay(harness: Harness, name: &str) -> Replay {
                 differs.clear();
                 continue;
             }
-            Step::Hook { hook, ancestry } => source.hook(
-                &replay.kernel,
-                &Hook {
-                    harness,
-                    payload: hook.clone(),
-                    ancestry: ancestry.clone(),
-                },
-            ),
+            Step::Hook { hook, ancestry } => {
+                source.hook(&replay.kernel, &replay.hook(hook, ancestry))
+            }
             step if step.file().is_some() => {
                 let path = replay.write(step);
                 changed(source.as_mut(), &replay.kernel, Some(&[path]))
@@ -476,6 +481,24 @@ pub fn replay(harness: Harness, name: &str) -> Replay {
     replay
 }
 
+/// A payload with each string that starts `~/` made a path under `home`.
+fn at_home(payload: &Value, home: &Path) -> Value {
+    match payload {
+        Value::String(text) => match text.strip_prefix("~/") {
+            Some(path) => Value::from(home.join(path).to_string_lossy()),
+            None => payload.clone(),
+        },
+        Value::Array(items) => items.iter().map(|item| at_home(item, home)).collect(),
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(name, value)| (name.clone(), at_home(value, home)))
+                .collect(),
+        ),
+        _ => payload.clone(),
+    }
+}
+
 /// The phases a fixture ends in when its file steps are read two at a time,
 /// as FSEvents may coalesce them.
 fn coalesce(harness: Harness, name: &str, fixture: &Fixture) -> BTreeMap<Key, Phase> {
@@ -506,14 +529,9 @@ fn coalesce(harness: Harness, name: &str, fixture: &Fixture) -> BTreeMap<Key, Ph
         }
         let observations = match step {
             Step::Now { now } => clock(source.as_mut(), &mut replay.kernel, now),
-            Step::Hook { hook, ancestry } => source.hook(
-                &replay.kernel,
-                &Hook {
-                    harness,
-                    payload: hook.clone(),
-                    ancestry: ancestry.clone(),
-                },
-            ),
+            Step::Hook { hook, ancestry } => {
+                source.hook(&replay.kernel, &replay.hook(hook, ancestry))
+            }
             step => {
                 replay.kernel(step);
                 replay.sweep()
@@ -690,8 +708,9 @@ mod tests {
                     .map(|word| word[..1].to_uppercase() + &word[1..])
                     .collect(),
             ),
-            // OpenCode's plugin names the event it passes on.
-            Harness::OpenCode => named("event"),
+            // OpenCode's plugin names the event it passes on, and Pi's
+            // extension passes on Pi's own name for it.
+            Harness::OpenCode | Harness::Pi => named("event"),
             _ => named("hook_event_name"),
         }
     }
@@ -700,7 +719,7 @@ mod tests {
     fn install_registers_exactly_the_hooks_the_source_reads() {
         for harness in Harness::ALL {
             let events = harness.events();
-            // Claude Code has no hooks, and Pi loads a plugin.
+            // Claude Code has no hooks.
             if events.is_empty() {
                 continue;
             }

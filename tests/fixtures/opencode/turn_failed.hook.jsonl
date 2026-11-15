@@ -7,4 +7,4 @@
 {"hook":{"event":"busy","session":"ses_e23ee5772ffeEVRcj47R02tvbh","pid":88172,"directory":"/Users/me/Code/app"},"ancestry":[{"pid":88172,"started_us":1794693255000000,"name":"opencode"},{"pid":74158,"started_us":1794608788000000,"name":"zsh"}]}
 {"expect":[["started","hook"],["prompted","hook"]]}
 {"hook":{"event":"session.error","session":"ses_e23ee5772ffeEVRcj47R02tvbh","error":"UnknownError"},"ancestry":[{"pid":88172,"started_us":1794693255000000,"name":"opencode"},{"pid":74158,"started_us":1794608788000000,"name":"zsh"}]}
-{"expect":[["turn_failed","hook"]],"restart":"working"}
+{"expect":[["turn_failed","hook"]]}
