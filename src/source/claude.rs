@@ -297,6 +297,8 @@ struct Session {
     owner: PathBuf,
     status: Status,
     transcript: Option<(PathBuf, Tail)>,
+    /// Whether the last read of the transcript stopped at its budget.
+    behind: bool,
     /// Whether a turn started and has not ended.
     open: bool,
     turn: Option<TurnKey>,
@@ -314,7 +316,6 @@ pub struct Claude {
     projects_dir: PathBuf,
     procs: HashMap<PathBuf, Proc>,
     sessions: HashMap<String, Session>,
-    behind: bool,
 }
 
 impl Claude {
@@ -324,7 +325,6 @@ impl Claude {
             projects_dir: home.join(".claude/projects"),
             procs: HashMap::new(),
             sessions: HashMap::new(),
-            behind: false,
         }
     }
 
@@ -474,6 +474,7 @@ impl Claude {
                 owner: path.to_owned(),
                 status: Status::Starting,
                 transcript,
+                behind: false,
                 open: false,
                 turn: None,
                 closed_waiting: None,
@@ -550,15 +551,17 @@ impl Claude {
         let (_, tail) = session.transcript.as_mut().expect("opened");
         let lines = match tail.read(path) {
             Ok(Lines::Read { lines, more }) => {
-                self.behind |= more;
+                session.behind = more;
                 lines
             }
             Ok(Lines::Replaced) => {
                 session.transcript = Tail::at_end(path).ok().map(|tail| (path.to_owned(), tail));
+                session.behind = false;
                 return;
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 session.transcript = None;
+                session.behind = false;
                 return;
             }
             Err(_) => return,
@@ -775,7 +778,6 @@ impl Source for Claude {
     }
 
     fn changed(&mut self, k: &dyn Kernel, paths: Option<&[PathBuf]>) -> Vec<Observation> {
-        self.behind = false;
         let mut out = Vec::new();
         let mut edges = Vec::new();
         let files = match paths {
@@ -832,7 +834,7 @@ impl Source for Claude {
     }
 
     fn behind(&self) -> bool {
-        self.behind
+        self.sessions.values().any(|session| session.behind)
     }
 }
 
@@ -1036,6 +1038,35 @@ mod tests {
         fs::set_permissions(&transcript, fs::Permissions::from_mode(0o600)).unwrap();
         let phases: Vec<Phase> = seeded.sessions().iter().map(|s| s.phase).collect();
         assert_eq!(phases, [Phase::Idle]);
+    }
+
+    #[test]
+    fn a_transcript_left_partly_read_stays_behind_until_it_is_read_to_its_end() {
+        let replay = replay("turn_ended.file");
+        let home = replay.home.path();
+        let transcript = home
+            .join(".claude/projects/-Users-me-Code-app/e8f843a7-1f54-44e3-b14d-99f53e9cec7a.jsonl");
+        let session_file = home.join(".claude/sessions/90859.json");
+        let mut source = replay.source();
+        source.seed(&replay.kernel, &[]).unwrap();
+        let line = format!(
+            "{{\"type\": \"progress\", \"data\": \"{}\"}}\n",
+            "x".repeat(1 << 20)
+        );
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .unwrap();
+        for _ in 0..9 {
+            std::io::Write::write_all(&mut file, line.as_bytes()).unwrap();
+        }
+        source.changed(&replay.kernel, Some(&[transcript]));
+        assert!(source.behind());
+        // Another file changing first leaves what is unread to read.
+        source.changed(&replay.kernel, Some(&[session_file]));
+        assert!(source.behind());
+        source.changed(&replay.kernel, None);
+        assert!(!source.behind());
     }
 
     #[test]
