@@ -10,7 +10,7 @@ mod junie;
 mod opencode;
 mod pi;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -20,7 +20,7 @@ use crate::coverage::Declared;
 use crate::files;
 use crate::fsm::{Channel, Signal};
 use crate::launchd;
-use crate::source;
+use crate::source::{self, Folders};
 
 /// An agent harness whose sessions the queue shows.
 #[derive(
@@ -134,11 +134,11 @@ impl Harness {
     }
 
     /// Every hook command registered with the harness, with its event.
-    fn hooks(self, home: &Path) -> Result<Vec<(String, String)>> {
+    fn hooks(self, home: &Path, folders: &Folders) -> Result<Vec<(String, String)>> {
         match self {
             Harness::Claude => claude::hooks(home),
             Harness::Codex => codex::hooks(home),
-            Harness::Grok => grok::hooks(home),
+            Harness::Grok => grok::hooks(&folders.grok),
             Harness::Cursor => cursor::hooks(home),
             Harness::Junie => junie::hooks(home),
             Harness::OpenCode | Harness::Pi => Ok(Vec::new()),
@@ -149,13 +149,13 @@ impl Harness {
     /// our hooks are exactly the ones an install from `exe` writes, for
     /// exactly the events it writes them for, with nothing of SidePulse's
     /// own software beside them.
-    fn check(self, home: &Path, exe: &Path) -> Result<()> {
+    fn check(self, home: &Path, folders: &Folders, exe: &Path) -> Result<()> {
         match self {
             Harness::OpenCode => return opencode::check(home, exe),
             Harness::Pi => return pi::PLUGIN.check(home, exe),
             _ => {}
         }
-        let hooks = self.hooks(home)?;
+        let hooks = self.hooks(home, folders)?;
         let ours: Vec<&(String, String)> =
             hooks.iter().filter(|(_, hook)| self.owns(hook)).collect();
         let mut problems = Vec::new();
@@ -219,7 +219,7 @@ impl Harness {
             problems.push(format!("{error:#}"));
         }
         if self == Harness::Grok
-            && let Err(error) = grok::claude_hooks(home)
+            && let Err(error) = grok::claude_hooks(home, &folders.grok)
         {
             problems.push(format!("{error:#}"));
         }
@@ -255,11 +255,11 @@ impl Harness {
         }
     }
 
-    fn install(self, home: &Path, exe: &Path) -> Result<()> {
+    fn install(self, home: &Path, folders: &Folders, exe: &Path) -> Result<()> {
         match self {
             Harness::Claude => claude::install(home, exe),
             Harness::Codex => codex::install(home, exe),
-            Harness::Grok => grok::install(home, exe),
+            Harness::Grok => grok::install(&folders.grok, exe),
             Harness::Cursor => cursor::install(home, exe),
             Harness::Junie => junie::install(home, exe),
             Harness::OpenCode => opencode::PLUGIN.install(home, exe),
@@ -267,11 +267,11 @@ impl Harness {
         }
     }
 
-    fn uninstall(self, home: &Path) -> Result<()> {
+    fn uninstall(self, home: &Path, folders: &Folders) -> Result<()> {
         match self {
             Harness::Claude => claude::uninstall(home),
             Harness::Codex => codex::uninstall(home),
-            Harness::Grok => grok::uninstall(home),
+            Harness::Grok => grok::uninstall(&folders.grok),
             Harness::Cursor => cursor::uninstall(home),
             Harness::Junie => junie::uninstall(home),
             Harness::OpenCode => opencode::PLUGIN.uninstall(home),
@@ -306,39 +306,38 @@ pub fn at_home(home: &Path, harness: Harness) -> bool {
     home.join(harness.folder()).is_dir()
 }
 
-/// Claude Code's and Junie's folders as the service finds them, from
-/// launchd's environment.
-pub fn service_folders(home: &Path) -> (PathBuf, PathBuf) {
-    let claude = launchd::getenv("CLAUDE_CONFIG_DIR");
-    let junie = launchd::getenv("JUNIE_HOME");
-    (
-        source::claude::folder(claude.as_deref(), home),
-        source::junie::folder(junie.as_deref()),
-    )
+/// The folders of Claude Code, Junie and Grok as the service finds them,
+/// from launchd's environment.
+pub fn service_folders(home: &Path) -> Folders {
+    Folders::from(home, launchd::getenv)
 }
 
-/// Whether a harness is in use: Claude Code's and Junie's folders where the
-/// service, given `claude` and `junie`, or this shell finds them, the
+/// Whether a harness is in use: Claude Code's, Junie's and Grok's folders
+/// where the service, given `folders`, or this shell finds them, the
 /// others' in `home`.
-pub fn in_use(harness: Harness, home: &Path, claude: &Path, junie: &Path) -> bool {
+pub fn in_use(harness: Harness, home: &Path, folders: &Folders) -> bool {
+    let here = Folders::here(home);
     match harness {
-        Harness::Claude => claude.is_dir() || source::claude::config_dir(home).is_dir(),
-        Harness::Junie => junie.is_dir() || source::junie::home().is_dir(),
+        Harness::Claude => folders.claude.is_dir() || here.claude.is_dir(),
+        Harness::Junie => folders.junie.is_dir() || here.junie.is_dir(),
+        Harness::Grok => folders.grok.is_dir() || here.grok.is_dir(),
         _ => at_home(home, harness),
     }
 }
 
 /// Registers the hook with every harness `used` says is in use, replacing
-/// any earlier registration. One harness failing does not stop the rest.
+/// any earlier registration, in the harness's folder of `folders` where it
+/// keeps its hooks there. One harness failing does not stop the rest.
 pub fn install(
     home: &Path,
+    folders: &Folders,
     exe: &Path,
     used: impl Fn(Harness) -> bool,
 ) -> Vec<(Harness, Result<()>)> {
     Harness::ALL
         .into_iter()
         .filter(|&harness| used(harness))
-        .map(|harness| (harness, harness.install(home, exe)))
+        .map(|harness| (harness, harness.install(home, folders, exe)))
         .collect()
 }
 
@@ -346,20 +345,21 @@ pub fn install(
 /// against what an install from `exe` would write.
 pub fn check(
     home: &Path,
+    folders: &Folders,
     exe: &Path,
     used: impl Fn(Harness) -> bool,
 ) -> Vec<(Harness, Result<()>)> {
     Harness::ALL
         .into_iter()
         .filter(|&harness| used(harness))
-        .map(|harness| (harness, harness.check(home, exe)))
+        .map(|harness| (harness, harness.check(home, folders, exe)))
         .collect()
 }
 
 /// Removes the hook from every harness and leaves everything else in place.
-pub fn uninstall(home: &Path) -> Vec<(Harness, Result<()>)> {
+pub fn uninstall(home: &Path, folders: &Folders) -> Vec<(Harness, Result<()>)> {
     let all = Harness::ALL.into_iter();
-    all.map(|harness| (harness, harness.uninstall(home)))
+    all.map(|harness| (harness, harness.uninstall(home, folders)))
         .collect()
 }
 
@@ -557,6 +557,11 @@ mod tests {
         pub fn json(&self, file: &str) -> Value {
             serde_json::from_str(&fs::read_to_string(self.join(file)).unwrap()).unwrap()
         }
+
+        /// The harnesses' folders where no variable moves them.
+        pub fn folders(&self) -> Folders {
+            Folders::at(self)
+        }
     }
 
     impl std::ops::Deref for Home {
@@ -567,20 +572,23 @@ mod tests {
         }
     }
 
-    /// Claude Code and Junie are in use where their folders are, which may
-    /// be outside the home folder; the others, in it.
+    /// Claude Code, Junie and Grok are in use where their folders are,
+    /// which may be outside the home folder; the others, in it.
     #[test]
     fn a_harness_is_in_use_where_its_folder_is() {
         let home = tempfile::tempdir().unwrap();
         let home = home.path();
-        let (claude, junie) = (home.join("work/claude"), home.join("work/junie"));
-        std::fs::create_dir_all(&claude).unwrap();
-        std::fs::create_dir_all(&junie).unwrap();
-        assert!(in_use(Harness::Claude, home, &claude, &junie));
-        assert!(in_use(Harness::Junie, home, &claude, &junie));
-        assert!(!in_use(Harness::Codex, home, &claude, &junie));
+        let work = home.join("work");
+        let folders = Folders::from(home, |name| Some(work.join(name).into()));
+        for folder in [&folders.claude, &folders.junie, &folders.grok] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        for harness in [Harness::Claude, Harness::Junie, Harness::Grok] {
+            assert!(in_use(harness, home, &folders), "{harness:?}");
+        }
+        assert!(!in_use(Harness::Codex, home, &folders));
         std::fs::create_dir(home.join(".codex")).unwrap();
-        assert!(in_use(Harness::Codex, home, &claude, &junie));
+        assert!(in_use(Harness::Codex, home, &folders));
     }
 
     #[test]
@@ -611,9 +619,9 @@ mod tests {
     fn only_harnesses_that_have_been_used_are_registered() {
         let home = Home::new();
         let used = |harness| at_home(&home, harness);
-        assert!(install(&home, Path::new("/bin/agent-leds"), used).is_empty());
+        assert!(install(&home, &home.folders(), Path::new("/bin/agent-leds"), used).is_empty());
         fs::create_dir(home.join(".cursor")).unwrap();
-        let installed = install(&home, Path::new("/bin/agent-leds"), used);
+        let installed = install(&home, &home.folders(), Path::new("/bin/agent-leds"), used);
         assert!(matches!(installed[..], [(Harness::Cursor, Ok(()))]));
         assert!(home.join(cursor::FILE).exists());
     }
@@ -671,7 +679,7 @@ mod tests {
         let exe = Path::new("/bin/agent-leds");
         let check = |exe: &str| {
             Harness::Cursor
-                .check(&home, Path::new(exe))
+                .check(&home, &home.folders(), Path::new(exe))
                 .map_err(|error| error.to_string())
         };
         assert!(
@@ -716,7 +724,10 @@ mod tests {
             r#"{ "version": 1, "hooks": { "stop": [{ "command": "~/.local/share/sidepulse/venv/bin/python -m sidepulse.hook_entry --provider cursor" }] } }"#,
         );
         cursor::install(&home, exe).unwrap();
-        let error = Harness::Cursor.check(&home, exe).unwrap_err().to_string();
+        let error = Harness::Cursor
+            .check(&home, &home.folders(), exe)
+            .unwrap_err()
+            .to_string();
         assert_eq!(
             error,
             "SidePulse's own hook is registered for stop; remove it from ~/.cursor/hooks.json"

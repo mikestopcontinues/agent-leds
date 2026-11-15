@@ -1,8 +1,9 @@
-//! Grok: its hooks live in files of their own in `~/.grok/hooks/`. The
-//! daemon reads Grok's files, and needs one hook, for a tool's approval
-//! card, which nothing in them tells from an approval Grok gave itself.
-//! While any hook of the user's own is registered, Grok asks once to trust
-//! each folder but the home folder itself before it runs any of them.
+//! Grok: its hooks live in files of their own in the `hooks` folder of
+//! Grok's folder, `~/.grok` or `$GROK_HOME`. The daemon reads Grok's files,
+//! and needs one hook, for a tool's approval card, which nothing in them
+//! tells from an approval Grok gave itself. While any hook of the user's own
+//! is registered, Grok asks once to trust each folder but the home folder
+//! itself before it runs any of them.
 //!
 //! Grok also runs the hooks in `~/.claude/settings.json`, unless its config
 //! sets `[compat.claude] hooks = false`, so a hook registered for Claude Code
@@ -17,30 +18,33 @@ use super::{Harness, claude, commands, read_hooks};
 use crate::files;
 use crate::source::grok::PERMISSION_PROMPT;
 
-/// Our hooks' own file, written whole. Grok reads every JSON file in the
-/// folder.
-pub const FILE: &str = ".grok/hooks/agent-leds.json";
+/// Our hooks' own file in Grok's folder, written whole. Grok reads every
+/// JSON file in its `hooks` folder.
+pub const FILE: &str = "hooks/agent-leds.json";
 
 /// The hook events the daemon needs: `Notification`, only for
 /// [`PERMISSION_PROMPT`].
 pub const HOOKS: [&str; 1] = ["Notification"];
 
-const CONFIG: &str = ".grok/config.toml";
+/// Grok's own config, in its folder.
+const CONFIG: &str = "config.toml";
 
-/// Writes our hooks' file whole, in place of whatever an older version wrote.
-pub fn install(home: &Path, exe: &Path) -> Result<()> {
+/// Writes our hooks' file whole in Grok's `folder`, in place of whatever an
+/// older version wrote.
+pub fn install(folder: &Path, exe: &Path) -> Result<()> {
     let handler = json!({ "type": "command", "command": Harness::Grok.command(exe), "timeout": 5 });
     let hooks =
         json!({ "hooks": { HOOKS[0]: [{ "matcher": PERMISSION_PROMPT, "hooks": [handler] }] } });
     files::replace(
-        &home.join(FILE),
+        &folder.join(FILE),
         &(serde_json::to_string_pretty(&hooks)? + "\n"),
     )
 }
 
-/// The hooks in every file of the folder, since Grok runs them all.
-pub fn hooks(home: &Path) -> Result<Vec<(String, String)>> {
-    let folder = home.join(FILE);
+/// The hooks in every file of the `hooks` folder of Grok's `folder`, since
+/// Grok runs them all.
+pub fn hooks(folder: &Path) -> Result<Vec<(String, String)>> {
+    let folder = folder.join(FILE);
     let folder = folder.parent().expect("the file is in a folder");
     let Ok(entries) = std::fs::read_dir(folder) else {
         return Ok(Vec::new());
@@ -58,14 +62,15 @@ pub fn hooks(home: &Path) -> Result<Vec<(String, String)>> {
     Ok(found)
 }
 
-pub fn uninstall(home: &Path) -> Result<()> {
-    files::remove(&home.join(FILE))
+pub fn uninstall(folder: &Path) -> Result<()> {
+    files::remove(&folder.join(FILE))
 }
 
 /// What is wrong when hooks an older agent-leds registered with Claude Code
-/// are still in `~/.claude/settings.json` and Grok runs that file's hooks.
-pub fn claude_hooks(home: &Path) -> Result<()> {
-    if !reads_claude_hooks(home)? {
+/// are still in `~/.claude/settings.json` and Grok, with its `folder`, runs
+/// that file's hooks.
+pub fn claude_hooks(home: &Path, folder: &Path) -> Result<()> {
+    if !reads_claude_hooks(folder)? {
         return Ok(());
     }
     let mut events: Vec<String> = claude::hooks(home)?
@@ -85,9 +90,10 @@ pub fn claude_hooks(home: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Whether Grok's config leaves `compat.claude.hooks` on, as it is by default.
-fn reads_claude_hooks(home: &Path) -> Result<bool> {
-    let path = home.join(CONFIG);
+/// Whether the config in Grok's `folder` leaves `compat.claude.hooks` on,
+/// as it is by default.
+fn reads_claude_hooks(folder: &Path) -> Result<bool> {
+    let path = folder.join(CONFIG);
     let Some(text) = files::read_optional(&path)? else {
         return Ok(true);
     };
@@ -107,11 +113,22 @@ mod tests {
 
     use super::super::tests::Home;
     use super::*;
+    use crate::source::Folders;
+
+    /// Grok's folder where `GROK_HOME` puts it, outside `~/.grok`.
+    fn elsewhere(home: &Home) -> Folders {
+        Folders {
+            grok: home.join("work/grok"),
+            ..home.folders()
+        }
+    }
 
     #[test]
     fn installing_over_0_5_0_leaves_only_the_permission_prompt_and_the_rest() {
         let home = Home::new();
-        home.write(".grok/hooks/sidepulse.json", "{}");
+        let folders = elsewhere(&home);
+        let grok = &folders.grok;
+        home.write("work/grok/hooks/sidepulse.json", "{}");
         let ours = json!([{ "hooks": [{ "type": "command", "command": "/opt/homebrew/bin/agent-leds hook grok", "timeout": 5 }] }]);
         let mut hooks = Map::new();
         for event in [
@@ -130,28 +147,46 @@ mod tests {
             "Notification".into(),
             json!([{ "matcher": "permission_prompt", "hooks": ours[0]["hooks"] }]),
         );
-        home.write(FILE, &json!({ "hooks": hooks }).to_string());
+        home.write(
+            "work/grok/hooks/agent-leds.json",
+            &json!({ "hooks": hooks }).to_string(),
+        );
         let exe = Path::new("/opt/homebrew/bin/agent-leds");
-        let leftover = Harness::Grok.check(&home, exe).unwrap_err().to_string();
+        let leftover = Harness::Grok
+            .check(&home, &folders, exe)
+            .unwrap_err()
+            .to_string();
         assert!(
             leftover.starts_with("a hook this version does not use is registered"),
             "{leftover}"
         );
-        install(&home, exe).unwrap();
+        install(grok, exe).unwrap();
         assert_eq!(
-            home.json(FILE),
+            home.json("work/grok/hooks/agent-leds.json"),
             json!({ "hooks": { "Notification": [{ "matcher": "permission_prompt", "hooks": ours[0]["hooks"] }] } })
         );
-        assert!(home.join(".grok/hooks/sidepulse.json").exists());
-        Harness::Grok.check(&home, exe).unwrap();
-        let moved = Harness::Grok.check(&home, Path::new("/usr/local/bin/agent-leds"));
+        assert!(grok.join("hooks/sidepulse.json").exists());
+        assert!(!home.join(".grok").exists());
+        Harness::Grok.check(&home, &folders, exe).unwrap();
+        let moved = Harness::Grok.check(&home, &folders, Path::new("/usr/local/bin/agent-leds"));
         let moved = moved.unwrap_err().to_string();
         assert!(moved.contains("not this binary"), "{moved}");
-        uninstall(&home).unwrap();
-        assert!(!home.join(FILE).exists());
-        assert!(home.join(".grok/hooks/sidepulse.json").exists());
+        // A hook in ~/.grok is not one Grok reads.
         assert_eq!(
-            Harness::Grok.check(&home, exe).unwrap_err().to_string(),
+            Harness::Grok
+                .check(&home, &home.folders(), exe)
+                .unwrap_err()
+                .to_string(),
+            "not registered; run `agent-leds install`"
+        );
+        uninstall(grok).unwrap();
+        assert!(!grok.join(FILE).exists());
+        assert!(grok.join("hooks/sidepulse.json").exists());
+        assert_eq!(
+            Harness::Grok
+                .check(&home, &folders, exe)
+                .unwrap_err()
+                .to_string(),
             "not registered; run `agent-leds install`"
         );
     }
@@ -159,10 +194,11 @@ mod tests {
     #[test]
     fn claude_hooks_of_ours_fire_inside_grok_unless_its_config_turns_them_off() {
         let home = Home::new();
+        let folders = elsewhere(&home);
         let exe = Path::new("/opt/homebrew/bin/agent-leds");
-        home.write(CONFIG, "[cli]\nauto_update = true\n");
-        install(&home, exe).unwrap();
-        Harness::Grok.check(&home, exe).unwrap();
+        home.write("work/grok/config.toml", "[cli]\nauto_update = true\n");
+        install(&folders.grok, exe).unwrap();
+        Harness::Grok.check(&home, &folders, exe).unwrap();
         let handler =
             json!({ "type": "command", "command": "/opt/homebrew/bin/agent-leds hook claude" });
         home.write(
@@ -175,17 +211,21 @@ mod tests {
             .to_string(),
         );
         assert_eq!(
-            Harness::Grok.check(&home, exe).unwrap_err().to_string(),
+            Harness::Grok
+                .check(&home, &folders, exe)
+                .unwrap_err()
+                .to_string(),
             "Grok also runs the Claude Code hook of agent-leds that ~/.claude/settings.json \
              registers for Stop, StopFailure, each under Grok's session id; run `agent-leds \
              install`"
         );
-        home.write(CONFIG, "[compat.claude]\nhooks = false\n");
-        Harness::Grok.check(&home, exe).unwrap();
+        home.write("work/grok/config.toml", "[compat.claude]\nhooks = false\n");
+        Harness::Grok.check(&home, &folders, exe).unwrap();
         // Installing removes them from Claude Code's settings.
-        home.write(CONFIG, "");
-        super::super::install(&home, exe, |harness| super::super::at_home(&home, harness));
-        Harness::Grok.check(&home, exe).unwrap();
+        home.write("work/grok/config.toml", "");
+        let used = |harness| super::super::in_use(harness, &home, &folders);
+        super::super::install(&home, &folders, exe, used);
+        Harness::Grok.check(&home, &folders, exe).unwrap();
         // The user's own handlers stay, the one beside ours included.
         let left = home.json(claude::SETTINGS)["hooks"].clone();
         assert_eq!(

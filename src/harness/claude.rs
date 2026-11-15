@@ -81,7 +81,7 @@ mod tests {
         let home = Home::new();
         home.write(SETTINGS, &registered_by_0_5_0().to_string());
         let exe = Path::new("/bin/agent-leds");
-        assert!(Harness::Claude.check(&home, exe).is_err());
+        assert!(Harness::Claude.check(&home, &home.folders(), exe).is_err());
 
         install(&home, exe).unwrap();
         let theirs = json!({
@@ -93,7 +93,7 @@ mod tests {
             "theme": "dark"
         });
         assert_eq!(home.json(SETTINGS), theirs);
-        Harness::Claude.check(&home, exe).unwrap();
+        Harness::Claude.check(&home, &home.folders(), exe).unwrap();
         install(&home, exe).unwrap();
         assert_eq!(home.json(SETTINGS), theirs);
         uninstall(&home).unwrap();
@@ -108,7 +108,7 @@ mod tests {
             &json!({ "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "/bin/agent-leds hook claude" }] }] } }).to_string(),
         );
         let error = Harness::Claude
-            .check(&home, Path::new("/bin/agent-leds"))
+            .check(&home, &home.folders(), Path::new("/bin/agent-leds"))
             .unwrap_err();
         assert!(
             error

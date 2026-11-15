@@ -59,7 +59,8 @@ enum Command {
     /// Start the service at login, and register exactly the hooks each agent harness in use needs
     #[command(
         after_help = "A harness is in use when its folder is in your home directory: ~/.claude, \
-                      ~/.codex, ~/.grok, ~/.cursor, ~/.junie, ~/.config/opencode or ~/.pi. Other hooks \
+                      ~/.codex, ~/.grok, ~/.cursor, ~/.junie, ~/.config/opencode or ~/.pi, or where \
+                      CLAUDE_CONFIG_DIR, JUNIE_HOME or GROK_HOME puts it. Other hooks \
                       are left as they are, and hooks an older agent-leds registered that this one does not use \
                       are removed. Run it again after you start using another harness, or after you move the \
                       agent-leds binary; running it twice changes nothing."
@@ -152,14 +153,15 @@ fn main() -> Result<()> {
             let exe = std::env::current_exe()?;
             launchd::install(&exe)?;
             let home = home();
-            let (claude, junie) = harness::service_folders(&home);
-            let used = |harness| harness::in_use(harness, &home, &claude, &junie);
-            let registered = registered(harness::install(&home, &exe, used))?;
+            let folders = harness::service_folders(&home);
+            let used = |harness| harness::in_use(harness, &home, &folders);
+            let registered = registered(harness::install(&home, &folders, &exe, used))?;
             println!("{}", installed(&registered));
             Ok(())
         }
         Command::Uninstall => {
-            let removed = registered(harness::uninstall(&home()));
+            let home = home();
+            let removed = registered(harness::uninstall(&home, &harness::service_folders(&home)));
             launchd::uninstall()?;
             removed?;
             println!("The service is stopped and its hooks are removed.");

@@ -239,12 +239,7 @@ impl Replay {
     /// The harness's source, as the daemon makes it, on this home.
     pub fn source(&self) -> Box<dyn Source> {
         let home = self.home.path();
-        super::of(
-            self.harness,
-            home,
-            &home.join(".claude"),
-            &home.join(".junie"),
-        )
+        super::of(self.harness, home, &super::Folders::at(home))
     }
 
     /// The phase of each session the queue tracks.

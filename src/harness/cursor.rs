@@ -130,7 +130,11 @@ mod tests {
         home.write(FILE, &json!({ "version": 1, "hooks": hooks }).to_string());
         assert!(
             Harness::Cursor
-                .check(&home, Path::new("/opt/homebrew/bin/agent-leds"))
+                .check(
+                    &home,
+                    &home.folders(),
+                    Path::new("/opt/homebrew/bin/agent-leds")
+                )
                 .unwrap_err()
                 .to_string()
                 .contains("a hook this version does not use")
@@ -141,7 +145,11 @@ mod tests {
             json!({ "version": 1, "hooks": { "beforeSubmitPrompt": ours, "stop": ours } })
         );
         Harness::Cursor
-            .check(&home, Path::new("/opt/homebrew/bin/agent-leds"))
+            .check(
+                &home,
+                &home.folders(),
+                Path::new("/opt/homebrew/bin/agent-leds"),
+            )
             .unwrap();
     }
 

@@ -34,26 +34,23 @@ pub fn run() -> Result<()> {
     let saved = daemon::saved_queue();
     checks.push(("queue".to_owned(), queue(&saved, &home)));
     let saved = saved.unwrap_or_default();
-    let (claude, junie) = harness::service_folders(&home);
-    let used = |harness| harness::in_use(harness, &home, &claude, &junie);
-    for (harness, hooks) in harness::check(&home, &exe, used) {
-        let mut source = source::of(harness, &home, &claude, &junie);
+    let folders = harness::service_folders(&home);
+    let here = source::Folders::here(&home);
+    let used = |harness| harness::in_use(harness, &home, &folders);
+    for (harness, hooks) in harness::check(&home, &folders, &exe, used) {
+        let mut source = source::of(harness, &home, &folders);
         let mut files = files(source.as_mut(), &System, &saved, &home);
         let problem = match harness {
-            Harness::Claude => elsewhere(
-                "CLAUDE_CONFIG_DIR",
-                &claude,
-                &source::claude::config_dir(&home),
-                &home,
-            ),
-            Harness::Junie => elsewhere("JUNIE_HOME", &junie, &source::junie::home(), &home),
+            Harness::Claude => elsewhere("CLAUDE_CONFIG_DIR", &folders.claude, &here.claude, &home),
+            Harness::Junie => elsewhere("JUNIE_HOME", &folders.junie, &here.junie, &home),
+            Harness::Grok => elsewhere("GROK_HOME", &folders.grok, &here.grok, &home),
             _ => None,
         };
         if let Some(problem) = problem {
             files = both(files, Err(anyhow::anyhow!(problem)));
         }
         if harness == Harness::Grok
-            && let Some(problem) = source::grok::drift(&home, grok_version().as_deref())
+            && let Some(problem) = source::grok::drift(&folders.grok, grok_version().as_deref())
         {
             files = both(files, Err(anyhow::anyhow!(problem)));
         }
@@ -463,7 +460,7 @@ mod tests {
 
     /// The source of `harness` on `home`, as the daemon makes it.
     fn source_of(harness: Harness, home: &Path) -> Box<dyn Source> {
-        source::of(harness, home, &home.join(".claude"), &home.join(".junie"))
+        source::of(harness, home, &source::Folders::at(home))
     }
 
     fn write(home: &Path, file: &str, text: &str) {

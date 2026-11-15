@@ -585,12 +585,6 @@ pub struct Claude {
     strange: Strange,
 }
 
-/// Claude Code's folder for the account at `home`, as this process's
-/// environment gives it to `folder`.
-pub fn config_dir(home: &Path) -> PathBuf {
-    folder(std::env::var_os("CLAUDE_CONFIG_DIR").as_deref(), home)
-}
-
 /// Claude Code's folder given `$CLAUDE_CONFIG_DIR`: that, or `.claude` in
 /// `home`.
 pub fn folder(config_dir: Option<&OsStr>, home: &Path) -> PathBuf {
@@ -1441,7 +1435,7 @@ mod tests {
     fn seeds_from_the_real_home() {
         let home = std::env::var_os("HOME").expect("a home");
         let home = Path::new(&home);
-        let mut claude = Claude::new(home, &config_dir(home));
+        let mut claude = Claude::new(home, &crate::source::Folders::here(home).claude);
         let mut queue = crate::queue::Queue::default();
         for o in fixture::printed(claude.seed(&liveness::System, &[]).unwrap()) {
             assert!(o.quiet);

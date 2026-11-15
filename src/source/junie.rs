@@ -129,11 +129,6 @@ pub const SIGNALS: &[Declared] = &[
     ),
 ];
 
-/// Junie's folder, as this process's environment gives it to `folder`.
-pub fn home() -> PathBuf {
-    folder(std::env::var_os("JUNIE_HOME").as_deref())
-}
-
 /// Junie's folder given `$JUNIE_HOME`: that, or `.junie` in the account's
 /// home directory, which Junie takes from the system and never from `$HOME`.
 pub fn folder(junie_home: Option<&OsStr>) -> PathBuf {
@@ -988,7 +983,7 @@ mod tests {
     #[test]
     #[ignore = "reads the real ~/.junie"]
     fn seeds_from_the_real_home() {
-        let root = home();
+        let root = folder(std::env::var_os("JUNIE_HOME").as_deref());
         println!("Junie's folder: {}", root.display());
         let mut junie = Junie::new(&root);
         let mut queue = crate::queue::Queue::default();
@@ -1017,7 +1012,10 @@ mod tests {
     #[test]
     #[ignore = "run by the_folder_is_junie_home_or_the_account_s_never_home"]
     fn prints_the_folder() {
-        println!("folder={}", home().display());
+        println!(
+            "folder={}",
+            folder(std::env::var_os("JUNIE_HOME").as_deref()).display()
+        );
     }
 
     #[test]

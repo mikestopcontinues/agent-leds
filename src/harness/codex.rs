@@ -657,7 +657,10 @@ trusted_hash = "sha256:7777"
         home.write(CONFIG, &registered_by_0_5_0());
         let config = home.join(CONFIG);
         let exe = Path::new("/opt/homebrew/bin/agent-leds");
-        let error = Harness::Codex.check(&home, exe).unwrap_err().to_string();
+        let error = Harness::Codex
+            .check(&home, &home.folders(), exe)
+            .unwrap_err()
+            .to_string();
         assert!(
             error.contains(
                 "does not use is registered for Stop, UserPromptSubmit, PreToolUse, PostToolUse, \
@@ -718,7 +721,11 @@ trusted_hash = "sha256:5151"
         fs::write(&config, THEIRS.to_owned() + leftover).unwrap();
         assert!(
             Harness::Codex
-                .check(&home, Path::new("/opt/homebrew/bin/agent-leds"))
+                .check(
+                    &home,
+                    &home.folders(),
+                    Path::new("/opt/homebrew/bin/agent-leds")
+                )
                 .unwrap_err()
                 .to_string()
                 .contains("does not use is registered for Notification")

@@ -18,6 +18,7 @@ pub mod pi;
 pub mod tail;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
@@ -374,24 +375,60 @@ impl Told {
     }
 }
 
+/// The folders of the harnesses that keep theirs where an environment
+/// variable names, which need not be in the home directory: Claude Code's
+/// (`CLAUDE_CONFIG_DIR`), Junie's (`JUNIE_HOME`) and Grok's (`GROK_HOME`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Folders {
+    pub claude: PathBuf,
+    pub junie: PathBuf,
+    pub grok: PathBuf,
+}
+
+impl Folders {
+    /// The folders for the account at `home`, as an environment whose
+    /// variables `var` reads names them.
+    pub fn from(home: &Path, var: impl Fn(&str) -> Option<OsString>) -> Folders {
+        Folders {
+            claude: claude::folder(var("CLAUDE_CONFIG_DIR").as_deref(), home),
+            junie: junie::folder(var("JUNIE_HOME").as_deref()),
+            grok: grok::folder(var("GROK_HOME").as_deref(), home),
+        }
+    }
+
+    /// The folders as this process's environment names them.
+    pub fn here(home: &Path) -> Folders {
+        Folders::from(home, |name| std::env::var_os(name))
+    }
+
+    /// Each folder where no variable moves it, in `home`.
+    #[cfg(test)]
+    pub fn at(home: &Path) -> Folders {
+        Folders {
+            claude: home.join(".claude"),
+            junie: home.join(".junie"),
+            grok: home.join(".grok"),
+        }
+    }
+}
+
 /// Every harness's source, reading the harnesses' files in `home`, and
-/// Claude Code's and Junie's in their own folders, `claude` and `junie`,
-/// which need not be in `home`.
-pub fn all(home: &Path, claude: &Path, junie: &Path) -> Vec<Box<dyn Source>> {
+/// Claude Code's, Junie's and Grok's in their own `folders`.
+pub fn all(home: &Path, folders: &Folders) -> Vec<Box<dyn Source>> {
     vec![
-        Box::new(claude::Claude::new(home, claude)),
+        Box::new(claude::Claude::new(home, &folders.claude)),
         Box::new(codex::Codex::new(home)),
-        Box::new(grok::Grok::new(home)),
+        Box::new(grok::Grok::new(&folders.grok)),
         Box::new(cursor::Cursor::new(home)),
-        Box::new(junie::Junie::new(junie)),
+        Box::new(junie::Junie::new(&folders.junie)),
         Box::new(opencode::OpenCode::new(home)),
         Box::new(pi::Pi::new(home)),
     ]
 }
 
 /// The source of `harness`, made as `all` makes it.
-pub fn of(harness: Harness, home: &Path, claude: &Path, junie: &Path) -> Box<dyn Source> {
-    all(home, claude, junie)
+pub fn of(harness: Harness, home: &Path, folders: &Folders) -> Box<dyn Source> {
+    all(home, folders)
         .into_iter()
         .find(|source| source.harness() == harness)
         .expect("every harness has a source")

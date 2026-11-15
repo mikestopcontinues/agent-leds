@@ -78,7 +78,7 @@ mod tests {
             r#"{"session_id": "j1", "cwd": "/Users/me/Code/app"}"#,
         );
         let exe = Path::new("/bin/agent-leds");
-        assert!(Harness::Junie.check(&home, exe).is_err());
+        assert!(Harness::Junie.check(&home, &home.folders(), exe).is_err());
 
         install(&home, exe).unwrap();
         let theirs = json!({
@@ -90,7 +90,7 @@ mod tests {
         });
         assert_eq!(home.json(CONFIG), theirs);
         assert!(!home.join(SESSION).exists());
-        Harness::Junie.check(&home, exe).unwrap();
+        Harness::Junie.check(&home, &home.folders(), exe).unwrap();
         install(&home, exe).unwrap();
         assert_eq!(home.json(CONFIG), theirs);
         uninstall(&home).unwrap();
@@ -105,7 +105,7 @@ mod tests {
             &json!({ "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "/bin/agent-leds hook junie" }] }] } }).to_string(),
         );
         let error = Harness::Junie
-            .check(&home, Path::new("/bin/agent-leds"))
+            .check(&home, &home.folders(), Path::new("/bin/agent-leds"))
             .unwrap_err();
         assert!(
             error
@@ -121,7 +121,7 @@ mod tests {
         install(&home, Path::new("/bin/agent-leds")).unwrap();
         assert!(!home.join(CONFIG).exists());
         Harness::Junie
-            .check(&home, Path::new("/bin/agent-leds"))
+            .check(&home, &home.folders(), Path::new("/bin/agent-leds"))
             .unwrap();
     }
 }

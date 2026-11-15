@@ -19,6 +19,7 @@
 //! was taken from Grok [`VERSION`], and [`drift`] says when Grok has moved on.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::mem;
@@ -397,8 +398,9 @@ pub struct Grok {
 }
 
 impl Grok {
-    pub fn new(home: &Path) -> Grok {
-        let root = home.join(".grok");
+    /// Grok's sessions, from its folder, `~/.grok` or `$GROK_HOME`.
+    pub fn new(root: &Path) -> Grok {
+        let root = root.to_owned();
         Grok {
             registry: root.join("active_sessions.json"),
             sessions_dir: root.join("sessions"),
@@ -774,11 +776,19 @@ fn tell(
     );
 }
 
+/// Grok's folder given `$GROK_HOME`: that, or `.grok` in `home`.
+pub fn folder(grok_home: Option<&OsStr>, home: &Path) -> PathBuf {
+    match grok_home {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => home.join(".grok"),
+    }
+}
+
 /// What says Grok may write its files otherwise than the fixtures pin:
 /// `version`, what `grok --version` printed, names another release, or the
 /// newest session's last turn names another schema. Grok updates itself by
 /// default, so a new release arrives unannounced.
-pub fn drift(home: &Path, version: Option<&str>) -> Option<String> {
+pub fn drift(folder: &Path, version: Option<&str>) -> Option<String> {
     let mut problems = Vec::new();
     // "grok 1.0.77 (50ca579fa996) [stable]"
     let release = version.and_then(|printed| printed.split_whitespace().nth(1));
@@ -789,7 +799,7 @@ pub fn drift(home: &Path, version: Option<&str>) -> Option<String> {
             "grok is {release}, and its files were read as {VERSION} writes them"
         ));
     }
-    if let Some(schema) = newest_schema(&home.join(".grok/sessions"))
+    if let Some(schema) = newest_schema(&folder.join("sessions"))
         && schema != SCHEMA
     {
         problems.push(format!(
@@ -988,7 +998,7 @@ mod tests {
     #[ignore = "reads the real ~/.grok"]
     fn seeds_from_the_real_home() {
         let home = std::env::var_os("HOME").expect("a home");
-        let mut grok = Grok::new(Path::new(&home));
+        let mut grok = Grok::new(&crate::source::Folders::here(Path::new(&home)).grok);
         let mut queue = crate::queue::Queue::default();
         for o in fixture::printed(grok.seed(&liveness::System, &[]).unwrap()) {
             assert!(o.quiet);
@@ -1252,7 +1262,7 @@ mod tests {
     #[test]
     fn a_release_or_schema_other_than_the_fixtures_pin_is_drift() {
         let replay = replay("turn_ended.file");
-        let home = replay.home.path();
+        let home = &replay.home.path().join(".grok");
         let pinned = format!("grok {VERSION} (50ca579fa996) [stable]\n");
         assert_eq!(drift(home, Some(&pinned)), None);
         assert_eq!(drift(home, None), None);
@@ -1264,7 +1274,7 @@ mod tests {
             )
         );
         let log = home.join(
-            ".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dc0d-63f4-7eb0-95d3-175af42f88aa/events.jsonl",
+            "sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dc0d-63f4-7eb0-95d3-175af42f88aa/events.jsonl",
         );
         let text = fs::read_to_string(&log).unwrap();
         fs::write(
