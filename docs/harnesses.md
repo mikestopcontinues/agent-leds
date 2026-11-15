@@ -2,7 +2,7 @@
 
 What each agent harness reports to the service and where it falls short. [design.md](design.md) covers what the service does with the reports.
 
-The service reads Claude Code's own files, and registers no hooks with it. With each other harness, `agent-leds install` registers `agent-leds hook <harness>` for the events listed below; OpenCode and Pi load a plugin of ours that runs it. The hook passes the event to the daemon with the processes it runs under, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked. Whatever the hooks say, a session leaves when the process running it ends.
+The service reads Claude Code's own files, and registers no hooks with it, and reads OpenCode's database beside the plugin of ours that tells what the database leaves out. With each other harness, `agent-leds install` registers `agent-leds hook <harness>` for the events listed below; OpenCode and Pi load a plugin of ours that runs it. The hook passes the event to the daemon with the processes it runs under, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked. Whatever the hooks say, a session leaves when the process running it ends.
 
 The harnesses took their hook events from Claude Code, so most of the names agree. Each harness reads only its own spelling. [coverage.md](coverage.md) lists every signal each harness gives, how each is known, and the moves each cannot make.
 
@@ -96,23 +96,32 @@ The gaps:
 
 ## OpenCode
 
-OpenCode runs plugins rather than hook commands, so the install writes a plugin, `~/.config/opencode/plugins/agent-leds.js`, that passes OpenCode's events to `agent-leds hook opencode`. The plugin runs inside OpenCode's server, so it covers the terminal interface, the desktop app and `opencode serve` alike.
+Every OpenCode process, the terminal interface, `opencode serve`, `opencode run` and the desktop app alike, writes its sessions to one SQLite database, `~/.local/share/opencode/opencode.db`. The daemon keeps one read-only connection to it. When the database or its write-ahead log changes and `PRAGMA data_version` says another process committed, it reads, in one short transaction, the last event of each session it follows and of that session's subagents, from the event log OpenCode 1.18 and later write, and, for a session whose events grew, its latest message and that message's parts. It never reads the account or credential tables.
 
-| Event | Session becomes |
+The database names no process and records no permission request, so the install also writes a plugin, `~/.config/opencode/plugins/agent-leds.js`, that runs `agent-leds hook opencode` for what the database leaves out: `busy`, as a session goes busy, with the pid of the OpenCode process; `permission.asked` and `permission.replied`; and `session.error`. A session is followed from the first `busy` of a session that is not a subagent's, for as long as that process runs.
+
+| What is read | Session becomes |
 | --- | --- |
-| `session.status` going busy, `permission.replied`, `question.replied`, `question.rejected` | working |
-| `permission.asked`, `question.asked` | question |
-| `session.idle` whose last assistant message ends in a question mark | question, as a weak signal |
-| `session.idle` otherwise | stopped |
-| `session.idle` after an error | error |
-| `session.idle` after `MessageAbortedError`, or `session.deleted` | removed |
+| The plugin's `busy`, or a new user message as the session's latest | working |
+| A `question` tool part running in the turn, in the session or a subagent's | question |
+| The plugin's `permission.asked`, for the session or a subagent's | question |
+| The question part done, or the plugin's `permission.replied` | working |
+| The latest assistant message completed, other than a step that ended on `tool-calls` with no tool errored | stopped |
+| The same, its last text part ending in a question mark | question, as a weak signal |
+| An error on that message, or the plugin's `session.error` | error |
+| A `MessageAbortedError`, or the message completed with neither finish nor error | removed |
+| The session's row deleted or archived, or the OpenCode process gone | removed |
 
-A subagent runs in a session of its own whose `parentID` names the session that started it. Its going busy counts as that session's work in the background, and its permission requests and questions put that session's light to question, since they hold it up. Its own runs ending and its deletion are left out.
+A turn the user rejected a permission in, or dismissed a question in, ends on `tool-calls` with the tool errored and nothing after it, which counts as stopped. A subagent runs in a session of its own whose `parent_id` names the session that started it; its questions and permissions hold that session up, and its own runs say nothing more of it. Each turn's end is told once, so the title OpenCode writes after the first turn does not announce it again. The database is undocumented; the fixtures in `tests/fixtures/opencode/`, taken from real sessions, pin what the daemon expects of it.
 
 The gaps:
 
-- Quitting OpenCode ends no session, since sessions outlive it. Its light stays until its next prompt, `agent-leds dismiss`, or `abandon_days`.
-- Checked against OpenCode 1.19.5 through `opencode serve`, with a permission, a question, an abort and a subagent. The plugin uses event names that OpenCode's plugin types do not list yet, though its server sends them.
+- A pending permission is in the database only as a running tool, so only the plugin says it waits. A daemon restarted while one waits shows the session working until it moves on.
+- An error before a turn's loop starts, such as an unknown model, is in the database at most as a prompt with no reply, and the plugin's `session.error` shows it only on a session already followed: OpenCode 1.17.3 failed that way without ever going busy.
+- A turn waiting out a provider's retries shows as working, since nothing is written while it waits.
+- A session whose OpenCode process started before the plugin was installed is not shown until that process is restarted.
+- A database from OpenCode before 1.18, which has no event log, is not read; the daemon says so in its log.
+- Checked against OpenCode 1.19.5 through `opencode serve` and the terminal interface, with permissions, questions, aborts, a subagent, errors, an archive, a deletion and a kill, and 1.18.25 through `opencode run`. The desktop app, background subagents and compaction were not tried.
 
 ## Pi
 
