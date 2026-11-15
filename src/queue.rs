@@ -658,6 +658,18 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_nobody_typed_dismissed_while_it_runs_ends_dark() {
+        let mut queue = Queue::default();
+        tell(&mut queue, "a", &[Woke], 1);
+        apply_all(&mut queue, |queue| queue.dismissed(Some("a")), 2);
+        assert_eq!(phase(&queue, "a"), Idle);
+        let mut quiet = signal("a", TurnEnded, None);
+        quiet.event = Event::Signals([TurnEnded, TurnEndedQuietly].into());
+        assert_eq!(queue.apply(&quiet, 3), Change::None);
+        assert_eq!(phase(&queue, "a"), Idle);
+    }
+
+    #[test]
     fn a_question_or_an_error_beats_work_going_on_in_the_background() {
         let mut queue = Queue::default();
         tell(&mut queue, "done", &[TurnEnded], 1);

@@ -415,6 +415,13 @@ pub const TABLE: &[Rule] = &[
         on: TurnEndedQuietly,
         to: Back,
     },
+    // One the user dismissed while it ran, or that was abandoned, has
+    // nothing for them at its end either, and stays dark.
+    Rule {
+        from: &[Idle],
+        on: TurnEndedQuietly,
+        to: Go(Idle),
+    },
     Rule {
         from: TRACKED,
         on: TurnEnded,
@@ -873,6 +880,19 @@ mod tests {
             Some(Stopped)
         );
         assert!(!overlaps(Unattended, &told(&[TurnEnded, TurnEndedQuietly])));
+    }
+
+    #[test]
+    fn a_turn_nobody_typed_dismissed_while_it_runs_ends_dark() {
+        assert_eq!(step(Unattended, Dismissed), Some(Go(Idle)));
+        let quiet = told(&[TurnEnded, TurnEndedQuietly]);
+        let rule = next(Idle, &quiet).unwrap();
+        assert_eq!((rule.on, rule.to), (TurnEndedQuietly, Go(Idle)));
+        assert!(!announces(Idle, rule.on, Idle));
+        assert!(!overlaps(Idle, &quiet));
+        // Whatever else the end says that wants the user still wins.
+        let failed = told(&[TurnEnded, TurnEndedQuietly, TurnFailed]);
+        assert_eq!(next(Idle, &failed).unwrap().to, Go(Failed));
     }
 
     #[test]

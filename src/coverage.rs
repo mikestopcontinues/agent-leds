@@ -505,7 +505,7 @@ Each cell is the phase the signal moves to; `·` means no rule, so the signal ch
 | from \ on | Start | Prompt | Woke | Perm | Quest | Answ | Rel | End | End? | End. | Fail | Intr | Bg | BgDone | Ended | Look | RdExp | Aband | Dism |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | Gone | Idle | · | · | · | · | · | · | · | · | · | · | · | · | · | · | · | · | · | · |
-| Idle | · | Working | Unattended | Blocked | Blocked | · | · | Stopped | Asked | · | Failed | Idle | Background | · | Gone | · | · | · | · |
+| Idle | · | Working | Unattended | Blocked | Blocked | · | · | Stopped | Asked | Idle | Failed | Idle | Background | · | Gone | · | · | · | · |
 | Working | · | · | · | Blocked | Blocked | · | · | Stopped | Asked | · | Failed | Idle | Background | · | Gone | · | · | Idle | Idle |
 | Unattended | · | Working | · | Blocked | Blocked | · | · | Stopped | Asked | back | Failed | Idle | Background | · | Gone | · | · | Idle | Idle |
 | Background | · | Working | Working | Blocked | Blocked | · | · | Stopped | Asked | · | Failed | Idle | Background | Stopped | Gone | · | · | Idle | Idle |
