@@ -508,7 +508,7 @@ Each cell is the phase the signal moves to; `·` means no rule, so the signal ch
 | Idle | · | Working | Unattended | Blocked | Blocked | · | · | Stopped | Asked | · | Failed | Idle | Background | · | Gone | · | · | · | · |
 | Working | · | · | · | Blocked | Blocked | · | · | Stopped | Asked | · | Failed | Idle | Background | · | Gone | · | · | Idle | Idle |
 | Unattended | · | Working | · | Blocked | Blocked | · | · | Stopped | Asked | back | Failed | Idle | Background | · | Gone | · | · | Idle | Idle |
-| Background | · | Working | Unattended | Blocked | Blocked | · | · | Stopped | Asked | · | Failed | Idle | Background | Stopped | Gone | · | · | Idle | Idle |
+| Background | · | Working | Working | Blocked | Blocked | · | · | Stopped | Asked | · | Failed | Idle | Background | Stopped | Gone | · | · | Idle | Idle |
 | Blocked | · | Working | Working | Blocked | Blocked | Working | back | Stopped | Asked | · | Failed | Idle | Blocked | · | Gone | · | · | Idle | Idle |
 | Asked | · | Working | Unattended | Blocked | Blocked | · | · | Stopped | Asked | · | Failed | Idle | Asked | · | Gone | AskedRead | · | Idle | Idle |
 | AskedRead | · | Working | Unattended | Blocked | Blocked | · | · | Stopped | Asked | · | Failed | Idle | AskedRead | · | Gone | · | Idle | Idle | Idle |

@@ -436,22 +436,15 @@ pub const TABLE: &[Rule] = &[
         to: Go(Working),
     },
     // A turn nobody typed holds the light it found, unread or read, to go
-    // back to. One that starts over a wait cannot hold it, and is work.
+    // back to. One that starts over a wait, or over work going on, which
+    // its end tells again if it still goes on, holds nothing, and is work.
     Rule {
-        from: &[
-            Idle,
-            Background,
-            Asked,
-            AskedRead,
-            Stopped,
-            StoppedRead,
-            Failed,
-        ],
+        from: &[Idle, Asked, AskedRead, Stopped, StoppedRead, Failed],
         on: Woke,
         to: Go(Unattended),
     },
     Rule {
-        from: &[Blocked],
+        from: &[Background, Blocked],
         on: Woke,
         to: Go(Working),
     },
@@ -861,15 +854,7 @@ mod tests {
         let to = |from, held, signals: &[Signal]| {
             next(from, &told(signals)).map(|rule| rule.to.phase(held))
         };
-        for from in [
-            Idle,
-            Background,
-            Asked,
-            AskedRead,
-            Stopped,
-            StoppedRead,
-            Failed,
-        ] {
+        for from in [Idle, Asked, AskedRead, Stopped, StoppedRead, Failed] {
             assert_eq!(step(from, Woke), Some(Go(Unattended)), "{from:?}");
             assert_eq!(held(from, None, Unattended), Some(from), "{from:?}");
             let quiet = &[TurnEnded, TurnEndedQuietly];
@@ -896,8 +881,11 @@ mod tests {
         assert_eq!(held(Unattended, Some(Stopped), Blocked), Some(Working));
         assert_eq!(step(Blocked, Answered), Some(Go(Working)));
         assert_eq!(step(Working, TurnEndedQuietly), None);
-        // A turn nobody typed that starts over a wait is work.
+        // A turn nobody typed that starts over a wait, or over work going
+        // on, which a quiet end could otherwise leave showing after it
+        // stopped, is work.
         assert_eq!(step(Blocked, Woke), Some(Go(Working)));
+        assert_eq!(step(Background, Woke), Some(Go(Working)));
     }
 
     #[test]

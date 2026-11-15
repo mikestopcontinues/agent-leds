@@ -12,7 +12,7 @@ Each cell is the phase the signal moves to; `·` means no rule, so the signal ch
 | Idle | · | Working | Unattended | Blocked | Blocked | · | · | Stopped | Asked | · | Failed | Idle | Background | · | Gone | · | · | · | · |
 | Working | · | · | · | Blocked | Blocked | · | · | Stopped | Asked | · | Failed | Idle | Background | · | Gone | · | · | Idle | Idle |
 | Unattended | · | Working | · | Blocked | Blocked | · | · | Stopped | Asked | back | Failed | Idle | Background | · | Gone | · | · | Idle | Idle |
-| Background | · | Working | Unattended | Blocked | Blocked | · | · | Stopped | Asked | · | Failed | Idle | Background | Stopped | Gone | · | · | Idle | Idle |
+| Background | · | Working | Working | Blocked | Blocked | · | · | Stopped | Asked | · | Failed | Idle | Background | Stopped | Gone | · | · | Idle | Idle |
 | Blocked | · | Working | Working | Blocked | Blocked | Working | back | Stopped | Asked | · | Failed | Idle | Blocked | · | Gone | · | · | Idle | Idle |
 | Asked | · | Working | Unattended | Blocked | Blocked | · | · | Stopped | Asked | · | Failed | Idle | Asked | · | Gone | AskedRead | · | Idle | Idle |
 | AskedRead | · | Working | Unattended | Blocked | Blocked | · | · | Stopped | Asked | · | Failed | Idle | AskedRead | · | Gone | · | Idle | Idle | Idle |
@@ -199,15 +199,15 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 **Woke**: a turn nobody typed shows as one the user typed, and ends with a light whatever it says.
 
-- Claude Code: Idle, Background, Asked, AskedRead, Stopped, StoppedRead, Failed → Unattended
-- Claude Code: Blocked → Working
-- Grok: Idle, Background, Asked, Stopped, Failed → Unattended
-- Grok: Blocked → Working
+- Claude Code: Idle, Asked, AskedRead, Stopped, StoppedRead, Failed → Unattended
+- Claude Code: Background, Blocked → Working
+- Grok: Idle, Asked, Stopped, Failed → Unattended
+- Grok: Background, Blocked → Working
 - Cursor: Idle, Asked, Stopped, Failed → Unattended
 - Junie: Idle, Asked, Stopped, Failed → Unattended
 - Junie: Blocked → Working
-- OpenCode: Idle, Background, Asked, AskedRead, Stopped, StoppedRead, Failed → Unattended
-- OpenCode: Blocked → Working
+- OpenCode: Idle, Asked, AskedRead, Stopped, StoppedRead, Failed → Unattended
+- OpenCode: Background, Blocked → Working
 - Pi: Idle, Asked, Stopped, Failed → Unattended
 - Pi: Blocked → Working
 
