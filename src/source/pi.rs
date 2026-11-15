@@ -294,7 +294,8 @@ struct Session {
     /// When that process started, as a Unix second. What an earlier process
     /// wrote to the file is history.
     start: i64,
-    file: PathBuf,
+    /// None for a session a seed found no file of, until it is found.
+    file: Option<PathBuf>,
     /// Opened at the file's end when the session started with its file
     /// there, as on a resume, a fork or a clone; at its start if the file
     /// came after.
@@ -319,7 +320,7 @@ struct Session {
 }
 
 impl Session {
-    fn new(liveness: Liveness, file: PathBuf, cwd: String) -> Session {
+    fn new(liveness: Liveness, file: Option<PathBuf>, cwd: String) -> Session {
         let start = match liveness {
             Liveness::Process {
                 start: StartCheck::ExactUs(us),
@@ -433,20 +434,32 @@ impl Pi {
             })
     }
 
-    /// Reads what was appended to a session's file.
+    /// Reads what was appended to a session's file, looking for the file
+    /// first if a seed found none.
     fn read(&mut self, id: &str, out: &mut Vec<Observation>) {
+        if self
+            .sessions
+            .get(id)
+            .is_some_and(|session| session.file.is_none())
+        {
+            let file = self.find(id);
+            self.sessions.get_mut(id).expect("tracked").file = file;
+        }
         let Some(session) = self.sessions.get_mut(id) else {
+            return;
+        };
+        let Some(file) = session.file.clone() else {
             return;
         };
         if session.tail.is_none() {
             // Written since the session started, so all of it is the session's.
-            let Ok(tail) = Tail::at_start(&session.file) else {
+            let Ok(tail) = Tail::at_start(&file) else {
                 return;
             };
             session.tail = Some(tail);
         }
         let tail = session.tail.as_mut().expect("opened");
-        let lines = match tail.read(&session.file) {
+        let lines = match tail.read(&file) {
             Ok(Lines::Read { lines, more }) => {
                 session.behind = more;
                 lines
@@ -454,7 +467,7 @@ impl Pi {
             // Pi rewrites a file only to migrate it from an older version, as
             // it loads it, which is history.
             Ok(Lines::Replaced) => {
-                session.tail = Tail::at_end(&session.file).ok();
+                session.tail = Tail::at_end(&file).ok();
                 session.behind = false;
                 return;
             }
@@ -520,24 +533,23 @@ impl Pi {
         let cwd = payload.cwd.clone().unwrap_or_default();
         let id = &payload.session;
         // The same process going on with it.
-        let known = self
-            .sessions
-            .get(id)
-            .is_some_and(|session| session.liveness == liveness && session.file == file);
+        let known = self.sessions.get(id).is_some_and(|session| {
+            session.liveness == liveness && session.file.as_ref() == Some(&file)
+        });
         if !known {
-            let mut session = Session::new(liveness.clone(), file, cwd.clone());
+            let mut session = Session::new(liveness.clone(), Some(file.clone()), cwd.clone());
             // What is already written, as a resumed, forked or cloned file
             // holds, is history: it says only which turn the session is on,
             // as a seed reads it, though this process may have written it
             // before it went to another session and back.
-            if let Ok((lines, tail)) = tail::tail_back(&session.file, holds_prompt) {
+            if let Ok((lines, tail)) = tail::tail_back(&file, holds_prompt) {
                 let entries = lines.iter().filter_map(|line| Entry::read(line));
                 for entry in entries.filter(Entry::is_message) {
                     session.facts(&entry);
                 }
                 session.tail = Some(tail);
             }
-            session.made = header(&session.file)
+            session.made = header(&file)
                 .ok()
                 .flatten()
                 .and_then(|header| header.timestamp);
@@ -554,14 +566,13 @@ impl Pi {
 
     /// Where the tail of a session's file leaves it, back to where its last
     /// turn began.
-    fn seed_file(&mut self, id: &str) -> io::Result<()> {
-        let path = self.sessions[id].file.clone();
-        if let Some(header) = header(&path)? {
+    fn seed_file(&mut self, id: &str, path: &Path) -> io::Result<()> {
+        if let Some(header) = header(path)? {
             let session = self.sessions.get_mut(id).expect("seeded");
             session.made = header.timestamp;
             session.cwd = header.cwd.unwrap_or_default();
         }
-        let (lines, tail) = tail::tail_back(&path, holds_prompt)?;
+        let (lines, tail) = tail::tail_back(path, holds_prompt)?;
         let entries: Vec<Entry> = lines.iter().filter_map(|line| Entry::read(line)).collect();
         self.sessions.get_mut(id).expect("seeded").tail = Some(tail);
         let mut history = Vec::new();
@@ -625,7 +636,7 @@ impl Source for Pi {
     fn roots(&self) -> Vec<PathBuf> {
         let mut roots = vec![self.sessions_dir.clone()];
         for session in self.sessions.values() {
-            if let Some(folder) = session.file.parent()
+            if let Some(folder) = session.file.as_deref().and_then(Path::parent)
                 && !folder.starts_with(&self.sessions_dir)
                 && !roots.iter().any(|root| root == folder)
             {
@@ -636,28 +647,28 @@ impl Source for Pi {
     }
 
     /// Each session the extension started whose process still runs, from
-    /// the tail of its file. No file says which sessions run.
+    /// the tail of its file. No file says which sessions run. One whose file
+    /// is not there yet, as 0.84.4 writes a new session's file only as its
+    /// first reply ends, is read from the file's start once it is.
     fn seed(&mut self, k: &dyn Kernel, bound: &[(String, Liveness)]) -> Result<Vec<Observation>> {
         let mut seeded = Vec::new();
         for (id, liveness) in bound {
             if !liveness::alive(k, liveness) {
                 continue;
             }
-            if let Some(file) = self.find(id) {
-                let session = Session::new(liveness.clone(), file.clone(), String::new());
-                self.sessions.insert(id.clone(), session);
-                if let Err(error) = self.seed_file(id) {
-                    // The session is still followed, from what it writes next.
-                    eprintln!("agent-leds: reading {}: {error}", file.display());
-                    let session = self.sessions.get_mut(id).expect("seeded");
-                    session.tail = Tail::at_end(&file).ok();
-                }
+            let file = self.find(id);
+            let session = Session::new(liveness.clone(), file.clone(), String::new());
+            self.sessions.insert(id.clone(), session);
+            if let Some(file) = file
+                && let Err(error) = self.seed_file(id, &file)
+            {
+                // The session is still followed, from what it writes next.
+                eprintln!("agent-leds: reading {}: {error}", file.display());
+                let session = self.sessions.get_mut(id).expect("seeded");
+                session.tail = Tail::at_end(&file).ok();
             }
-            let (cwd, turn) = self
-                .sessions
-                .get(id)
-                .map(|session| (session.cwd.clone(), session.turn.clone()))
-                .unwrap_or_default();
+            let session = &self.sessions[id];
+            let (cwd, turn) = (session.cwd.clone(), session.turn.clone());
             seeded.push(observation(
                 id,
                 Channel::Hook,
@@ -682,10 +693,14 @@ impl Source for Pi {
         // says nothing more of it.
         self.sessions
             .retain(|_, session| liveness::alive(k, &session.liveness));
+        // A session whose file is not found yet looks for it at each change.
         let mut ids: Vec<String> = self
             .sessions
             .iter()
-            .filter(|(_, session)| paths.is_none_or(|paths| paths.contains(&session.file)))
+            .filter(|(_, session)| {
+                let file = session.file.as_ref();
+                paths.is_none_or(|paths| file.is_none_or(|file| paths.contains(file)))
+            })
             .map(|(id, _)| id.clone())
             .collect();
         ids.sort();
@@ -1026,6 +1041,40 @@ mod tests {
             folder.join("2026-11-15T12-22-27-824Z_01a1df28-aef0-7086-ae19-601efb920365.jsonl");
         pi.hook(&liveness::System, &start(79128, Some(file)));
         assert_eq!(pi.roots(), [pi.sessions_dir.clone(), folder]);
+    }
+
+    #[test]
+    fn a_session_seeded_before_its_file_is_written_is_read_once_it_is() {
+        let home = tempfile::tempdir().unwrap();
+        let mut pi = Pi::new(home.path());
+        let id = "01a1df28-8760-7cc5-95aa-023c234bc57e";
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        let running = Liveness::Process {
+            pid: std::process::id() as i32,
+            start: StartCheck::NotAfterMs(now.as_millis() as u64),
+        };
+        // agent_start bound it, and the daemon restarted before Pi 0.84.4
+        // wrote the file, as its first reply ended.
+        let seeded = pi.seed(&liveness::System, &[(id.into(), running)]).unwrap();
+        assert_eq!(seeded.len(), 1);
+        let file = pi
+            .sessions_dir
+            .join("--Users-me-Code-app--")
+            .join(format!("2026-11-15T12-22-17-696Z_{id}.jsonl"));
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let entries = [
+            json!({"type": "session", "version": 3, "id": id, "timestamp": "2026-11-15T12:22:17.696Z", "cwd": "/Users/me/Code/app"}),
+            json!({"type": "message", "id": "f83585eb", "timestamp": "2026-11-15T12:22:19.050Z", "message": {"role": "user", "content": [{"type": "text", "text": "Reply with just the word ready."}]}}),
+            json!({"type": "message", "id": "fbdad335", "timestamp": "2026-11-15T12:22:19.069Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "ready"}], "stopReason": "stop"}}),
+        ];
+        let text: String = entries.iter().map(|entry| format!("{entry}\n")).collect();
+        fs::write(&file, text).unwrap();
+        let read = pi.changed(&liveness::System, Some(&[file]));
+        let signals: Vec<_> = read.iter().map(|o| o.event.signals()).collect();
+        assert_eq!(
+            signals,
+            [told(&[Signal::Prompted]), told(&[Signal::TurnEnded])]
+        );
     }
 
     #[test]
