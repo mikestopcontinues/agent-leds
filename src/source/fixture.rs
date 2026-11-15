@@ -638,6 +638,8 @@ mod tests {
                     .map(|word| word[..1].to_uppercase() + &word[1..])
                     .collect(),
             ),
+            // OpenCode's plugin names the event it passes on.
+            Harness::OpenCode => named("event"),
             _ => named("hook_event_name"),
         }
     }
@@ -646,7 +648,7 @@ mod tests {
     fn install_registers_exactly_the_hooks_the_source_reads() {
         for harness in Harness::ALL {
             let events = harness.events();
-            // Claude Code has no hooks, and OpenCode and Pi load a plugin.
+            // Claude Code has no hooks, and Pi loads a plugin.
             if events.is_empty() {
                 continue;
             }

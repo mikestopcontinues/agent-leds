@@ -37,17 +37,17 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 | Signal | Claude Code | Codex | Grok | Cursor | Junie | OpenCode | Pi |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | [Started](#started) | file | hook | hook | hook | hook* | hook | hook |
-| [Prompted](#prompted) | file | hook | hook | hook | hook* | hook | hook |
+| [Prompted](#prompted) | file | hook | hook | hook | hook* | file+hook | hook |
 | [PermissionAsked](#permissionasked) | file | hook | hook | — | — | hook | — |
-| [QuestionAsked](#questionasked) | file | hook | hook | — | — | hook | hook |
-| [Answered](#answered) | file | — | — | — | — | — | — |
-| [TurnEnded](#turnended) | file | hook | hook | hook | hook* | hook | hook |
-| [TurnEndedAsking](#turnendedasking) | file | hook | hook | — | hook* | hook | hook |
-| [TurnFailed](#turnfailed) | file | — | hook* | hook* | hook* | hook | hook* |
-| [Interrupted](#interrupted) | file | hook | hook | hook | — | hook | hook |
-| [Backgrounded](#backgrounded) | file | hook* | — | — | — | hook | — |
+| [QuestionAsked](#questionasked) | file | hook | hook | — | — | file | hook |
+| [Answered](#answered) | file | — | — | — | — | file+hook | — |
+| [TurnEnded](#turnended) | file | hook | hook | hook | hook* | file | hook |
+| [TurnEndedAsking](#turnendedasking) | file | hook | hook | — | hook* | file | hook |
+| [TurnFailed](#turnfailed) | file | — | hook* | hook* | hook* | file+hook | hook* |
+| [Interrupted](#interrupted) | file | hook | hook | hook | — | file+hook | hook |
+| [Backgrounded](#backgrounded) | file | hook* | — | — | — | — | — |
 | [BackgroundDone](#backgrounddone) | file | — | — | — | — | — | — |
-| [Ended](#ended) | file | hook | hook | hook | hook* | hook | hook |
+| [Ended](#ended) | file | hook | hook | hook | hook* | file+hook | hook |
 
 ### Started
 
@@ -56,7 +56,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Grok, hook, observed: any hook but a subagent's, run under the process named grok-native (0.5.0 hooks, probe-grok runs a–l)
 - Cursor, hook, observed: any hook, run under the process that Cursor's .running marker names (0.5.0 hooks, probe-cursor runs A–I)
 - Junie, hook, inferred: any hook of the session the last prompt named, run under the process named junie (0.5.0 hooks; Junie was not installed for the probe)
-- OpenCode, hook, observed: any event the plugin passes on, from the OpenCode process that runs the hook (0.5.0 plugin, probe-opencode T2–T17)
+- OpenCode, hook, observed: the plugin's busy, as a session that is not a subagent's goes busy, from the OpenCode process whose pid it names (probe-opencode T3–T16 (session.status busy, in serve and the TUI))
 - Pi, hook, observed: any event the extension passes on, from the Pi process that runs the hook (0.5.0 extension, probe-pi rpc1, tui1)
 
 ### Prompted
@@ -66,7 +66,8 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Grok, hook, observed: user_prompt_submit, pre_tool_use, post_tool_use or post_tool_use_failure (0.5.0 hooks, probe-grok runs a–l)
 - Cursor, hook, observed: beforeSubmitPrompt, postToolUse or postToolUseFailure (0.5.0 hooks, probe-cursor runs A–I)
 - Junie, hook, inferred: UserPromptSubmit or PostToolUse (0.5.0 hooks; Junie was not installed for the probe)
-- OpenCode, hook, observed: session.status going busy, permission.replied, question.replied or question.rejected (0.5.0 plugin, probe-opencode T2–T17)
+- OpenCode, hook, observed: the plugin's busy (probe-opencode T3–T16 (session.status busy, in serve and the TUI))
+- OpenCode, file, observed: the session's latest message a user message, or an assistant message answering one, other than the turn last read (probe-opencode T2–T16)
 - Pi, hook, observed: agent_start or ui_prompt_end (0.5.0 extension, probe-pi rpc1, tui1)
 
 ### PermissionAsked
@@ -74,19 +75,21 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Claude Code, file, observed: the session file going to status waiting, for anything but input needed; or a prompt read while the session file says so (probe-claude cc1, cc4, cc10)
 - Codex, hook, observed: PermissionRequest (0.5.0 hooks, probe-codex runA)
 - Grok, hook, observed: notification of a permission_prompt (0.5.0 hooks, probe-grok runs a–l)
-- OpenCode, hook, observed: permission.asked (0.5.0 plugin, probe-opencode T2–T17)
+- OpenCode, hook, observed: permission.asked, for the session or a subagent's session under it (probe-opencode T3, T4, T7, T8, T12)
 
 ### QuestionAsked
 
 - Claude Code, file, observed: the session file going to status waiting for input needed; or a prompt read while the session file says so (probe-claude cc2, cc9)
 - Codex, hook, observed: PreToolUse for request_user_input or request_user_input_async (0.5.0 hooks, probe-codex runA)
 - Grok, hook, observed: pre_tool_use for ask_user_question (0.5.0 hooks, probe-grok runs a–l)
-- OpenCode, hook, observed: question.asked (0.5.0 plugin, probe-opencode T2–T17)
+- OpenCode, file, observed: a question tool part running in the turn, in the session or a subagent's session under it (probe-opencode T5, T6, T16)
 - Pi, hook, observed: ui_prompt_start: a dialog holds the run up (0.5.0 extension, probe-pi rpc1, tui1)
 
 ### Answered
 
 - Claude Code, file, observed: the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt (probe-claude cc1, cc2)
+- OpenCode, hook, observed: permission.replied, for the session or a subagent's session under it (probe-opencode T3, T7, T12)
+- OpenCode, file, observed: no question tool part running in the turn any more, while it runs (probe-opencode T5)
 
 ### TurnEnded
 
@@ -95,7 +98,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Grok, hook, observed: stop with reason end_turn, or stop_cancelled (0.5.0 hooks, probe-grok runs a–l)
 - Cursor, hook, observed: stop, whatever its status (0.5.0 hooks, probe-cursor runs A–I)
 - Junie, hook, inferred: Stop (0.5.0 hooks; Junie was not installed for the probe)
-- OpenCode, hook, observed: session.idle, however the run ended (0.5.0 plugin, probe-opencode T2–T17)
+- OpenCode, file, observed: the turn's latest assistant message completed, unless it is a step that ended on tool-calls with no tool errored and no error (probe-opencode T2–T10, T15, T16)
 - Pi, hook, observed: agent_settled (0.5.0 extension, probe-pi rpc1, tui1)
 
 ### TurnEndedAsking
@@ -104,7 +107,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Codex, hook, observed: Stop whose last message asks, or is a proposed plan (0.5.0 hooks, probe-codex runA)
 - Grok, hook, observed: stop with reason end_turn whose last message asks (0.5.0 hooks, probe-grok runs a–l)
 - Junie, hook, inferred: Stop whose last message asks (0.5.0 hooks; Junie was not installed for the probe)
-- OpenCode, hook, observed: session.idle whose last assistant message asks (0.5.0 plugin, probe-opencode T2–T17)
+- OpenCode, file, observed: that message's last text part, not synthetic, ending on a question mark (probe-opencode T2)
 - Pi, hook, observed: agent_settled whose last assistant message asks (0.5.0 extension, probe-pi rpc1, tui1)
 
 ### TurnFailed
@@ -113,7 +116,8 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Grok, hook, inferred: stop_failure; no terminal API error was produced in the probe (0.5.0 hooks, probe-grok runs a–l)
 - Cursor, hook, inferred: stop with status error; not reproduced in the probe (0.5.0 hooks, probe-cursor runs A–I)
 - Junie, hook, inferred: StopFailure (0.5.0 hooks; Junie was not installed for the probe)
-- OpenCode, hook, observed: session.idle after an error (0.5.0 plugin, probe-opencode T2–T17)
+- OpenCode, file, observed: that message carrying an error, a MessageAbortedError included (probe-opencode T7–T9)
+- OpenCode, hook, observed: session.error, for the session itself (probe-opencode T1, T7, T8)
 - Pi, hook, inferred: agent_settled with stop_reason error (0.5.0 extension, probe-pi rpc1, tui1)
 
 ### Interrupted
@@ -122,14 +126,14 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Codex, hook, observed: Interrupt (0.5.0 hooks, probe-codex runA)
 - Grok, hook, observed: stop_cancelled by the user (0.5.0 hooks, probe-grok runs a–l)
 - Cursor, hook, observed: stop with status aborted, or postToolUseFailure cut short by an interrupt (0.5.0 hooks, probe-cursor runs A–I)
-- OpenCode, hook, observed: session.idle after MessageAbortedError (0.5.0 plugin, probe-opencode T2–T17)
+- OpenCode, file, observed: that message's error a MessageAbortedError, or the message with neither finish nor error (probe-opencode T7, T8, T10)
+- OpenCode, hook, observed: session.error with a MessageAbortedError (probe-opencode T7, T8)
 - Pi, hook, observed: agent_settled after an abort (0.5.0 extension, probe-pi rpc1, tui1)
 
 ### Backgrounded
 
 - Claude Code, file, observed: an end_turn record while the session file is busy with delegated work, or waiting to busy after the turn closed (probe-claude cc3, cc4, cc5)
 - Codex, hook, inferred: any hook a subagent sends, with agent_id; Codex runs none for its subagents (0.5.0 hooks)
-- OpenCode, hook, observed: any event of a subagent's session, put to its parent (0.5.0 plugin, probe-opencode T2–T17)
 
 ### BackgroundDone
 
@@ -142,7 +146,8 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Grok, hook, observed: session_end, or the grok-native process gone (0.5.0 hooks, probe-grok runs a–l)
 - Cursor, hook, observed: sessionEnd, or the marked Cursor process gone (0.5.0 hooks, probe-cursor runs A–I)
 - Junie, hook, inferred: SessionEnd, or the junie process gone (0.5.0 hooks; Junie was not installed for the probe)
-- OpenCode, hook, observed: session.deleted, or the OpenCode process gone (0.5.0 plugin, probe-opencode T2–T17)
+- OpenCode, file, observed: the session's row deleted or archived (probe-opencode T13)
+- OpenCode, hook, observed: the process the plugin's busy named gone (probe-opencode T14, T17)
 - Pi, hook, observed: session_shutdown, or the Pi process gone (0.5.0 extension, probe-pi rpc1, tui1)
 
 ## Moves each harness cannot make
@@ -162,7 +167,6 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 - Codex: Blocked → Working
 - Grok: Blocked → Working
-- OpenCode: Blocked → Working
 - Pi: Blocked → Working
 
 **TurnEndedAsking**: a turn that ends on a question shows as stopped, not as a question.
@@ -182,12 +186,12 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Grok: Idle, Working, Stopped, StoppedRead → Background
 - Cursor: Idle, Working, Stopped, StoppedRead → Background
 - Junie: Idle, Working, Stopped, StoppedRead → Background
+- OpenCode: Idle, Working, Stopped, StoppedRead → Background
 - Pi: Idle, Working, Stopped, StoppedRead → Background
 
 **BackgroundDone**: background work that finishes is never announced, and shows as working until the next turn.
 
 - Codex: Background → Stopped
-- OpenCode: Background → Stopped
 
 ## Phases never entered
 
@@ -197,6 +201,7 @@ Searched from `Gone` over the signals a harness declares and the daemon's own.
 - Grok: Background
 - Cursor: Background, Blocked, Asked, AskedRead
 - Junie: Background, Blocked
+- OpenCode: Background
 - Pi: Background
 
 ## Stuck phases

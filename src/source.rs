@@ -10,6 +10,7 @@ pub mod claude;
 #[cfg(test)]
 pub mod fixture;
 pub mod interim;
+pub mod opencode;
 pub mod tail;
 
 use std::collections::BTreeSet;
@@ -148,9 +149,12 @@ impl Told {
 /// hooks of the harnesses whose files are not read yet keep what they need
 /// between events in `state`.
 pub fn all(home: &Path, state: &Path) -> Vec<Box<dyn Source>> {
-    let mut sources: Vec<Box<dyn Source>> = vec![Box::new(claude::Claude::new(home))];
+    let mut sources: Vec<Box<dyn Source>> = vec![
+        Box::new(claude::Claude::new(home)),
+        Box::new(opencode::OpenCode::new(home)),
+    ];
     for harness in Harness::ALL {
-        if harness != Harness::Claude {
+        if !matches!(harness, Harness::Claude | Harness::OpenCode) {
             sources.push(Box::new(interim::Interim::new(harness, home, state)));
         }
     }
