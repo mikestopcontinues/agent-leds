@@ -349,8 +349,12 @@ pub fn replay(harness: Harness, name: &str) -> Replay {
         }
     }
     assert!(
-        since.is_empty() && differs.is_empty(),
+        since.is_empty(),
         "{name}: the last steps yielded {since:?} with no expect after them"
+    );
+    assert!(
+        differs.is_empty(),
+        "{name}: a daemon started after the last steps shows {differs:?}, with no expect after them"
     );
     let coalesced = coalesce(harness, name, &fixture);
     assert_eq!(
