@@ -5,10 +5,12 @@
 //! is registered, Grok asks once to trust each folder but the home folder
 //! itself before it runs any of them.
 //!
-//! Grok also runs the hooks in `~/.claude/settings.json`, unless its config
-//! sets `[compat.claude] hooks = false`, so a hook registered for Claude Code
-//! fires inside every Grok session too, under Grok's session id.
+//! Grok also runs the hooks in `~/.claude/settings.json`, unless
+//! `GROK_CLAUDE_HOOKS_ENABLED`, or else its config, turns `compat.claude.hooks`
+//! off, so a hook registered for Claude Code fires inside every Grok session
+//! too, under Grok's session id.
 
+use std::ffi::OsStr;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -28,6 +30,9 @@ pub const HOOKS: [&str; 1] = ["Notification"];
 
 /// Grok's own config, in its folder.
 const CONFIG: &str = "config.toml";
+
+/// What turns `compat.claude.hooks` on or off ahead of the config.
+const CLAUDE_HOOKS: &str = "GROK_CLAUDE_HOOKS_ENABLED";
 
 /// Writes our hooks' file whole in Grok's `folder`, in place of whatever an
 /// older version wrote.
@@ -68,9 +73,10 @@ pub fn uninstall(folder: &Path) -> Result<()> {
 
 /// What is wrong when hooks an older agent-leds registered with Claude Code
 /// are still in `~/.claude/settings.json` and Grok, with its `folder`, runs
-/// that file's hooks.
+/// that file's hooks, as a Grok started from this shell would.
 pub fn claude_hooks(home: &Path, folder: &Path) -> Result<()> {
-    if !reads_claude_hooks(folder)? {
+    let enabled = std::env::var_os(CLAUDE_HOOKS);
+    if !reads_claude_hooks(folder, enabled.as_deref())? {
         return Ok(());
     }
     let mut events: Vec<String> = claude::hooks(home)?
@@ -90,9 +96,17 @@ pub fn claude_hooks(home: &Path, folder: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Whether the config in Grok's `folder` leaves `compat.claude.hooks` on,
-/// as it is by default.
-fn reads_claude_hooks(folder: &Path) -> Result<bool> {
+/// Whether `compat.claude.hooks` is on, as it is by default, given the
+/// value of `GROK_CLAUDE_HOOKS_ENABLED`, which Grok reads ahead of its
+/// config, and the config in Grok's `folder`. The managed and requirements
+/// layers of Grok's config are not read.
+fn reads_claude_hooks(folder: &Path, enabled: Option<&OsStr>) -> Result<bool> {
+    if let Some(enabled) = enabled.and_then(OsStr::to_str)
+        && !enabled.is_empty()
+    {
+        let off = ["0", "false", "no", "off"];
+        return Ok(!off.iter().any(|off| enabled.eq_ignore_ascii_case(off)));
+    }
     let path = folder.join(CONFIG);
     let Some(text) = files::read_optional(&path)? else {
         return Ok(true);
@@ -235,5 +249,24 @@ mod tests {
                 "Notification": [{ "hooks": [{ "type": "command", "command": "afplay ping.aiff" }] }],
             })
         );
+    }
+
+    /// `GROK_CLAUDE_HOOKS_ENABLED` decides ahead of the config, as in Grok.
+    #[test]
+    fn the_environment_turns_claude_hooks_on_or_off_ahead_of_the_config() {
+        let home = Home::new();
+        let grok = home.join(".grok");
+        let reads = |enabled: Option<&str>| reads_claude_hooks(&grok, enabled.map(OsStr::new));
+        assert!(reads(None).unwrap());
+        home.write(".grok/config.toml", "[compat.claude]\nhooks = false\n");
+        assert!(!reads(None).unwrap());
+        assert!(!reads(Some("")).unwrap());
+        for on in ["1", "true", "yes"] {
+            assert!(reads(Some(on)).unwrap(), "{on}");
+        }
+        home.write(".grok/config.toml", "");
+        for off in ["0", "false", "No", "OFF"] {
+            assert!(!reads(Some(off)).unwrap(), "{off}");
+        }
     }
 }
