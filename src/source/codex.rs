@@ -26,7 +26,7 @@ use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
 use crate::harness::{Harness, ends_on_question};
 use crate::liveness::{self, Kernel, Liveness};
-use crate::queue::{Key, TurnKey};
+use crate::queue::TurnKey;
 
 const fn file(signal: Signal, record: &'static str, cite: &'static str) -> Declared {
     Declared {
@@ -399,7 +399,8 @@ impl Codex {
                 Ok(_) => {}
             }
             self.threads.remove(id);
-            out.push(observation(
+            out.push(Observation::new(
+                Harness::Codex,
                 id,
                 Channel::File,
                 Event::one(Signal::Ended),
@@ -437,7 +438,8 @@ impl Codex {
         let Ok(tail) = Tail::at_end(&rollout) else {
             return false;
         };
-        out.push(observation(
+        out.push(Observation::new(
+            Harness::Codex,
             id,
             Channel::File,
             Event::Started(Start {
@@ -662,19 +664,6 @@ fn close(thread: &mut Thread, payload: &Payload) {
     thread.approval = false;
 }
 
-fn observation(id: &str, channel: Channel, event: Event, turn: Option<TurnKey>) -> Observation {
-    Observation {
-        key: Key {
-            harness: Harness::Codex,
-            id: id.to_owned(),
-        },
-        channel,
-        event,
-        turn,
-        quiet: false,
-    }
-}
-
 /// Tells what one record or the hook says.
 fn tell(
     id: &str,
@@ -683,14 +672,11 @@ fn tell(
     signals: impl IntoIterator<Item = Signal>,
     out: &mut Vec<Observation>,
 ) {
-    let signals: BTreeSet<Signal> = signals.into_iter().collect();
-    thread.told.tell(&signals);
-    out.push(observation(
-        id,
-        channel,
-        Event::Signals(signals),
-        thread.turn.clone(),
-    ));
+    out.push(
+        thread
+            .told
+            .observe(Harness::Codex, id, channel, signals, thread.turn.clone()),
+    );
 }
 
 impl Source for Codex {
@@ -716,11 +702,15 @@ impl Source for Codex {
                 o.turn = turn.clone();
             }
             seeded.extend(started);
-            seeded.extend(
-                self.current(&id).into_iter().map(|(signal, turn)| {
-                    observation(&id, Channel::File, Event::one(signal), turn)
-                }),
-            );
+            seeded.extend(self.threads[&id].told.current().into_iter().map(|signal| {
+                Observation::new(
+                    Harness::Codex,
+                    &id,
+                    Channel::File,
+                    Event::one(signal),
+                    turn.clone(),
+                )
+            }));
         }
         for o in &mut seeded {
             o.quiet = true;
@@ -795,16 +785,6 @@ impl Source for Codex {
         out
     }
 
-    fn current(&self, id: &str) -> Vec<(Signal, Option<TurnKey>)> {
-        let Some(thread) = self.threads.get(id) else {
-            return Vec::new();
-        };
-        let current = thread.told.current().into_iter();
-        current
-            .map(|signal| (signal, thread.turn.clone()))
-            .collect()
-    }
-
     fn behind(&self) -> bool {
         self.threads.values().any(|thread| thread.behind)
     }
@@ -814,6 +794,7 @@ impl Source for Codex {
 mod tests {
     use super::*;
     use crate::fsm::Phase;
+    use crate::queue::Key;
     use crate::source::fixture::{self, Replay};
 
     /// The rollout of the thread most fixtures follow.

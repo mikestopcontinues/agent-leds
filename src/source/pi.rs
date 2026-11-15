@@ -24,106 +24,90 @@ use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
 use crate::harness::{self, Harness, ends_on_question};
 use crate::liveness::{self, Kernel, Liveness, StartCheck};
-use crate::queue::{Key, TurnKey};
-
-const fn declared(
-    signal: Signal,
-    channel: Channel,
-    evidence: Evidence,
-    record: &'static str,
-    cite: &'static str,
-) -> Declared {
-    Declared {
-        signal,
-        channel,
-        evidence,
-        record,
-        cite,
-    }
-}
+use crate::queue::TurnKey;
 
 /// What Pi's files and our extension tell. The probe's `ext*` runs ran this
 /// extension, recording how many lines the session's file held as each hook
 /// ran; the others ran Pi alone.
 pub const SIGNALS: &[Declared] = &[
-    declared(
+    Declared::new(
         Signal::Started,
         Channel::Hook,
         Evidence::Observed,
         "session_start or agent_start from a Pi with a UI, naming its own pid, which is the hook's parent, and its session file",
         "probe-pi ext084, ext152, extfork, extdir, extresume",
     ),
-    declared(
+    Declared::new(
         Signal::Prompted,
         Channel::File,
         Evidence::Observed,
         "a message entry with role user, keyed by its entry id; or an assistant entry after the run ended, as when a background subagent's report wakes the agent, keyed by the custom_message entry of customType subagent-notify before it",
         "probe-pi ext152, rpc1, rpc8, rpcsa, extsa",
     ),
-    declared(
+    Declared::new(
         Signal::Prompted,
         Channel::Hook,
         Evidence::Observed,
         "agent_start, at every prompt and retry; 0.84.4 writes a new session's first prompt to no file until the reply ends",
         "probe-pi ext084, tq1",
     ),
-    declared(
+    Declared::new(
         Signal::QuestionAsked,
         Channel::Hook,
         Evidence::Observed,
         "ui_prompt_start during a run: an extension's dialog holds it up, and nothing is written while it is open",
         "probe-pi ext084, ext152, rpc1, tui1",
     ),
-    declared(
+    Declared::new(
         Signal::Answered,
         Channel::File,
         Evidence::Inferred,
         "the first message entry after a dialog the extension reported, such as the tool result its answer gave, when the file is read before ui_prompt_end is handled; Pi itself runs ui_prompt_end first",
         "probe-pi ext084, ext152, where each ui_prompt_end ran before the tool result was written",
     ),
-    declared(
+    Declared::new(
         Signal::Answered,
         Channel::Hook,
         Evidence::Observed,
         "ui_prompt_end",
         "probe-pi ext084, ext152",
     ),
-    declared(
+    Declared::new(
         Signal::TurnEnded,
         Channel::File,
         Evidence::Observed,
         "an assistant message entry with stopReason stop or length and no toolCall block",
         "probe-pi ext084, rpc1, tui1",
     ),
-    declared(
+    Declared::new(
         Signal::TurnEndedAsking,
         Channel::File,
         Evidence::Observed,
         "that entry, when the last line of its joined text blocks ends in a question mark",
         "probe-pi ext084, rpc1, tui1",
     ),
-    declared(
+    Declared::new(
         Signal::TurnFailed,
         Channel::Hook,
         Evidence::Observed,
         "agent_settled whose last assistant message has stopReason error; an error entry in the file may be retried, and settles nothing",
         "probe-pi ext084, ext152 fail400, fail500always",
     ),
-    declared(
+    Declared::new(
         Signal::Interrupted,
         Channel::File,
         Evidence::Observed,
         "an assistant message entry with stopReason aborted, or error with errorMessage exactly Operation aborted, Request was aborted or This operation was aborted",
         "probe-pi ext084, ext152, rpc1, tui1",
     ),
-    declared(
+    Declared::new(
         Signal::Interrupted,
         Channel::Hook,
         Evidence::Observed,
         "agent_settled with aborted (1.5.2) or stop_reason aborted, or after an assistant entry the file says was stopped, as 0.84.4's stop during a tool is with stop_reason error",
         "probe-pi ext084, ext152",
     ),
-    declared(
+    Declared::new(
         Signal::Ended,
         Channel::Hook,
         Evidence::Observed,
@@ -556,7 +540,8 @@ impl Pi {
             self.sessions.insert(id.clone(), session);
         }
         let turn = self.sessions[id].turn.clone();
-        out.push(observation(
+        out.push(Observation::new(
+            Harness::Pi,
             id,
             Channel::Hook,
             Event::Started(Start { cwd, liveness }),
@@ -585,19 +570,6 @@ impl Pi {
     }
 }
 
-fn observation(id: &str, channel: Channel, event: Event, turn: Option<TurnKey>) -> Observation {
-    Observation {
-        key: Key {
-            harness: Harness::Pi,
-            id: id.to_owned(),
-        },
-        channel,
-        event,
-        turn,
-        quiet: false,
-    }
-}
-
 /// Tells what one entry or one event says.
 fn tell(
     id: &str,
@@ -606,14 +578,11 @@ fn tell(
     signals: impl IntoIterator<Item = Signal>,
     out: &mut Vec<Observation>,
 ) {
-    let signals: BTreeSet<Signal> = signals.into_iter().collect();
-    session.told.tell(&signals);
-    out.push(observation(
-        id,
-        channel,
-        Event::Signals(signals),
-        session.turn.clone(),
-    ));
+    out.push(
+        session
+            .told
+            .observe(Harness::Pi, id, channel, signals, session.turn.clone()),
+    );
 }
 
 /// The channel a signal is told through when a session's state is rebuilt:
@@ -669,17 +638,24 @@ impl Source for Pi {
             }
             let session = &self.sessions[id];
             let (cwd, turn) = (session.cwd.clone(), session.turn.clone());
-            seeded.push(observation(
+            seeded.push(Observation::new(
+                Harness::Pi,
                 id,
                 Channel::Hook,
                 Event::Started(Start {
                     cwd,
                     liveness: liveness.clone(),
                 }),
-                turn,
+                turn.clone(),
             ));
-            for (signal, turn) in self.current(id) {
-                seeded.push(observation(id, channel(signal), Event::one(signal), turn));
+            for signal in self.sessions[id].told.current() {
+                seeded.push(Observation::new(
+                    Harness::Pi,
+                    id,
+                    channel(signal),
+                    Event::one(signal),
+                    turn.clone(),
+                ));
             }
         }
         for o in &mut seeded {
@@ -767,22 +743,18 @@ impl Source for Pi {
                 session.dialog = facts.contains(&Signal::QuestionAsked);
                 tell(&id, session, Channel::Hook, facts, &mut out);
             }
-            None => out.push(observation(&id, Channel::Hook, Event::Signals(facts), None)),
+            None => out.push(Observation::new(
+                Harness::Pi,
+                &id,
+                Channel::Hook,
+                Event::Signals(facts),
+                None,
+            )),
         }
         if payload.event == "session_shutdown" {
             self.sessions.remove(&id);
         }
         out
-    }
-
-    fn current(&self, id: &str) -> Vec<(Signal, Option<TurnKey>)> {
-        let Some(session) = self.sessions.get(id) else {
-            return Vec::new();
-        };
-        let current = session.told.current().into_iter();
-        current
-            .map(|signal| (signal, session.turn.clone()))
-            .collect()
     }
 
     fn behind(&self) -> bool {
@@ -799,6 +771,7 @@ mod tests {
     use super::*;
     use crate::fsm::Phase;
     use crate::liveness::Proc;
+    use crate::queue::Key;
     use crate::source::fixture::{self, Replay};
 
     fn replay(name: &str) -> Replay {

@@ -44,6 +44,28 @@ pub struct Observation {
     pub quiet: bool,
 }
 
+impl Observation {
+    /// What a source tells of the session `id` of `harness`.
+    pub fn new(
+        harness: Harness,
+        id: &str,
+        channel: Channel,
+        event: Event,
+        turn: Option<TurnKey>,
+    ) -> Observation {
+        Observation {
+            key: Key {
+                harness,
+                id: id.to_owned(),
+            },
+            channel,
+            event,
+            turn,
+            quiet: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Event {
     /// A process of the harness runs the session.
@@ -92,15 +114,14 @@ pub trait Source {
     fn roots(&self) -> Vec<PathBuf>;
     /// At daemon start: for each session its files show running, and each
     /// hook-bound session in `bound` that is still alive, a quiet Started
-    /// and then `current()`, leaving every reader at the end of its file.
+    /// and then the signals `Told::current` gives of where its files leave
+    /// it, leaving every reader at the end of its file.
     fn seed(&mut self, k: &dyn Kernel, bound: &[(String, Liveness)]) -> Result<Vec<Observation>>;
     /// What changed under `paths`, or under every root when None, as after
     /// dropped events.
     fn changed(&mut self, k: &dyn Kernel, paths: Option<&[PathBuf]>) -> Vec<Observation>;
     /// Catches up on the session's files, then translates the hook.
     fn hook(&mut self, k: &dyn Kernel, hook: &Hook) -> Vec<Observation>;
-    /// The signals that take the session from Idle to where it stands now.
-    fn current(&self, id: &str) -> Vec<(Signal, Option<TurnKey>)>;
     /// Whether a read stopped at its budget and left bytes to read.
     fn behind(&self) -> bool;
 }
@@ -133,6 +154,21 @@ impl Told {
         if matches!(rule.on, Signal::PermissionAsked | Signal::QuestionAsked) {
             self.wait = rule.on;
         }
+    }
+
+    /// Tells what one record or hook says of the session `id` of
+    /// `harness`, on `turn`.
+    pub fn observe(
+        &mut self,
+        harness: Harness,
+        id: &str,
+        channel: Channel,
+        signals: impl IntoIterator<Item = Signal>,
+        turn: Option<TurnKey>,
+    ) -> Observation {
+        let signals: BTreeSet<Signal> = signals.into_iter().collect();
+        self.tell(&signals);
+        Observation::new(harness, id, channel, Event::Signals(signals), turn)
     }
 
     /// The shortest signals from Idle to the same phase.
@@ -385,10 +421,6 @@ mod tests {
         }
 
         fn hook(&mut self, _k: &dyn Kernel, _hook: &Hook) -> Vec<Observation> {
-            Vec::new()
-        }
-
-        fn current(&self, _id: &str) -> Vec<(Signal, Option<TurnKey>)> {
             Vec::new()
         }
 

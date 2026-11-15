@@ -31,7 +31,7 @@ use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
 use crate::harness::{Harness, ends_on_question};
 use crate::liveness::{self, Kernel, Liveness, StartCheck};
-use crate::queue::{Key, TurnKey};
+use crate::queue::TurnKey;
 
 const fn file(signal: Signal, record: &'static str, cite: &'static str) -> Declared {
     Declared {
@@ -523,7 +523,8 @@ impl OpenCode {
         tx.commit()?;
         for id in ended {
             self.sessions.remove(&id);
-            out.push(observation(
+            out.push(Observation::new(
+                Harness::OpenCode,
                 &id,
                 Channel::File,
                 Event::one(Signal::Ended),
@@ -595,7 +596,8 @@ impl OpenCode {
 fn moved(id: &str, from: &Level, to: &Level, out: &mut Vec<Observation>) {
     let turn = to.turn();
     let tell = |signals: BTreeSet<Signal>, out: &mut Vec<Observation>| {
-        out.push(observation(
+        out.push(Observation::new(
+            Harness::OpenCode,
             id,
             Channel::File,
             Event::Signals(signals),
@@ -632,19 +634,6 @@ fn moved(id: &str, from: &Level, to: &Level, out: &mut Vec<Observation>) {
     }
 }
 
-fn observation(id: &str, channel: Channel, event: Event, turn: Option<TurnKey>) -> Observation {
-    Observation {
-        key: Key {
-            harness: Harness::OpenCode,
-            id: id.to_owned(),
-        },
-        channel,
-        event,
-        turn,
-        quiet: false,
-    }
-}
-
 impl Source for OpenCode {
     fn harness(&self) -> Harness {
         Harness::OpenCode
@@ -672,7 +661,8 @@ impl Source for OpenCode {
             }
             let cwd = self.follow(id, liveness.clone(), String::new())?;
             let turn = self.turn(id);
-            seeded.push(observation(
+            seeded.push(Observation::new(
+                Harness::OpenCode,
                 id,
                 Channel::Hook,
                 Event::Started(Start {
@@ -681,8 +671,18 @@ impl Source for OpenCode {
                 }),
                 turn.clone(),
             ));
-            for (signal, turn) in self.current(id) {
-                seeded.push(observation(id, Channel::File, Event::one(signal), turn));
+            // What only the plugin told, a permission or an error before the
+            // turn's loop, is not in the database.
+            let mut told = Told::default();
+            told.tell(&self.sessions[id].level.signals());
+            for signal in told.current() {
+                seeded.push(Observation::new(
+                    Harness::OpenCode,
+                    id,
+                    Channel::File,
+                    Event::one(signal),
+                    turn.clone(),
+                ));
             }
         }
         if let Some(db) = &mut self.db {
@@ -738,7 +738,8 @@ impl Source for OpenCode {
                         directory
                     }
                 };
-                out.push(observation(
+                out.push(Observation::new(
+                    Harness::OpenCode,
                     &id,
                     Channel::Hook,
                     Event::Started(Start { cwd, liveness }),
@@ -757,29 +758,14 @@ impl Source for OpenCode {
             }
             _ => return out,
         };
-        out.push(observation(
+        out.push(Observation::new(
+            Harness::OpenCode,
             &id,
             Channel::Hook,
             Event::Signals(signals),
             self.turn(&id),
         ));
         out
-    }
-
-    /// Where the database leaves the session, from Idle. What only the
-    /// plugin told, a permission or an error before the turn's loop, is not
-    /// in it.
-    fn current(&self, id: &str) -> Vec<(Signal, Option<TurnKey>)> {
-        let Some(session) = self.sessions.get(id) else {
-            return Vec::new();
-        };
-        let mut told = Told::default();
-        told.tell(&session.level.signals());
-        let turn = session.level.turn();
-        told.current()
-            .into_iter()
-            .map(|signal| (signal, turn.clone()))
-            .collect()
     }
 
     fn behind(&self) -> bool {

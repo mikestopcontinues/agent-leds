@@ -37,7 +37,7 @@ use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
 use crate::harness::{Harness, ends_on_question};
 use crate::liveness::{self, Kernel, Liveness, StartCheck};
-use crate::queue::{Key, TurnKey};
+use crate::queue::TurnKey;
 
 const fn file(signal: Signal, record: &'static str, cite: &'static str) -> Declared {
     Declared {
@@ -416,7 +416,13 @@ impl Junie {
             .collect();
         for id in lost {
             if !taken.iter().any(|(other, _, _)| *other == id) {
-                out.push(observation(&id, Event::one(Signal::Ended), None));
+                out.push(Observation::new(
+                    Harness::Junie,
+                    &id,
+                    Channel::File,
+                    Event::one(Signal::Ended),
+                    None,
+                ));
             }
         }
         for (id, path, sidecar) in taken {
@@ -464,8 +470,10 @@ impl Junie {
             session.log = Tail::at_end(&log).ok();
         }
         let session = &self.sessions[id];
-        out.push(observation(
+        out.push(Observation::new(
+            Harness::Junie,
             id,
+            Channel::File,
             Event::Started(Start {
                 cwd: session.cwd.clone(),
                 liveness: session.liveness.clone(),
@@ -473,8 +481,14 @@ impl Junie {
             session.turn.clone(),
         ));
         if seeding {
-            for (signal, turn) in self.current(id) {
-                out.push(observation(id, Event::one(signal), turn));
+            for signal in session.told.current() {
+                out.push(Observation::new(
+                    Harness::Junie,
+                    id,
+                    Channel::File,
+                    Event::one(signal),
+                    session.turn.clone(),
+                ));
             }
         } else if created.is_ok_and(|created| created < sidecar.started_at)
             && let Err(error) = self.resume_log(id, &log, sidecar.started_at, out)
@@ -655,8 +669,10 @@ fn update(id: &str, session: &mut Session, record: &Record, out: &mut Vec<Observ
             let folder = block.current_directory.as_deref().unwrap_or_default();
             if !folder.is_empty() && folder != session.cwd {
                 session.cwd = folder.to_owned();
-                out.push(observation(
+                out.push(Observation::new(
+                    Harness::Junie,
                     id,
+                    Channel::File,
                     Event::Started(Start {
                         cwd: session.cwd.clone(),
                         liveness: session.liveness.clone(),
@@ -688,19 +704,6 @@ fn created_ms(path: &Path) -> io::Result<u64> {
         .map_or(0, |since| since.as_millis() as u64))
 }
 
-fn observation(id: &str, event: Event, turn: Option<TurnKey>) -> Observation {
-    Observation {
-        key: Key {
-            harness: Harness::Junie,
-            id: id.to_owned(),
-        },
-        channel: Channel::File,
-        event,
-        turn,
-        quiet: false,
-    }
-}
-
 /// Tells what one line of the log says.
 fn tell(
     id: &str,
@@ -708,11 +711,11 @@ fn tell(
     signals: impl IntoIterator<Item = Signal>,
     out: &mut Vec<Observation>,
 ) {
-    let signals: BTreeSet<Signal> = signals.into_iter().collect();
-    session.told.tell(&signals);
-    out.push(observation(
+    out.push(session.told.observe(
+        Harness::Junie,
         id,
-        Event::Signals(signals),
+        Channel::File,
+        signals,
         session.turn.clone(),
     ));
 }
@@ -784,16 +787,6 @@ impl Source for Junie {
         Vec::new()
     }
 
-    fn current(&self, id: &str) -> Vec<(Signal, Option<TurnKey>)> {
-        let Some(session) = self.sessions.get(id) else {
-            return Vec::new();
-        };
-        let current = session.told.current().into_iter();
-        current
-            .map(|signal| (signal, session.turn.clone()))
-            .collect()
-    }
-
     fn behind(&self) -> bool {
         self.sessions.values().any(|session| session.behind)
     }
@@ -805,6 +798,7 @@ mod tests {
 
     use super::*;
     use crate::fsm::Phase;
+    use crate::queue::Key;
     use crate::source::fixture::{self, Replay};
 
     fn replay(name: &str) -> Replay {

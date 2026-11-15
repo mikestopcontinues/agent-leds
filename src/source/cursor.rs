@@ -27,90 +27,74 @@ use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
 use crate::harness::{Harness, ends_on_question};
 use crate::liveness::{self, Kernel, Liveness, Proc, StartCheck};
-use crate::queue::{Key, TurnKey};
-
-const fn declared(
-    signal: Signal,
-    channel: Channel,
-    evidence: Evidence,
-    record: &'static str,
-    cite: &'static str,
-) -> Declared {
-    Declared {
-        signal,
-        channel,
-        evidence,
-        record,
-        cite,
-    }
-}
+use crate::queue::TurnKey;
 
 /// What Cursor's files and its one hook tell.
 pub const SIGNALS: &[Declared] = &[
-    declared(
+    Declared::new(
         Signal::Started,
         Channel::Hook,
         Evidence::Observed,
         "beforeSubmitPrompt, run under a process Cursor marked running in .running with the second it started, the outermost of the marked processes in a row, so the CLI and not its node worker",
         "probe-cursor runs A–I (markers, lsof); the bundle's install-in-use-marker; 0.5.0 hooks",
     ),
-    declared(
+    Declared::new(
         Signal::Prompted,
         Channel::Hook,
         Evidence::Observed,
         "beforeSubmitPrompt, for a chat bound to its process; the only word of a text-only turn until it ends",
         "probe-cursor run F; 0.5.0 hooks",
     ),
-    declared(
+    Declared::new(
         Signal::Prompted,
         Channel::File,
         Evidence::Observed,
         "a finished transcript whose last record is a user or assistant record, after the turn's end or with more user records than before, as after a background job",
         "probe-cursor runs A, B, D, G, H",
     ),
-    declared(
+    Declared::new(
         Signal::TurnEnded,
         Channel::File,
         Evidence::Observed,
         "a finished transcript whose last record is turn_ended, once for each count of user records and status",
         "probe-cursor runs A–H",
     ),
-    declared(
+    Declared::new(
         Signal::TurnEndedAsking,
         Channel::File,
         Evidence::Observed,
         "turn_ended after an assistant text whose last line ends in a question mark; a reasoning model's reasoning follows its reply in that text, so its last line is tested instead",
         "probe-cursor runs A, B",
     ),
-    declared(
+    Declared::new(
         Signal::TurnFailed,
         Channel::File,
         Evidence::Inferred,
         "turn_ended with status error, from the bundle's code; not reproduced",
         "probe-cursor turn_error (bundle 2986/7777.index.js)",
     ),
-    declared(
+    Declared::new(
         Signal::Interrupted,
         Channel::Hook,
         Evidence::Inferred,
         "stop with status aborted, for a chat bound to its process; Cursor runs it on every interrupt, from the bundle's code",
         "probe-cursor run B, turn 3 (no write); bundle 2986.index.js, the abort path",
     ),
-    declared(
+    Declared::new(
         Signal::Interrupted,
         Channel::File,
         Evidence::Observed,
         "turn_ended with status aborted, including the previous turn's end rewritten to aborted",
         "probe-cursor runs B, H",
     ),
-    declared(
+    Declared::new(
         Signal::Ended,
         Channel::File,
         Evidence::Observed,
         "the .running marker of the process the chat is bound to deleted, as a quit does",
         "probe-cursor runs A, C, D, G, I",
     ),
-    declared(
+    Declared::new(
         Signal::Ended,
         Channel::Hook,
         Evidence::Observed,
@@ -461,7 +445,8 @@ impl Cursor {
             .collect();
         for id in ended {
             self.sessions.remove(&id);
-            out.push(observation(
+            out.push(Observation::new(
+                Harness::Cursor,
                 &id,
                 Channel::File,
                 Event::one(Signal::Ended),
@@ -500,7 +485,8 @@ impl Cursor {
                         .unwrap_or_default(),
                     liveness: session.liveness(),
                 };
-                out.push(observation(
+                out.push(Observation::new(
+                    Harness::Cursor,
                     &id,
                     Channel::Hook,
                     Event::Started(start),
@@ -538,19 +524,6 @@ impl Cursor {
     }
 }
 
-fn observation(id: &str, channel: Channel, event: Event, turn: Option<TurnKey>) -> Observation {
-    Observation {
-        key: Key {
-            harness: Harness::Cursor,
-            id: id.to_owned(),
-        },
-        channel,
-        event,
-        turn,
-        quiet: false,
-    }
-}
-
 /// Tells what one read or one hook says.
 fn tell(
     id: &str,
@@ -559,13 +532,16 @@ fn tell(
     signals: BTreeSet<Signal>,
     out: &mut Vec<Observation>,
 ) {
-    session.told.tell(&signals);
     let turn = match channel {
         // The hook comes before the turn's records, so it cannot name it.
         Channel::Hook => None,
         _ => session.turn(),
     };
-    out.push(observation(id, channel, Event::Signals(signals), turn));
+    out.push(
+        session
+            .told
+            .observe(Harness::Cursor, id, channel, signals, turn),
+    );
 }
 
 impl Source for Cursor {
@@ -604,12 +580,22 @@ impl Source for Cursor {
                 cwd: self.folder(id),
                 liveness: liveness.clone(),
             };
-            seeded.push(observation(id, Channel::Hook, Event::Started(start), turn));
-            seeded.extend(
-                self.current(id)
-                    .into_iter()
-                    .map(|(signal, turn)| observation(id, Channel::File, Event::one(signal), turn)),
-            );
+            seeded.push(Observation::new(
+                Harness::Cursor,
+                id,
+                Channel::Hook,
+                Event::Started(start),
+                turn.clone(),
+            ));
+            seeded.extend(self.sessions[id].told.current().into_iter().map(|signal| {
+                Observation::new(
+                    Harness::Cursor,
+                    id,
+                    Channel::File,
+                    Event::one(signal),
+                    turn.clone(),
+                )
+            }));
         }
         for o in &mut seeded {
             o.quiet = true;
@@ -663,14 +649,6 @@ impl Source for Cursor {
             }
             _ => Vec::new(),
         }
-    }
-
-    fn current(&self, id: &str) -> Vec<(Signal, Option<TurnKey>)> {
-        let Some(session) = self.sessions.get(id) else {
-            return Vec::new();
-        };
-        let current = session.told.current().into_iter();
-        current.map(|signal| (signal, session.turn())).collect()
     }
 
     /// Never: a transcript is read whole.

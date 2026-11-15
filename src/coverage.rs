@@ -34,6 +34,24 @@ pub struct Declared {
     pub cite: &'static str,
 }
 
+impl Declared {
+    pub const fn new(
+        signal: Signal,
+        channel: Channel,
+        evidence: Evidence,
+        record: &'static str,
+        cite: &'static str,
+    ) -> Declared {
+        Declared {
+            signal,
+            channel,
+            evidence,
+            record,
+            cite,
+        }
+    }
+}
+
 /// The coverage document for the harnesses' declarations, in the order given.
 pub fn render(harnesses: &[(Harness, &[Declared])]) -> String {
     let mut out = vec![

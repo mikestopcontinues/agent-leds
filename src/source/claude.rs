@@ -25,7 +25,7 @@ use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
 use crate::harness::{Harness, ends_on_question};
 use crate::liveness::{self, Kernel, Liveness, StartCheck};
-use crate::queue::{Key, TurnKey};
+use crate::queue::TurnKey;
 
 const fn file(signal: Signal, record: &'static str, cite: &'static str) -> Declared {
     Declared {
@@ -465,8 +465,10 @@ impl Claude {
             },
         );
         let id = process.session_id;
-        out.push(observation(
+        out.push(Observation::new(
+            Harness::Claude,
             &id,
+            Channel::File,
             Event::Started(Start {
                 cwd: process.cwd,
                 liveness,
@@ -517,7 +519,13 @@ impl Claude {
         });
         let Some((other, start, liveness)) = other else {
             self.sessions.remove(id);
-            out.push(observation(id, Event::one(Signal::Ended), None));
+            out.push(Observation::new(
+                Harness::Claude,
+                id,
+                Channel::File,
+                Event::one(Signal::Ended),
+                None,
+            ));
             return;
         };
         // The same session resumed in another process, which goes on with it.
@@ -529,8 +537,10 @@ impl Claude {
         session.start = start;
         session.owner = other;
         session.status = status;
-        out.push(observation(
+        out.push(Observation::new(
+            Harness::Claude,
             id,
+            Channel::File,
             Event::Started(Start {
                 cwd: String::new(),
                 liveness,
@@ -742,19 +752,6 @@ fn open(path: &Path, start: i64) -> io::Result<Tail> {
     }
 }
 
-fn observation(id: &str, event: Event, turn: Option<TurnKey>) -> Observation {
-    Observation {
-        key: Key {
-            harness: Harness::Claude,
-            id: id.to_owned(),
-        },
-        channel: Channel::File,
-        event,
-        turn,
-        quiet: false,
-    }
-}
-
 /// Tells what one record or one change of the session file says.
 fn tell(
     id: &str,
@@ -762,11 +759,11 @@ fn tell(
     signals: impl IntoIterator<Item = Signal>,
     out: &mut Vec<Observation>,
 ) {
-    let signals: BTreeSet<Signal> = signals.into_iter().collect();
-    session.told.tell(&signals);
-    out.push(observation(
+    out.push(session.told.observe(
+        Harness::Claude,
         id,
-        Event::Signals(signals),
+        Channel::File,
+        signals,
         session.turn.clone(),
     ));
 }
@@ -804,16 +801,20 @@ impl Source for Claude {
                 self.edge(&id, from, to, &mut Vec::new());
             }
             let turn = self.sessions[&id].turn.clone();
-            let current = self.current(&id);
+            let current = self.sessions[&id].told.current();
             for o in &mut started {
                 o.turn = turn.clone();
             }
             seeded.extend(started);
-            seeded.extend(
-                current
-                    .into_iter()
-                    .map(|(signal, _)| observation(&id, Event::one(signal), turn.clone())),
-            );
+            seeded.extend(current.into_iter().map(|signal| {
+                Observation::new(
+                    Harness::Claude,
+                    &id,
+                    Channel::File,
+                    Event::one(signal),
+                    turn.clone(),
+                )
+            }));
         }
         for o in &mut seeded {
             o.quiet = true;
@@ -877,16 +878,6 @@ impl Source for Claude {
         Vec::new()
     }
 
-    fn current(&self, id: &str) -> Vec<(Signal, Option<TurnKey>)> {
-        let Some(session) = self.sessions.get(id) else {
-            return Vec::new();
-        };
-        let current = session.told.current().into_iter();
-        current
-            .map(|signal| (signal, session.turn.clone()))
-            .collect()
-    }
-
     fn behind(&self) -> bool {
         self.sessions.values().any(|session| session.behind)
     }
@@ -896,6 +887,7 @@ impl Source for Claude {
 mod tests {
     use super::*;
     use crate::fsm::Phase;
+    use crate::queue::Key;
     use crate::source::fixture::{self, Replay};
 
     fn replay(name: &str) -> Replay {

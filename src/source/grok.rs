@@ -30,7 +30,7 @@ use crate::coverage::{Declared, Evidence};
 use crate::fsm::{Channel, Signal};
 use crate::harness::{Harness, ends_on_question};
 use crate::liveness::{self, Kernel, Liveness, StartCheck};
-use crate::queue::{Key, TurnKey};
+use crate::queue::TurnKey;
 
 const fn file(
     signal: Signal,
@@ -378,7 +378,13 @@ impl Grok {
                 // Resumed in another process: the old one's turn is over.
                 Some(_) => {
                     self.sessions.remove(id);
-                    out.push(observation(id, Event::one(Signal::Ended), None));
+                    out.push(Observation::new(
+                        Harness::Grok,
+                        id,
+                        Channel::File,
+                        Event::one(Signal::Ended),
+                        None,
+                    ));
                 }
                 None => {}
             }
@@ -399,8 +405,10 @@ impl Grok {
             return;
         }
         let id = row.session_id.clone();
-        out.push(observation(
+        out.push(Observation::new(
+            Harness::Grok,
             &id,
+            Channel::File,
             Event::Started(Start {
                 cwd: row.cwd.clone(),
                 liveness,
@@ -627,19 +635,6 @@ impl Grok {
     }
 }
 
-fn observation(id: &str, event: Event, turn: Option<TurnKey>) -> Observation {
-    Observation {
-        key: Key {
-            harness: Harness::Grok,
-            id: id.to_owned(),
-        },
-        channel: Channel::File,
-        event,
-        turn,
-        quiet: false,
-    }
-}
-
 /// Tells what one record or the hook says.
 fn tell(
     id: &str,
@@ -648,11 +643,11 @@ fn tell(
     signals: impl IntoIterator<Item = Signal>,
     out: &mut Vec<Observation>,
 ) {
-    let signals: BTreeSet<Signal> = signals.into_iter().collect();
-    session.told.tell(&signals);
-    let mut o = observation(id, Event::Signals(signals), session.turn.clone());
-    o.channel = channel;
-    out.push(o);
+    out.push(
+        session
+            .told
+            .observe(Harness::Grok, id, channel, signals, session.turn.clone()),
+    );
 }
 
 impl Source for Grok {
@@ -678,11 +673,15 @@ impl Source for Grok {
             let turn = self.sessions[id].turn.clone();
             started.turn = turn.clone();
             seeded.push(started);
-            seeded.extend(
-                self.current(id)
-                    .into_iter()
-                    .map(|(signal, _)| observation(id, Event::one(signal), turn.clone())),
-            );
+            seeded.extend(self.sessions[id].told.current().into_iter().map(|signal| {
+                Observation::new(
+                    Harness::Grok,
+                    id,
+                    Channel::File,
+                    Event::one(signal),
+                    turn.clone(),
+                )
+            }));
         }
         for o in &mut seeded {
             o.quiet = true;
@@ -720,7 +719,13 @@ impl Source for Grok {
         }
         for id in gone {
             self.sessions.remove(&id);
-            out.push(observation(&id, Event::one(Signal::Ended), None));
+            out.push(Observation::new(
+                Harness::Grok,
+                &id,
+                Channel::File,
+                Event::one(Signal::Ended),
+                None,
+            ));
         }
         out
     }
@@ -746,16 +751,6 @@ impl Source for Grok {
         out
     }
 
-    fn current(&self, id: &str) -> Vec<(Signal, Option<TurnKey>)> {
-        let Some(session) = self.sessions.get(id) else {
-            return Vec::new();
-        };
-        let current = session.told.current().into_iter();
-        current
-            .map(|signal| (signal, session.turn.clone()))
-            .collect()
-    }
-
     fn behind(&self) -> bool {
         let behind = |session: &Session| session.events.behind || session.updates.behind;
         self.sessions.values().any(behind)
@@ -766,6 +761,7 @@ impl Source for Grok {
 mod tests {
     use super::*;
     use crate::fsm::Phase;
+    use crate::queue::Key;
     use crate::source::fixture::{self, Replay};
 
     fn replay(name: &str) -> Replay {
