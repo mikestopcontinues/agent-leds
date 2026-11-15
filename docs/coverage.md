@@ -74,7 +74,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### PermissionAsked
 
-- Claude Code, file, observed: the session file going to status waiting, for anything but input needed or dialog open; for dialog open only while a turn runs or work one left runs on; or a prompt read while the session file waits (probe-claude cc1, cc4, cc10; gaps/dialog.log)
+- Claude Code, file, observed: the session file going to status waiting, for anything but input needed or dialog open; or a prompt read while the session file waits (probe-claude cc1, cc4, cc10)
 - Codex, hook, observed: PermissionRequest naming the turn the rollout has open (0.5.0 hooks during probe-codex runA PROMPT4 and codex2)
 - Junie, file, inferred: a SessionA2uxEvent in state INPUT_REQUIRED whose block carries an approvalRequest and is not COMPLETED, once per stepId (probe-junie permission_pending; Irrlicht real-terminal-approval)
 - OpenCode, hook, observed: permission.asked, for the session or a subagent's session under it (probe-opencode T3, T4, T7, T8, T12)
@@ -145,7 +145,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### Backgrounded
 
-- Claude Code, file, observed: an end_turn record while the session file is busy with delegated work, or waiting to busy after the turn closed (probe-claude cc3, cc4, cc5)
+- Claude Code, file, observed: an end_turn record while the session file is busy with delegated work, not while it says a dialog is open; or waiting to busy after the turn closed (probe-claude cc3, cc4, cc5)
 - Codex, file, observed: task_complete while a subagent the turn started, or gave a followup_task, has not completed (probe-codex runA PROMPT5; desktop rollout 2026-10-13)
 - Grok, file, observed: a turn_ended while updates.jsonl has a subagent_spawned with no subagent_finished (probe-grok subagent, run e)
 
