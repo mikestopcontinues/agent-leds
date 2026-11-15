@@ -207,7 +207,7 @@ impl Replay {
     /// The harness's source, as the daemon makes it, on this home.
     pub fn source(&self) -> Box<dyn Source> {
         let home = self.home.path();
-        all(home, &home.join(".local/state/agent-leds"))
+        all(home, &home.join(".junie"))
             .into_iter()
             .find(|source| source.harness() == self.harness)
             .expect("every harness has a source")

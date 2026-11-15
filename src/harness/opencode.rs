@@ -189,9 +189,8 @@ mod tests {
             "event": "session.idle", "session": "ses_parent", "directory": "/Users/me/Code/app",
             "subagent": true, "error": null, "message": "done"
         });
-        let state = tempfile::tempdir().unwrap();
         assert_eq!(
-            interim(Harness::OpenCode, &idle, state.path()),
+            interim(Harness::OpenCode, &idle),
             Some((
                 "ses_parent".into(),
                 "/Users/me/Code/app".into(),

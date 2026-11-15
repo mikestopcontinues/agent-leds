@@ -18,16 +18,13 @@ use crate::queue::{Key, TurnKey};
 pub struct Interim {
     harness: Harness,
     home: PathBuf,
-    /// Where Junie's hook keeps the session its last prompt named.
-    state: PathBuf,
 }
 
 impl Interim {
-    pub fn new(harness: Harness, home: &Path, state: &Path) -> Interim {
+    pub fn new(harness: Harness, home: &Path) -> Interim {
         Interim {
             harness,
             home: home.to_owned(),
-            state: state.to_owned(),
         }
     }
 }
@@ -35,7 +32,7 @@ impl Interim {
 /// Which of the hook's ancestors runs the session, until the harness's own
 /// files name it: the parent for OpenCode and Pi, whose plugins run the hook
 /// themselves; the ancestor with Cursor's own `.running` marker; and for
-/// Codex, Grok and Junie the ancestor with the harness's process name.
+/// Codex and Grok the ancestor with the harness's process name.
 fn process(harness: Harness, home: &Path, ancestry: &[Proc]) -> Option<Liveness> {
     let exact = |proc: &Proc| Liveness::Process {
         pid: proc.pid,
@@ -47,8 +44,7 @@ fn process(harness: Harness, home: &Path, ancestry: &[Proc]) -> Option<Liveness>
         Harness::Cursor => ancestry.iter().find_map(|proc| cursor(home, proc)),
         Harness::Codex => named("codex"),
         Harness::Grok => named("grok-native"),
-        Harness::Junie => named("junie"),
-        Harness::Claude => None,
+        Harness::Claude | Harness::Junie => None,
     }
 }
 
@@ -112,8 +108,7 @@ impl Source for Interim {
     }
 
     fn hook(&mut self, _k: &dyn Kernel, hook: &Hook) -> Vec<Observation> {
-        let Some((id, cwd, signals)) = harness::interim(self.harness, &hook.payload, &self.state)
-        else {
+        let Some((id, cwd, signals)) = harness::interim(self.harness, &hook.payload) else {
             return Vec::new();
         };
         let key = Key {
@@ -158,7 +153,7 @@ mod tests {
     #[test]
     fn a_daemon_starting_again_starts_each_hook_bound_session_still_running() {
         let home = tempfile::tempdir().unwrap();
-        let mut source = Interim::new(Harness::Codex, home.path(), home.path());
+        let mut source = Interim::new(Harness::Codex, home.path());
         let pid = std::process::id() as i32;
         let running = Liveness::Process {
             pid,

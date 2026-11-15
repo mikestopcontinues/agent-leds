@@ -1,0 +1,14 @@
+{"cite": "probe-junie interrupted; Irrlicht parser_test.go TestParser_CancelAgent_UserInterrupt", "evidence": "inferred"}
+{"alive": 64871, "started_us": 1787586099500000}
+{"write": ".junie/processes/64871-session-260824-174155-sm5c-7fd7cf992cf8.json", "text": {"pid": 64871, "sessionId": "session-260824-174155-sm5c", "projectPath": "/Users/me/Code/app", "startedAt": 1787586100000}}
+{"expect": [["started", "file"]]}
+{"append": ".junie/sessions/session-260824-174155-sm5c/events.jsonl", "line": {"kind": "UserPromptEvent", "requestId": "prompt-260824-174155-sm5c", "prompt": "PROBE prompt", "presentablePrompt": "PROBE prompt", "requiresConfirmation": true, "timestampMs": 1787586115220}}
+{"append": ".junie/sessions/session-260824-174155-sm5c/events.jsonl", "line": {"kind": "TaskStartedEvent", "taskId": "task-260824-174155-3ua6", "timestampMs": 1787586115228}}
+{"expect": [["prompted", "file"], ["prompted", "file"]]}
+{"append": ".junie/sessions/session-260824-174155-sm5c/events.jsonl", "line": {"kind": "SessionA2uxEvent", "event": {"state": "IN_PROGRESS", "agentEvent": {"kind": "TerminalBlockUpdatedEvent", "agent": {"kind": "MainAgent", "id": "main", "name": "main", "type": "LINEAR"}, "stepId": "3e0adc81-026b-488e-a22a-2389704716ce", "status": "IN_PROGRESS", "command": "sleep 60"}}, "taskId": "task-260824-174155-3ua6", "timestampMs": 1787586320000}}
+{"expect": []}
+{"append": ".junie/sessions/session-260824-174155-sm5c/events.jsonl", "line": {"kind": "CancelAgentEvent", "timestampMs": 1787586326026}}
+{"expect": []}
+{"append": ".junie/sessions/session-260824-174155-sm5c/events.jsonl", "line": {"kind": "SessionA2uxEvent", "event": {"state": "COMPLETED", "agentEvent": {"kind": "TerminalBlockUpdatedEvent", "agent": {"kind": "MainAgent", "id": "main", "name": "main", "type": "LINEAR"}, "stepId": "3e0adc81-026b-488e-a22a-2389704716ce", "status": "COMPLETED", "command": "sleep 60"}}, "taskId": "task-260824-174155-3ua6", "timestampMs": 1787586326030}}
+{"append": ".junie/sessions/session-260824-174155-sm5c/events.jsonl", "line": {"kind": "TaskState", "state": "COMPLETED", "timestampMs": 1787586326031}}
+{"expect": [[["turn_ended", "interrupted"], "file"]]}

@@ -1,0 +1,13 @@
+{"cite": "probe-junie quit/crash; Irrlicht pid.go", "evidence": "inferred"}
+{"alive": 64871, "started_us": 1787586099500000}
+{"write": ".junie/processes/64871-session-260824-174155-sm5c-7fd7cf992cf8.json", "text": {"pid": 64871, "sessionId": "session-260824-174155-sm5c", "projectPath": "/Users/me/Code/app", "startedAt": 1787586100000}}
+{"expect": [["started", "file"]]}
+{"alive": 70112, "started_us": 1787586200000000}
+{"write": ".junie/processes/70112-session-260824-174320-k2qd-1a81776c70f7.json", "text": {"pid": 70112, "sessionId": "session-260824-174320-k2qd", "projectPath": "/Users/me/Code/lib", "startedAt": 1787586200400}}
+{"expect": [["started", "file"]]}
+{"append": ".junie/sessions/session-260824-174155-sm5c/events.jsonl", "line": {"kind": "UserPromptEvent", "requestId": "prompt-260824-174155-sm5c", "prompt": "PROBE prompt", "presentablePrompt": "PROBE prompt", "requiresConfirmation": true, "timestampMs": 1787586215220}}
+{"expect": [["prompted", "file"]]}
+{"exit": 64871}
+{"expect": [["ended", "file"]]}
+{"delete": ".junie/processes/70112-session-260824-174320-k2qd-1a81776c70f7.json"}
+{"expect": [["ended", "file"]]}

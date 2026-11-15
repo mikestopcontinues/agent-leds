@@ -1,0 +1,12 @@
+{"cite": "probe-junie prompt_submitted, resume; Irrlicht real-lifecycle-session, parser.go", "evidence": "inferred"}
+{"alive": 64871, "started_us": 1787586099500000}
+{"write": ".junie/processes/64871-session-260824-174155-sm5c-7fd7cf992cf8.json", "text": {"pid": 64871, "sessionId": "session-260824-174155-sm5c", "projectPath": "/Users/me/Code/app", "startedAt": 1787586100000}}
+{"expect": [["started", "file"]]}
+{"append": ".junie/sessions/session-260824-174155-sm5c/events.jsonl", "line": {"kind": "UserPromptEvent", "requestId": "prompt-260824-174155-sm5c", "prompt": "PROBE prompt", "presentablePrompt": "PROBE prompt", "requiresConfirmation": true, "timestampMs": 1787586115220}}
+{"expect": [["prompted", "file"]]}
+{"append": ".junie/sessions/session-260824-174155-sm5c/events.jsonl", "line": {"kind": "TaskStartedEvent", "taskId": "task-260824-174155-3ua6", "timestampMs": 1787586115228}}
+{"expect": [["prompted", "file"]]}
+{"append": ".junie/sessions/session-260824-174155-sm5c/events.jsonl", "line": {"kind": "TaskState", "state": "COMPLETED", "timestampMs": 1787586131690}}
+{"expect": [["turn_ended", "file"]]}
+{"append": ".junie/sessions/session-260824-174155-sm5c/events.jsonl", "line": {"kind": "TaskStartedEvent", "taskId": "task-260824-174337-1avu", "timestampMs": 1787586217000}}
+{"expect": [["prompted", "file"]]}

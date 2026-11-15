@@ -1,0 +1,16 @@
+{"cite": "probe-junie turn_error notes; Irrlicht real-failed-session, parser.go", "evidence": "inferred"}
+{"alive": 64871, "started_us": 1787585380000000}
+{"write": ".junie/processes/64871-session-260824-172925-13tp-7fd7cf992cf8.json", "text": {"pid": 64871, "sessionId": "session-260824-172925-13tp", "projectPath": "/Users/me/Code/app", "startedAt": 1787585380500}}
+{"expect": [["started", "file"]]}
+{"append": ".junie/sessions/session-260824-172925-13tp/events.jsonl", "line": {"kind": "UserPromptEvent", "requestId": "prompt-260824-172944-kgus", "prompt": "PROBE prompt", "presentablePrompt": "PROBE prompt", "requiresConfirmation": true, "timestampMs": 1787585384496}}
+{"append": ".junie/sessions/session-260824-172925-13tp/events.jsonl", "line": {"kind": "TaskStartedEvent", "taskId": "task-260824-172944-5ien", "timestampMs": 1787585384504}}
+{"expect": [["prompted", "file"], ["prompted", "file"]]}
+{"append": ".junie/sessions/session-260824-172925-13tp/events.jsonl", "line": {"kind": "SessionA2uxEvent", "event": {"state": "IN_PROGRESS", "agentEvent": {"kind": "ToolBlockUpdatedEvent", "agent": {"kind": "MainAgent", "id": "main", "name": "main", "type": "LINEAR"}, "stepId": "77c826e2-dc9f-4cdf-99c0-285444739641", "text": "Reading skill", "status": "IN_PROGRESS", "details": "probe-skill", "toolType": "Skill"}}, "taskId": "task-260824-172944-5ien", "timestampMs": 1787585384800}}
+{"expect": []}
+{"append": ".junie/sessions/session-260824-172925-13tp/events.jsonl", "line": {"kind": "SessionA2uxEvent", "event": {"state": "FAILED", "agentEvent": {"kind": "AgentFailureEvent", "agent": {"kind": "MainAgent", "id": "main", "name": "main", "type": "LINEAR"}, "message": "Junie: {\"type\":\"NO_LICENSE\",\"message\":\"No active JetBrains AI subscription found.\",\"additionalInfo\":null}", "errorCode": "AuthorizationFailed"}}, "taskId": "task-260824-172944-5ien", "timestampMs": 1787585385930}}
+{"expect": []}
+{"append": ".junie/sessions/session-260824-172925-13tp/events.jsonl", "line": {"kind": "SessionA2uxEvent", "event": {"state": "COMPLETED", "agentEvent": {"kind": "ToolBlockUpdatedEvent", "agent": {"kind": "MainAgent", "id": "main", "name": "main", "type": "LINEAR"}, "stepId": "77c826e2-dc9f-4cdf-99c0-285444739641", "text": "Read skill", "status": "COMPLETED", "details": "probe-skill", "toolType": "Skill"}}, "taskId": "task-260824-172944-5ien", "timestampMs": 1787585385933}}
+{"append": ".junie/sessions/session-260824-172925-13tp/events.jsonl", "line": {"kind": "AgentTaskFailedEvent", "timestampMs": 1787585385934}}
+{"expect": []}
+{"append": ".junie/sessions/session-260824-172925-13tp/events.jsonl", "line": {"kind": "TaskState", "state": "COMPLETED", "timestampMs": 1787585385935}}
+{"expect": [[["turn_ended", "turn_failed"], "file"]]}

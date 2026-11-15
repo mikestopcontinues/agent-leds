@@ -14,7 +14,6 @@ mod junie;
 mod opencode;
 mod pi;
 
-use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -125,11 +124,10 @@ impl Harness {
 
     fn event(self, payload: &Value) -> Option<Event> {
         match self {
-            Harness::Claude => None,
+            Harness::Claude | Harness::Junie => None,
             Harness::Codex => codex::event(payload),
             Harness::Grok => grok::event(payload),
             Harness::Cursor => cursor::event(payload),
-            Harness::Junie => junie::event(payload),
             Harness::OpenCode => opencode::event(payload),
             Harness::Pi => pi::event(payload),
         }
@@ -242,7 +240,7 @@ impl Harness {
     /// What `agent-leds doctor` says of a harness whose hooks are right.
     pub fn registered(self) -> &'static str {
         match self {
-            Harness::Claude => "read from its own files, with no hooks",
+            Harness::Claude | Harness::Junie => "read from its own files, with no hooks",
             Harness::OpenCode | Harness::Pi => "plugin installed",
             _ => "hooks registered",
         }
@@ -294,7 +292,7 @@ pub fn signals(harness: Harness) -> &'static [Declared] {
         Harness::Codex => codex::SIGNALS,
         Harness::Grok => grok::SIGNALS,
         Harness::Cursor => cursor::SIGNALS,
-        Harness::Junie => junie::SIGNALS,
+        Harness::Junie => source::junie::SIGNALS,
         Harness::OpenCode => opencode::SIGNALS,
         Harness::Pi => pi::SIGNALS,
     }
@@ -380,13 +378,11 @@ struct Event {
     subagent: bool,
 }
 
-/// A hook payload as Claude Code spells it, which Codex and Junie follow.
-/// Each harness reads the fields it sends.
+/// A hook payload as Claude Code spells it, which Codex follows.
 #[derive(Deserialize)]
 struct Payload {
     hook_event_name: String,
-    /// Junie names the session only when a prompt is submitted.
-    session_id: Option<String>,
+    session_id: String,
     #[serde(default, deserialize_with = "or_empty")]
     cwd: String,
     #[serde(default, deserialize_with = "or_empty")]
@@ -424,7 +420,7 @@ impl Event {
     fn read(payload: &Payload) -> Option<Event> {
         Some(Event {
             hook: Hook::named(&payload.hook_event_name)?,
-            session: payload.session_id.clone()?,
+            session: payload.session_id.clone(),
             cwd: payload.cwd.clone(),
             asks: ends_on_question(&payload.last_assistant_message),
             interrupted: false,
@@ -478,18 +474,9 @@ impl Event {
 
 /// Translates one hook payload while the harness's own files are not read:
 /// the session it names, the folder that session works in, and what the
-/// event means. Junie names the session only when a prompt is submitted, so
-/// the session its last prompt named is kept in `state` between events.
-pub fn interim(
-    harness: Harness,
-    payload: &Value,
-    state: &Path,
-) -> Option<(String, String, BTreeSet<Signal>)> {
-    let payload = match harness {
-        Harness::Junie => junie::with_session(payload, state)?,
-        _ => Cow::Borrowed(payload),
-    };
-    let event = harness.event(&payload)?;
+/// event means.
+pub fn interim(harness: Harness, payload: &Value) -> Option<(String, String, BTreeSet<Signal>)> {
+    let event = harness.event(payload)?;
     let signals = event.signals();
     Some((event.session, event.cwd, signals))
 }
@@ -651,24 +638,6 @@ fn unregister(hooks: &mut Map<String, Value>, ours: impl Fn(&Value) -> bool) {
     hooks.retain(|_, entries| entries.as_array().is_none_or(|entries| !entries.is_empty()));
 }
 
-/// Registers `handler` for each of `events` and for no other, in the shape
-/// Claude Code gave the harnesses: each event lists groups, and each group
-/// lists handlers. A hook of ours under any other event, as an older version
-/// registered, goes.
-fn register_groups(
-    hooks: &mut Map<String, Value>,
-    harness: Harness,
-    events: &[&str],
-    handler: impl Fn(&str) -> Value,
-) -> Result<()> {
-    unregister(hooks, |group| owns_group(harness, group));
-    for event in events {
-        let group = json!({ "hooks": [handler(event)] });
-        register(hooks, event, group, |group| owns_group(harness, group))?;
-    }
-    Ok(())
-}
-
 /// Whether a group of handlers holds one an install of `harness` added.
 fn owns_group(harness: Harness, group: &Value) -> bool {
     group["hooks"].as_array().is_some_and(|handlers| {
@@ -755,10 +724,10 @@ mod tests {
     fn only_harnesses_that_have_been_used_are_registered() {
         let home = Home::new();
         assert!(install(&home, Path::new("/bin/agent-leds")).is_empty());
-        fs::create_dir(home.join(".junie")).unwrap();
+        fs::create_dir(home.join(".cursor")).unwrap();
         let installed = install(&home, Path::new("/bin/agent-leds"));
-        assert!(matches!(installed[..], [(Harness::Junie, Ok(()))]));
-        assert!(home.join(junie::CONFIG).exists());
+        assert!(matches!(installed[..], [(Harness::Cursor, Ok(()))]));
+        assert!(home.join(cursor::FILE).exists());
     }
 
     #[test]
@@ -780,7 +749,7 @@ mod tests {
         let home = Home::new();
         let exe = Path::new("/bin/agent-leds");
         let check = |exe: &str| {
-            Harness::Junie
+            Harness::Cursor
                 .check(&home, Path::new(exe))
                 .map_err(|error| error.to_string())
         };
@@ -789,7 +758,7 @@ mod tests {
                 .unwrap_err()
                 .starts_with("not registered")
         );
-        junie::install(&home, exe).unwrap();
+        cursor::install(&home, exe).unwrap();
         check("/bin/agent-leds").unwrap();
         // The binary moved, or a second one is being run.
         assert!(
@@ -797,25 +766,24 @@ mod tests {
                 .unwrap_err()
                 .starts_with("registered for /bin/agent-leds, not this binary")
         );
-        edit_hooks(&home.join(junie::CONFIG), |hooks| {
-            let stop = hooks.remove("Stop").unwrap();
-            // 0.5.0 also registered PreToolUse.
-            hooks.insert("PreToolUse".into(), stop);
+        let kept = cursor::HOOKS[0];
+        edit_hooks(&home.join(cursor::FILE), |hooks| {
+            let entries = hooks.remove(kept).unwrap();
+            // An older version also registered preToolUse.
+            hooks.insert("preToolUse".into(), entries);
             Ok(())
         })
         .unwrap();
         assert_eq!(
             check("/bin/agent-leds").unwrap_err(),
-            "no hook for Stop; run `agent-leds install`; a hook this version does not use is \
-             registered for PreToolUse; run `agent-leds install`"
+            format!(
+                "no hook for {kept}; run `agent-leds install`; a hook this version does not use is \
+                 registered for preToolUse; run `agent-leds install`"
+            )
         );
-        junie::install(&home, exe).unwrap();
+        cursor::install(&home, exe).unwrap();
         check("/bin/agent-leds").unwrap();
-        assert!(
-            home.json(junie::CONFIG)["hooks"]
-                .get("PreToolUse")
-                .is_none()
-        );
+        assert!(home.json(cursor::FILE)["hooks"].get("preToolUse").is_none());
     }
 
     #[test]
