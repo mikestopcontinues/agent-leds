@@ -1,4 +1,5 @@
-//! Claude Code, from its own files. Each running process keeps a session
+//! Claude Code, from its own files, in `~/.claude` or `$CLAUDE_CONFIG_DIR`.
+//! Each running process keeps a session
 //! file, `~/.claude/sessions/<pid>.json`, rewritten whole with the session it
 //! runs and whether it is busy, idle or waiting on the user. The session's
 //! transcript, `~/.claude/projects/<slug>/<session>.jsonl`, is appended a
@@ -9,6 +10,7 @@
 //! was taken from Claude Code 2.1.325 and the desktop app's 2.1.321.
 
 use std::collections::{BTreeSet, HashMap};
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -41,17 +43,17 @@ const fn file(signal: Signal, record: &'static str, cite: &'static str) -> Decla
 pub const SIGNALS: &[Declared] = &[
     file(
         Signal::Started,
-        "a session file naming a new pid or session, whose process started at its procStart; not a spare or a bg session",
-        "probe-claude cc0–cc11",
+        "a session file naming a new pid or session, whose process started at its procStart; a claude --bg session too (kind bg); not a spare, a daemon or daemon-worker, or a run of claude -p or the Agent SDK (entrypoint sdk-*)",
+        "probe-claude cc0–cc11; gaps/h1; gaps/bg (claude --bg, 2.1.325)",
     ),
     file(
         Signal::Prompted,
-        "a transcript user record, not a tool result, with a promptSource (typed, sdk or a task notification) or an origin (a skill's slash command), keyed by its promptId; or the model writing again after its turn closed, as after a Stop hook that blocks or a compaction",
-        "probe-claude cc1, cc3; desktop transcripts 2.1.317, 2.1.321",
+        "a transcript user record, not a tool result, with a promptSource (typed, sdk or a task notification) or an origin (a skill's slash command), keyed by its promptId; after the turn closed, the isMeta user record starting Stop hook feedback: that a Stop hook that blocks writes, or the model writing again, as after a compaction",
+        "probe-claude cc1, cc3; desktop transcripts 2.1.309, 2.1.317, 2.1.321; gaps/stophook-nb (a Stop hook that fails without blocking, 2.1.325)",
     ),
     file(
         Signal::PermissionAsked,
-        "the session file going to status waiting, for anything but input needed; or a prompt read while the session file says so",
+        "the session file going to status waiting, for anything but input needed or dialog open; or a prompt read while the session file waits",
         "probe-claude cc1, cc4, cc10",
     ),
     file(
@@ -64,6 +66,13 @@ pub const SIGNALS: &[Declared] = &[
         "the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt",
         "probe-claude cc1, cc2",
     ),
+    Declared::new(
+        Signal::Released,
+        Channel::File,
+        Evidence::Inferred,
+        "the session file going from waiting to idle or busy, for a wait that began after the turn closed, such as a worker or sandbox request, and is not a subagent's the turn left",
+        "Claude Code 2.1.325's binary (the waitingFor values worker request and sandbox request)",
+    ),
     file(
         Signal::TurnEnded,
         "an end_turn record with text, or a tool result marked claude/endTurn; or waiting to idle after the turn closed while waiting",
@@ -71,8 +80,8 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::TurnEndedAsking,
-        "an end_turn record whose text's last line ends in a question mark",
-        "probe-claude cc1, cc2",
+        "an end_turn record whose text's last line ends in a question mark; or the end of a desktop turn whose last wrap_up call put a question in the next-step box (its input's ask)",
+        "probe-claude cc1, cc2; desktop transcripts 2.1.299, 2.1.317",
     ),
     file(
         Signal::TurnFailed,
@@ -86,7 +95,7 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Backgrounded,
-        "an end_turn record while the session file is busy with delegated work, or waiting to busy after the turn closed",
+        "an end_turn record while the session file is busy with delegated work, not while it says a dialog is open; or waiting to busy after the turn closed",
         "probe-claude cc3, cc4, cc5",
     ),
     file(
@@ -124,8 +133,12 @@ struct Process {
     cwd: String,
     /// When the process started, as `ps` prints lstart, in UTC.
     proc_start: Option<String>,
-    /// `interactive`, or `bg` for the desktop app's own sessions.
+    /// `interactive`, `bg` for a session `claude --bg` started, or `daemon`
+    /// and `daemon-worker` for the processes that supervise those.
     kind: Option<String>,
+    /// What started the process: `cli` for a terminal, `claude-desktop`, or
+    /// `sdk-cli`, `sdk-ts` or `sdk-py` for `claude -p` and the Agent SDK.
+    entrypoint: Option<String>,
     /// A process the desktop app keeps warm for a session not begun yet.
     #[serde(default)]
     spare: bool,
@@ -134,14 +147,22 @@ struct Process {
 }
 
 impl Process {
-    fn status(&self) -> Status {
-        match (self.status.as_deref(), self.waiting_for.as_deref()) {
-            (None, _) => Status::Starting,
-            (Some("busy"), _) => Status::Busy,
-            (Some("waiting"), Some("input needed")) => Status::Waiting(Signal::QuestionAsked),
-            (Some("waiting"), _) => Status::Waiting(Signal::PermissionAsked),
-            _ => Status::Idle,
-        }
+    /// What the file says the process is doing, or None while it says a
+    /// dialog is open. That is written in place of busy or idle, mid-turn
+    /// too, for `/model` or `/config` and for dialogs that do want an
+    /// answer, so it says neither whether the process is busy nor whether
+    /// the dialog holds anything up.
+    fn status(&self) -> Option<Status> {
+        Some(
+            match (self.status.as_deref(), self.waiting_for.as_deref()) {
+                (None, _) => Status::Starting,
+                (Some("busy"), _) => Status::Busy,
+                (Some("waiting"), Some("input needed")) => Status::Waiting(Signal::QuestionAsked),
+                (Some("waiting"), Some("dialog open")) => return None,
+                (Some("waiting"), _) => Status::Waiting(Signal::PermissionAsked),
+                _ => Status::Idle,
+            },
+        )
     }
 }
 
@@ -166,6 +187,10 @@ struct Record {
     /// What the desktop app's tool said of its result: `claude/endTurn` in
     /// its `_meta` when the tool ends the turn.
     mcp_meta: Option<Value>,
+    /// Set on what Claude Code writes as the user's for the model to read,
+    /// such as what a Stop hook that blocked the stop said.
+    #[serde(default)]
+    is_meta: bool,
 }
 
 #[derive(Deserialize)]
@@ -188,6 +213,9 @@ struct Block {
     #[serde(rename = "type")]
     kind: String,
     text: Option<String>,
+    /// A tool call's tool and what it was given.
+    name: Option<String>,
+    input: Option<Value>,
 }
 
 impl Content {
@@ -273,6 +301,41 @@ impl Record {
         self.kind == "assistant" && self.is_api_error_message
     }
 
+    /// Whether a Stop hook blocked the stop: what it said is given to the
+    /// model, which goes on. Only a blocking hook writes this record; one
+    /// that fails without blocking is listed in the stop_hook_summary's
+    /// hookErrors too, and the turn ends.
+    fn hook_blocked(&self) -> bool {
+        self.kind == "user"
+            && self.is_meta
+            && self
+                .texts()
+                .first()
+                .is_some_and(|text| text.starts_with("Stop hook feedback:"))
+    }
+
+    /// Whether the record calls the desktop app's `wrap_up`, which fills the
+    /// next-step box at the end of a turn, and whether it asks there. The
+    /// question asked is in its `ask`, and rarely in the turn's last line.
+    fn wrap_up(&self) -> Option<bool> {
+        if self.kind != "assistant" {
+            return None;
+        }
+        let blocks = self.message.as_ref()?.content.blocks();
+        let call = blocks.iter().rev().find(|block| {
+            block.kind == "tool_use"
+                && block
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.ends_with("__wrap_up"))
+        })?;
+        let ask = call.input.as_ref().and_then(|input| input.get("ask"));
+        Some(
+            ask.and_then(Value::as_str)
+                .is_some_and(|ask| !ask.trim().is_empty()),
+        )
+    }
+
     /// Whether the record was written before a process that started at
     /// `start`: an earlier process wrote it, or it was copied.
     fn before(&self, start: i64) -> bool {
@@ -296,13 +359,19 @@ struct Session {
     /// left naming the same session, as a killed one does before a resume,
     /// says nothing of it.
     owner: PathBuf,
+    /// What the session file last said the process is doing, before any
+    /// dialog it says is open now.
     status: Status,
+    /// Whether the session file says a dialog is open, which hides `status`.
+    dialog: bool,
     transcript: Option<(PathBuf, Tail)>,
     /// Whether the last read of the transcript stopped at its budget.
     behind: bool,
     /// Whether a turn started and has not ended.
     open: bool,
     turn: Option<TurnKey>,
+    /// Whether the open turn's last `wrap_up` asked the user something.
+    asking: bool,
     /// How a turn that closed while the process waited on the user ended,
     /// told once the wait is over.
     closed_waiting: Option<BTreeSet<Signal>>,
@@ -319,11 +388,28 @@ pub struct Claude {
     sessions: HashMap<String, Session>,
 }
 
+/// Claude Code's folder for the account at `home`, as this process's
+/// environment gives it to `folder`.
+pub fn config_dir(home: &Path) -> PathBuf {
+    folder(std::env::var_os("CLAUDE_CONFIG_DIR").as_deref(), home)
+}
+
+/// Claude Code's folder given `$CLAUDE_CONFIG_DIR`: that, or `.claude` in
+/// `home`.
+pub fn folder(config_dir: Option<&OsStr>, home: &Path) -> PathBuf {
+    match config_dir {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => home.join(".claude"),
+    }
+}
+
 impl Claude {
-    pub fn new(home: &Path) -> Claude {
+    /// Claude Code's sessions, from its folder, `~/.claude` or
+    /// `$CLAUDE_CONFIG_DIR`.
+    pub fn new(folder: &Path) -> Claude {
         Claude {
-            sessions_dir: home.join(".claude/sessions"),
-            projects_dir: home.join(".claude/projects"),
+            sessions_dir: folder.join("sessions"),
+            projects_dir: folder.join("projects"),
             procs: HashMap::new(),
             sessions: HashMap::new(),
         }
@@ -395,7 +481,14 @@ impl Claude {
         };
         // A write caught half done is read again at the event that finishes it.
         let process: Process = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-        if process.spare || process.kind.as_deref() == Some("bg") {
+        // A run nobody watches, `claude -p` or a program on the Agent SDK,
+        // is not shown.
+        let unwatched = process
+            .entrypoint
+            .as_deref()
+            .is_some_and(|entrypoint| entrypoint.starts_with("sdk-"));
+        let daemon = matches!(process.kind.as_deref(), Some("daemon" | "daemon-worker"));
+        if process.spare || daemon || unwatched {
             return Ok(None);
         }
         // A start it cannot read is a format it does not know.
@@ -428,7 +521,10 @@ impl Claude {
                 Some(session) if session.owner != path => return Ok(()),
                 Some(session) => {
                     let status = process.status();
-                    if session.status != status {
+                    session.dialog = status.is_none();
+                    if let Some(status) = status
+                        && session.status != status
+                    {
                         edges.push((known.session.clone(), session.status, status));
                         session.status = status;
                     }
@@ -483,16 +579,20 @@ impl Claude {
                 start,
                 owner: path.to_owned(),
                 status: Status::Starting,
+                dialog: status.is_none(),
                 transcript,
                 behind: false,
                 open: false,
                 turn: None,
+                asking: false,
                 closed_waiting: None,
                 background: false,
                 told: Told::default(),
             },
         );
-        if status != Status::Starting {
+        if let Some(status) = status
+            && status != Status::Starting
+        {
             edges.push((id.clone(), Status::Starting, status));
             self.sessions.get_mut(&id).expect("just added").status = status;
         }
@@ -532,11 +632,12 @@ impl Claude {
         let status = Claude::process(&other)
             .ok()
             .flatten()
-            .map_or(Status::Starting, |(process, _)| process.status());
+            .map_or(Some(Status::Starting), |(process, _)| process.status());
         let session = self.sessions.get_mut(id).expect("owned");
         session.start = start;
         session.owner = other;
-        session.status = status;
+        session.dialog = status.is_none();
+        session.status = status.unwrap_or(Status::Starting);
         out.push(Observation::new(
             Harness::Claude,
             id,
@@ -611,22 +712,25 @@ impl Claude {
         if record.before(session.start) {
             return;
         }
-        // The model writing after its turn closed goes on with that turn, as
-        // after a Stop hook that blocks or a compaction: what ends it is
-        // still to come. That is told before what the record itself says,
-        // which can be the end.
-        let goes_on = !session.open && record.is_model();
+        // A Stop hook that blocked the turn's end, or the model writing after
+        // its turn closed, as in a /goal loop or after a compaction, goes on
+        // with that turn: what ends it is still to come. That is told before
+        // what the record itself says, which can be the end.
+        let goes_on = !session.open && (record.hook_blocked() || record.is_model());
         if record.is_prompt() || goes_on {
             session.open = true;
             if record.is_prompt() {
                 session.turn = record.prompt_id.clone().map(TurnKey);
+                session.asking = false;
             }
             session.closed_waiting = None;
             session.background = false;
             // A prompt written after the session file said it waits, as a
             // permission asked at once is, is told with the wait.
             let mut started = BTreeSet::from([Signal::Prompted]);
-            if let Status::Waiting(wait) = session.status {
+            if let Status::Waiting(wait) = session.status
+                && !session.dialog
+            {
                 started.insert(wait);
             }
             tell(id, session, started, out);
@@ -639,6 +743,9 @@ impl Claude {
         if !session.open {
             return;
         }
+        if let Some(asking) = record.wrap_up() {
+            session.asking = asking;
+        }
         let mut end = BTreeSet::new();
         if record.is_interrupt() {
             end.insert(Signal::Interrupted);
@@ -648,11 +755,12 @@ impl Claude {
         }
         if let Some(text) = record.end() {
             end.insert(Signal::TurnEnded);
-            if ends_on_question(text) {
+            if session.asking || ends_on_question(text) {
                 end.insert(Signal::TurnEndedAsking);
             }
-            // Work the turn delegated runs on.
-            if session.status == Status::Busy {
+            // Work the turn delegated runs on. A dialog open now hides
+            // whether it does.
+            if session.status == Status::Busy && !session.dialog {
                 end.insert(Signal::Backgrounded);
             }
         }
@@ -660,6 +768,7 @@ impl Claude {
             return;
         }
         session.open = false;
+        session.asking = false;
         session.background = end.contains(&Signal::Backgrounded);
         match session.status {
             // A subagent's request holds the session up after its turn: how
@@ -700,34 +809,38 @@ impl Claude {
         let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
+        let over = matches!(to, Status::Busy | Status::Idle | Status::Starting);
         match (from, to) {
             (_, Status::Waiting(wait)) if from != to => tell(id, session, [wait], out),
-            (Status::Waiting(_), Status::Busy) if session.open => {
-                tell(id, session, [Signal::Answered], out)
-            }
-            // Denied or dismissed: the turn's end, an interrupt, follows.
-            (Status::Waiting(_), Status::Idle | Status::Starting) if session.open => {
+            // Answered, or denied or dismissed, when the turn's end, an
+            // interrupt, follows.
+            (Status::Waiting(_), _) if over && session.open => {
                 tell(id, session, [Signal::Answered], out)
             }
             // A subagent was let go on after the turn ended: the wait is
             // over, then how the turn ended is told, with the work going on.
-            (Status::Waiting(_), Status::Busy) => {
+            (Status::Waiting(_), Status::Busy)
+                if session.closed_waiting.is_some() || session.background =>
+            {
                 let mut end = session.closed_waiting.take().unwrap_or_default();
                 end.insert(Signal::Backgrounded);
                 session.background = true;
                 tell(id, session, [Signal::Answered], out);
                 tell(id, session, end, out);
             }
-            (Status::Waiting(_), Status::Idle | Status::Starting) if !session.open => {
+            // The turn closed while it waited, or its work ran on: how it
+            // ended is told once the wait is over.
+            (Status::Waiting(_), Status::Idle | Status::Starting)
+                if session.closed_waiting.is_some() || session.background =>
+            {
                 let end = session.closed_waiting.take();
-                let end = end.or(session
-                    .background
-                    .then(|| BTreeSet::from([Signal::TurnEnded])));
+                let end = end.unwrap_or_else(|| BTreeSet::from([Signal::TurnEnded]));
                 session.background = false;
-                if let Some(end) = end {
-                    tell(id, session, end, out);
-                }
+                tell(id, session, end, out);
             }
+            // A wait that began after the turn closed is over: back to
+            // where it found the session.
+            (Status::Waiting(_), _) if over => tell(id, session, [Signal::Released], out),
             (Status::Busy, Status::Idle | Status::Starting)
                 if !session.open && session.background =>
             {
@@ -918,7 +1031,7 @@ mod tests {
     #[ignore = "reads the real ~/.claude"]
     fn seeds_from_the_real_home() {
         let home = std::env::var_os("HOME").expect("a home");
-        let mut claude = Claude::new(Path::new(&home));
+        let mut claude = Claude::new(&config_dir(Path::new(&home)));
         let mut queue = crate::queue::Queue::default();
         for o in fixture::printed(claude.seed(&liveness::System, &[]).unwrap()) {
             assert!(o.quiet);
@@ -1005,10 +1118,45 @@ mod tests {
     }
 
     #[test]
-    fn a_spare_is_never_started() {
-        let replay = replay("a_spare_is_never_started");
+    fn a_spare_or_a_daemon_is_never_started() {
+        let replay = replay("a_spare_or_a_daemon_is_never_started");
         let ids: Vec<String> = replay.phases().into_keys().map(|key| key.id).collect();
         assert_eq!(ids, ["0d9a0d3c-5b1e-4e0b-9a51-6f1f2f3e4d5c"]);
+    }
+
+    #[test]
+    fn a_background_session_is_followed_until_it_is_stopped() {
+        let replay = replay("a_background_session_is_followed_until_it_is_stopped");
+        let signals: Vec<BTreeSet<Signal>> = replay
+            .yielded
+            .iter()
+            .map(|(o, _)| o.event.signals())
+            .collect();
+        assert_eq!(
+            signals,
+            [
+                Signal::Started,
+                Signal::Prompted,
+                Signal::TurnEnded,
+                Signal::Ended
+            ]
+            .map(|signal| BTreeSet::from([signal]))
+        );
+    }
+
+    #[test]
+    fn a_print_or_sdk_run_is_never_started() {
+        assert!(
+            replay("a_print_or_sdk_run_is_never_started")
+                .phases()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_desktop_permission_prompt_shows_a_question() {
+        let replay = replay("a_desktop_permission_prompt_shows_a_question");
+        assert_eq!(phase(&replay), Phase::Stopped);
     }
 
     #[test]
@@ -1072,6 +1220,60 @@ mod tests {
     }
 
     #[test]
+    fn a_dialog_opened_at_the_prompt_holds_nothing_up() {
+        let replay = replay("a_dialog_opened_at_the_prompt_holds_nothing_up");
+        assert_eq!(phase(&replay), Phase::Idle);
+    }
+
+    #[test]
+    fn a_dialog_opened_during_a_turn_holds_nothing_up() {
+        let replay = replay("a_dialog_opened_during_a_turn_holds_nothing_up");
+        assert!(replay.yielded.iter().all(|(o, _)| {
+            !o.event.signals().contains(&Signal::PermissionAsked)
+                && !o.event.signals().contains(&Signal::Backgrounded)
+        }));
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn work_a_turn_left_running_that_ends_behind_a_dialog_is_done() {
+        let replay = replay("work_a_turn_left_running_that_ends_behind_a_dialog_is_done");
+        let (done, _) = replay.yielded.last().unwrap();
+        assert_eq!(
+            done.event.signals(),
+            BTreeSet::from([Signal::BackgroundDone])
+        );
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn a_wait_that_began_after_the_turn_ended_is_released_back_to_how_it_ended() {
+        let replay = replay("released.file");
+        let released = |(o, _): &(Observation, _)| o.event.signals().contains(&Signal::Released);
+        // Before any turn, after one, and once with the file going busy,
+        // which no subagent of the turn's made.
+        assert_eq!(replay.yielded.iter().filter(|o| released(o)).count(), 3);
+        assert!(replay.yielded.iter().all(|(o, _)| {
+            !o.event.signals().contains(&Signal::Backgrounded)
+                && !o.event.signals().contains(&Signal::BackgroundDone)
+        }));
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn a_stop_hook_that_blocks_reopens_the_turn_when_its_feedback_is_written() {
+        let replay =
+            replay("a_stop_hook_that_blocks_reopens_the_turn_when_its_feedback_is_written");
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn a_stop_hook_that_fails_without_blocking_still_ends_the_turn() {
+        let replay = replay("a_stop_hook_that_fails_without_blocking_still_ends_the_turn");
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
     fn a_turn_compacted_after_an_error_goes_on() {
         assert_eq!(
             phase(&replay("a_turn_compacted_after_an_error_goes_on")),
@@ -1085,6 +1287,18 @@ mod tests {
             phase(&replay("the_desktop_s_end_turn_tool_ends_the_turn")),
             Phase::Stopped
         );
+    }
+
+    #[test]
+    fn a_desktop_question_in_the_next_step_box_ends_the_turn_asking() {
+        let asked = replay("a_desktop_question_in_the_next_step_box_ends_the_turn_asking");
+        assert!(asked.yielded.iter().any(|(o, _)| {
+            o.event.signals() == BTreeSet::from([Signal::TurnEnded, Signal::TurnEndedAsking])
+        }));
+        // The next turn asked nothing.
+        assert_eq!(phase(&asked), Phase::Stopped);
+        let ended = replay("the_desktop_s_end_turn_tool_ends_the_turn_asking_when_its_box_asks");
+        assert_eq!(phase(&ended), Phase::Asked);
     }
 
     #[test]

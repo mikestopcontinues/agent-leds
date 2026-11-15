@@ -13,6 +13,7 @@ use crate::state::State;
 
 use Phase::*;
 use Signal::*;
+use To::*;
 
 /// Where one session stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -29,6 +30,7 @@ pub enum Phase {
     /// subagent. It shows as working.
     Background,
     /// Held up on the user by a permission or a question: the strong question.
+    /// It keeps the phase it was entered from, which `Released` goes back to.
     Blocked,
     /// The turn ended on a message ending in '?' or on a plan proposal: the
     /// weak question.
@@ -115,6 +117,10 @@ pub enum Signal {
     QuestionAsked,
     /// The approval or question was resolved and the turn goes on.
     Answered,
+    /// The approval or question was resolved with no turn running, as for a
+    /// request work made after its turn ended: the session goes back to where
+    /// the wait found it.
+    Released,
     /// The turn completed on a message that is not a question.
     TurnEnded,
     /// The turn completed on a message ending in '?' or on a plan proposal.
@@ -141,12 +147,13 @@ pub enum Signal {
 
 impl Signal {
     /// Every signal, in declaration order.
-    pub const ALL: [Signal; 16] = [
+    pub const ALL: [Signal; 17] = [
         Started,
         Prompted,
         PermissionAsked,
         QuestionAsked,
         Answered,
+        Released,
         TurnEnded,
         TurnEndedAsking,
         TurnFailed,
@@ -169,17 +176,18 @@ impl Signal {
             PermissionAsked => 2,
             QuestionAsked => 3,
             Answered => 4,
-            TurnEnded => 5,
-            TurnEndedAsking => 6,
-            TurnFailed => 7,
-            Interrupted => 8,
-            Backgrounded => 9,
-            BackgroundDone => 10,
-            Ended => 11,
-            Looked => 12,
-            ReadExpired => 13,
-            Abandoned => 14,
-            Dismissed => 15,
+            Released => 5,
+            TurnEnded => 6,
+            TurnEndedAsking => 7,
+            TurnFailed => 8,
+            Interrupted => 9,
+            Backgrounded => 10,
+            BackgroundDone => 11,
+            Ended => 12,
+            Looked => 13,
+            ReadExpired => 14,
+            Abandoned => 15,
+            Dismissed => 16,
         }
     }
 
@@ -201,6 +209,9 @@ impl Signal {
             PermissionAsked => "an approval wait shows as the light it interrupts",
             QuestionAsked => "a question the agent waits on shows as the light it interrupts",
             Answered => "an answered approval or question shows as a question until the turn ends",
+            Released => {
+                "a wait answered with no turn running shows as a question until the session moves on"
+            }
             TurnEnded => {
                 "a finished turn keeps its light, usually working, until the session moves on"
             }
@@ -238,11 +249,31 @@ pub enum Channel {
     Daemon,
 }
 
+/// Where a row of the table moves a session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum To {
+    Go(Phase),
+    /// Back to the phase the session was in when it entered the one it
+    /// leaves, as a statechart's history state does.
+    Back,
+}
+
+impl To {
+    /// The phase moved to by a session that `held` the phase it entered
+    /// the one it leaves from.
+    pub fn phase(self, held: Phase) -> Phase {
+        match self {
+            Go(phase) => phase,
+            Back => held,
+        }
+    }
+}
+
 /// One row of the table: `on` moves a session in any of `from` to `to`.
 pub struct Rule {
     pub from: &'static [Phase],
     pub on: Signal,
-    pub to: Phase,
+    pub to: To,
 }
 
 /// Every phase but `Gone`.
@@ -279,78 +310,83 @@ pub const TABLE: &[Rule] = &[
     Rule {
         from: TRACKED,
         on: Ended,
-        to: Gone,
+        to: Go(Gone),
     },
     // A turn the user stopped is no failure, though OpenCode tells the stop
     // as an error, MessageAbortedError.
     Rule {
         from: TRACKED,
         on: Interrupted,
-        to: Idle,
+        to: Go(Idle),
     },
     // A second failure is not news: Failed holds, and is not announced again.
     Rule {
         from: TRACKED,
         on: TurnFailed,
-        to: Failed,
+        to: Go(Failed),
     },
     Rule {
         from: TRACKED,
         on: PermissionAsked,
-        to: Blocked,
+        to: Go(Blocked),
     },
     Rule {
         from: TRACKED,
         on: QuestionAsked,
-        to: Blocked,
+        to: Go(Blocked),
     },
     Rule {
         from: &[Blocked],
         on: Answered,
-        to: Working,
+        to: Go(Working),
+    },
+    Rule {
+        from: &[Blocked],
+        on: Released,
+        to: Back,
     },
     // A question beats work going on in the background.
     Rule {
         from: TRACKED,
         on: TurnEndedAsking,
-        to: Asked,
+        to: Go(Asked),
     },
     Rule {
         from: &[Idle, Working, Background, Stopped, StoppedRead],
         on: Backgrounded,
-        to: Background,
+        to: Go(Background),
     },
     // A wait on the user, a question or an error beats work going on in
     // the background, and holds against a turn end told with it.
     Rule {
         from: &[Blocked],
         on: Backgrounded,
-        to: Blocked,
+        to: Go(Blocked),
     },
     Rule {
         from: &[Asked],
         on: Backgrounded,
-        to: Asked,
+        to: Go(Asked),
     },
     Rule {
         from: &[AskedRead],
         on: Backgrounded,
-        to: AskedRead,
+        to: Go(AskedRead),
     },
     Rule {
         from: &[Failed],
         on: Backgrounded,
-        to: Failed,
+        to: Go(Failed),
     },
     Rule {
         from: &[Background],
         on: BackgroundDone,
-        to: Stopped,
+        to: Go(Stopped),
     },
     Rule {
         from: TRACKED,
         on: TurnEnded,
-        to: Stopped,
+        to: Go(Stopped),
     },
     Rule {
         from: &[
@@ -364,38 +400,38 @@ pub const TABLE: &[Rule] = &[
             Failed,
         ],
         on: Prompted,
-        to: Working,
+        to: Go(Working),
     },
     Rule {
         from: &[Gone],
         on: Started,
-        to: Idle,
+        to: Go(Idle),
     },
     Rule {
         from: SHOWN,
         on: Dismissed,
-        to: Idle,
+        to: Go(Idle),
     },
     Rule {
         from: SHOWN,
         on: Abandoned,
-        to: Idle,
+        to: Go(Idle),
     },
     Rule {
         from: &[StoppedRead, AskedRead],
         on: ReadExpired,
-        to: Idle,
+        to: Go(Idle),
     },
     // Reading settles a weak question, never a blocked one.
     Rule {
         from: &[Stopped],
         on: Looked,
-        to: StoppedRead,
+        to: Go(StoppedRead),
     },
     Rule {
         from: &[Asked],
         on: Looked,
-        to: AskedRead,
+        to: Go(AskedRead),
     },
 ];
 
@@ -426,8 +462,8 @@ pub fn next(from: Phase, signals: &BTreeSet<Signal>) -> Option<&'static Rule> {
     first(TABLE, from, signals)
 }
 
-/// The phase one signal told alone moves to.
-pub fn step(from: Phase, on: Signal) -> Option<Phase> {
+/// Where one signal told alone moves a session.
+pub fn step(from: Phase, on: Signal) -> Option<To> {
     next(from, &BTreeSet::from([on])).map(|rule| rule.to)
 }
 
@@ -467,32 +503,39 @@ pub fn priority() -> Vec<Signal> {
 
 /// Whether the move is news the user should see. A turn that ends again is
 /// news, even to a session that had already stopped; a wait or a failure
-/// told again is not.
+/// told again is not, and neither is going back to where a wait found it.
 pub fn announces(from: Phase, on: Signal, to: Phase) -> bool {
-    to.wants_user() && (to != from || matches!(on, TurnEnded | TurnEndedAsking))
+    to.wants_user() && on != Released && (to != from || matches!(on, TurnEnded | TurnEndedAsking))
 }
 
 /// Whether applying the signal twice is the same as applying it once, in
 /// phase and in what is announced.
+/// A move back goes to a phase the session was in before the one it
+/// leaves, which is never that one.
 #[cfg(test)]
 pub fn idempotent(on: Signal) -> bool {
-    Phase::ALL
-        .into_iter()
-        .filter_map(|from| step(from, on))
-        .all(|once| match step(once, on) {
+    Phase::ALL.into_iter().all(|from| {
+        let held: Vec<Phase> = match step(from, on) {
+            None => return true,
+            Some(Go(once)) => vec![once],
+            Some(Back) => Phase::ALL.into_iter().filter(|&p| p != from).collect(),
+        };
+        held.into_iter().all(|once| match step(once, on) {
             None => true,
-            Some(twice) => twice == once && !announces(once, on, twice),
+            Some(Go(twice)) => twice == once && !announces(once, on, twice),
+            Some(Back) => false,
         })
+    })
 }
 
 /// The phases a session in `from` can reach through `signals` alone,
-/// `from` included.
+/// `from` included. A move back reaches only a phase reached before.
 pub fn reachable(from: Phase, signals: &[Signal]) -> BTreeSet<Phase> {
     let mut reached = BTreeSet::from([from]);
     let mut queue = VecDeque::from([from]);
     while let Some(phase) = queue.pop_front() {
         for &signal in signals {
-            if let Some(to) = step(phase, signal)
+            if let Some(Go(to)) = step(phase, signal)
                 && reached.insert(to)
             {
                 queue.push_back(to);
@@ -536,17 +579,17 @@ mod tests {
         const ENDS: Rule = Rule {
             from: &[Working],
             on: TurnEnded,
-            to: Stopped,
+            to: Go(Stopped),
         };
         const GOES_ON: Rule = Rule {
             from: &[Working],
             on: Backgrounded,
-            to: Background,
+            to: Go(Background),
         };
         let both = told(&[TurnEnded, Backgrounded]);
         let to = |table: &[Rule]| first(table, Working, &both).map(|rule| rule.to);
-        assert_eq!(to(&[ENDS, GOES_ON]), Some(Stopped));
-        assert_eq!(to(&[GOES_ON, ENDS]), Some(Background));
+        assert_eq!(to(&[ENDS, GOES_ON]), Some(Go(Stopped)));
+        assert_eq!(to(&[GOES_ON, ENDS]), Some(Go(Background)));
     }
 
     #[test]
@@ -560,6 +603,7 @@ mod tests {
                 PermissionAsked,
                 QuestionAsked,
                 Answered,
+                Released,
                 TurnEndedAsking,
                 Backgrounded,
                 BackgroundDone,
@@ -576,7 +620,8 @@ mod tests {
 
     #[test]
     fn a_question_or_an_error_told_with_work_going_on_wins() {
-        let to = |from, signals: &[Signal]| next(from, &told(signals)).map(|rule| rule.to);
+        let to =
+            |from, signals: &[Signal]| next(from, &told(signals)).map(|rule| rule.to.phase(from));
         assert_eq!(to(Working, &[TurnEnded, Backgrounded]), Some(Background));
         assert_eq!(
             to(Working, &[TurnEnded, TurnEndedAsking, Backgrounded]),
@@ -600,8 +645,8 @@ mod tests {
     #[test]
     fn a_second_failure_told_with_a_turn_end_is_not_news() {
         let rule = next(Failed, &told(&[TurnEnded, TurnFailed])).unwrap();
-        assert_eq!((rule.on, rule.to), (TurnFailed, Failed));
-        assert!(!announces(Failed, rule.on, rule.to));
+        assert_eq!((rule.on, rule.to), (TurnFailed, Go(Failed)));
+        assert!(!announces(Failed, rule.on, Failed));
     }
 
     #[test]
@@ -637,18 +682,18 @@ mod tests {
     #[test]
     fn gone_is_left_only_by_started_and_reached_only_by_ended() {
         for on in Signal::ALL {
-            let expected = (on == Started).then_some(Idle);
+            let expected = (on == Started).then_some(Go(Idle));
             assert_eq!(step(Gone, on), expected, "{on:?} from Gone");
         }
         for from in Phase::ALL {
             for on in Signal::ALL {
-                if step(from, on) == Some(Gone) {
+                if step(from, on) == Some(Go(Gone)) {
                     assert_eq!(on, Ended, "{on:?} from {from:?} reaches Gone");
                 }
             }
         }
         for &from in TRACKED {
-            assert_eq!(step(from, Ended), Some(Gone), "Ended from {from:?}");
+            assert_eq!(step(from, Ended), Some(Go(Gone)), "Ended from {from:?}");
         }
     }
 
@@ -663,14 +708,16 @@ mod tests {
     #[test]
     fn the_daemon_only_quiets_a_light() {
         for rule in TABLE.iter().filter(|rule| rule.on.daemon()) {
+            let Go(to) = rule.to else {
+                panic!("{:?} moves back", rule.on);
+            };
             assert!(
-                !matches!(rule.to, Working | Blocked | Failed),
-                "{:?} moves to {:?}",
-                rule.on,
-                rule.to
+                !matches!(to, Working | Blocked | Failed),
+                "{:?} moves to {to:?}",
+                rule.on
             );
             for &from in rule.from {
-                assert!(!announces(from, rule.on, rule.to), "{:?}", rule.on);
+                assert!(!announces(from, rule.on, to), "{:?}", rule.on);
             }
         }
     }
@@ -715,10 +762,23 @@ mod tests {
 
     #[test]
     fn a_wait_that_is_told_again_is_not_announced_again() {
-        assert_eq!(step(Blocked, PermissionAsked), Some(Blocked));
+        assert_eq!(step(Blocked, PermissionAsked), Some(Go(Blocked)));
         assert!(!announces(Blocked, PermissionAsked, Blocked));
-        assert_eq!(step(Failed, TurnFailed), Some(Failed));
+        assert_eq!(step(Failed, TurnFailed), Some(Go(Failed)));
         assert!(!announces(Failed, TurnFailed, Failed));
+    }
+
+    #[test]
+    fn a_wait_released_goes_back_where_it_was_found_unannounced() {
+        assert_eq!(step(Blocked, Released), Some(Back));
+        assert_eq!(Back.phase(StoppedRead), StoppedRead);
+        for to in [Stopped, Asked, Failed, Idle] {
+            assert!(!announces(Blocked, Released, to), "{to:?}");
+        }
+        // Only a wait is released.
+        for from in Phase::ALL.into_iter().filter(|&from| from != Blocked) {
+            assert_eq!(step(from, Released), None, "{from:?}");
+        }
     }
 
     #[test]

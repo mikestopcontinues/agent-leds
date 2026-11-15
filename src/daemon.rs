@@ -205,7 +205,9 @@ pub fn run() -> Result<()> {
     listen(inputs.clone())?;
     thread::spawn(eject::guard);
     let exe = std::env::current_exe()?;
-    let sources = Sources::start(source::all(&home(), &source::junie::home()), inputs)?;
+    let home = home();
+    let claude = source::claude::config_dir(&home);
+    let sources = Sources::start(source::all(&home, &claude, &source::junie::home()), inputs)?;
     let world = System {
         desktop: Desktop::default(),
         started_from: Binary::at(&exe),

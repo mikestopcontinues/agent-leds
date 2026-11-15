@@ -52,6 +52,9 @@ pub struct Session {
     /// The phase a hook moved it from, when a hook made its last move. Its
     /// files, which no hook writes to, may show it there still.
     pub hooked: Option<Phase>,
+    /// While it is blocked, the phase it was blocked from, which a released
+    /// wait goes back to.
+    pub held: Option<Phase>,
 }
 
 /// The sessions, as saved in queue.json. Tracked sessions without a light
@@ -154,7 +157,8 @@ impl Queue {
         let Some(rule) = fsm::next(from, &o.event.signals()) else {
             return Change::None;
         };
-        let to = rule.to;
+        let held = position.and_then(|index| self.sessions[index].held);
+        let to = rule.to.phase(held.unwrap_or(Phase::Idle));
         let announce = fsm::announces(from, rule.on, to);
         // A row that holds the phase changes nothing.
         if to == from && !announce {
@@ -174,6 +178,7 @@ impl Queue {
                 liveness: start.liveness.clone(),
                 bound: o.channel,
                 hooked,
+                held: None,
             }),
             (None, Event::Signals(_)) => unreachable!("only Started leaves Gone"),
             (Some(index), _) if to == Phase::Gone => {
@@ -183,6 +188,10 @@ impl Queue {
                 let session = &mut self.sessions[index];
                 session.phase = to;
                 session.hooked = hooked;
+                session.held = match to {
+                    Phase::Blocked => held.or(Some(from)),
+                    _ => None,
+                };
                 session.entered = now;
                 if light || announce {
                     session.since = now;
@@ -329,6 +338,7 @@ impl Queue {
                 || old.hooked.is_some_and(|from| reached.contains(&from));
             if old.turn.is_some() && kept {
                 session.phase = old.phase;
+                session.held = old.held;
                 session.since = old.since;
                 session.entered = old.entered;
             }
@@ -536,6 +546,44 @@ mod tests {
         // A start that names no folder keeps the one known.
         queue.apply(&started("a", "", process(2)), 5);
         assert_eq!(queue.items()[0].label, "web");
+    }
+
+    #[test]
+    fn a_released_wait_goes_back_to_where_it_found_the_session_unannounced() {
+        let mut queue = Queue::default();
+        // What the daemon did to it while the source looked away counts.
+        for (id, before) in [
+            ("read", &[TurnEnded, Looked][..]),
+            ("dismissed", &[TurnEnded, Dismissed]),
+            ("unread", &[TurnEnded]),
+            ("failed", &[TurnFailed]),
+        ] {
+            tell(&mut queue, id, before, 1);
+            let found = phase(&queue, id);
+            tell(&mut queue, id, &[PermissionAsked, QuestionAsked], 2);
+            assert_eq!(phase(&queue, id), Phase::Blocked);
+            assert_eq!(tell(&mut queue, id, &[Released], 3), Change::Settle, "{id}");
+            assert_eq!(phase(&queue, id), found, "{id}");
+            assert_eq!(
+                queue
+                    .sessions()
+                    .iter()
+                    .find(|s| s.key.id == id)
+                    .unwrap()
+                    .held,
+                None
+            );
+        }
+        assert_eq!(phase(&queue, "read"), Phase::StoppedRead);
+        assert_eq!(phase(&queue, "dismissed"), Phase::Idle);
+        // A wait answered in a turn goes on with the turn.
+        tell(
+            &mut queue,
+            "turn",
+            &[Prompted, PermissionAsked, Answered],
+            4,
+        );
+        assert_eq!(phase(&queue, "turn"), Phase::Working);
     }
 
     #[test]

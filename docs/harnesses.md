@@ -8,21 +8,22 @@ The service reads every harness's own files as they change. Claude Code's and Ju
 
 ## Claude Code
 
-Each running Claude Code process, in a terminal or the desktop app, keeps a file in `~/.claude/sessions/` with its session and whether it is busy, idle or waiting on the user, and each session writes its transcript to `~/.claude/projects/`. The daemon reads both as they change.
+Each running Claude Code process, in a terminal, the desktop app or a background session `claude --bg` started, keeps a file in `~/.claude/sessions/` with its session and whether it is busy, idle or waiting on the user, and each session writes its transcript to `~/.claude/projects/`. The daemon reads both as they change. Claude Code keeps that folder at `$CLAUDE_CONFIG_DIR` when it is set, and the daemon finds it the same way, from the environment launchd starts it with, which a `CLAUDE_CONFIG_DIR` exported in a shell's profile never reaches: set it there too with `launchctl setenv CLAUDE_CONFIG_DIR <folder>`, then run `agent-leds install` to restart the service. `agent-leds doctor` reads the folder the service reads and says when the shell's `CLAUDE_CONFIG_DIR` names another; it has a Claude Code line only once `~/.claude` exists.
 
 | What Claude Code writes | Session becomes |
 | --- | --- |
 | A prompt in the transcript | working |
 | The session file waiting on a permission | question |
 | The session file waiting for input needed | question |
-| The end of a turn whose last line ends in a question mark | question, as a weak signal |
+| The session file done waiting on a request made after the turn ended, such as a worker or sandbox request | back to the light the wait covered, unannounced |
+| The end of a turn whose last line ends in a question mark, or, in the desktop app, whose last `wrap_up` call put a question in the next-step box | question, as a weak signal |
 | The end of a turn while the session file stays busy | working, in the background |
 | The end of a turn otherwise, or a background turn going idle | stopped |
 | An API error in the transcript | error |
 | An interrupt in the transcript | idle (no light) |
 | The session file gone or naming another session, or its process gone | removed |
 
-A turn that ends with a subagent or a workflow running in the background is not the session's last word: Claude Code keeps the session file busy until that work is done, so the session stays green until it goes idle, and then it shows as stopped. The files are undocumented; the fixtures in `tests/fixtures/claude/`, recorded from real sessions, pin what the daemon expects of them. A session never seen running, such as one run with `claude -p`, is not shown.
+A turn that ends with a subagent or a workflow running in the background is not the session's last word: Claude Code keeps the session file busy until that work is done, so the session stays green until it goes idle, and then it shows as stopped. A Stop hook that blocks the end of a turn shows the turn working again once Claude Code records what the hook told the model, so the session shows as stopped only while the hook runs; one that fails without blocking ends the turn as usual. A dialog changes no light. Claude Code writes that one is open in place of busy or idle, mid-turn too, and not whether it holds anything up, so `/model` or `/config` opened at the prompt or during a turn holds nothing up, and a dialog that does want an answer, such as auto mode asking whether to stay on, shows as the light it opened over. While a dialog is open the file does not say whether work a turn left runs on: a turn that ends then shows as stopped even if that work runs, and so does such a session when the daemon starts. The files are undocumented; the fixtures in `tests/fixtures/claude/`, recorded from real sessions, pin what the daemon expects of them. A run nobody watches is not shown: one of `claude -p` or of a program on the Agent SDK, whose session file names its entrypoint `sdk-cli`, `sdk-ts` or `sdk-py`.
 
 ## Codex
 

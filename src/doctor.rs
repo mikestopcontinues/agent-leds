@@ -34,14 +34,24 @@ pub fn run() -> Result<()> {
     let saved = daemon::saved_queue();
     checks.push(("queue".to_owned(), queue(&saved, &home)));
     let saved = saved.unwrap_or_default();
-    // Junie's folder as the service finds it, from launchd's environment.
+    // Claude Code's and Junie's folders as the service finds them, from
+    // launchd's environment.
+    let claude = source::claude::folder(launchd::getenv("CLAUDE_CONFIG_DIR").as_deref(), &home);
     let junie = source::junie::folder(launchd::getenv("JUNIE_HOME").as_deref());
     for (harness, hooks) in harness::check(&home, &exe) {
-        let mut source = source::of(harness, &home, &junie);
+        let mut source = source::of(harness, &home, &claude, &junie);
         let mut files = files(source.as_mut(), &System, &saved, &home);
-        if harness == Harness::Junie
-            && let Some(problem) = elsewhere(&junie, &source::junie::home(), &home)
-        {
+        let problem = match harness {
+            Harness::Claude => elsewhere(
+                "CLAUDE_CONFIG_DIR",
+                &claude,
+                &source::claude::config_dir(&home),
+                &home,
+            ),
+            Harness::Junie => elsewhere("JUNIE_HOME", &junie, &source::junie::home(), &home),
+            _ => None,
+        };
+        if let Some(problem) = problem {
             files = both(files, Err(anyhow::anyhow!(problem)));
         }
         let hooks = hooks.map(|()| harness.registered().to_owned());
@@ -169,14 +179,15 @@ fn queue(saved: &Result<Queue>, home: &Path) -> Result<String> {
     })
 }
 
-/// What is wrong when Junie, run from this shell, keeps its folder at
-/// `here` while the service reads `service`: a `JUNIE_HOME` exported in a
-/// shell's profile never reaches a LaunchAgent.
-fn elsewhere(service: &Path, here: &Path, home: &Path) -> Option<String> {
+/// What is wrong when a harness, run from this shell, keeps its folder at
+/// `here`, by the environment `variable`, while the service reads
+/// `service`: a variable exported in a shell's profile never reaches a
+/// LaunchAgent.
+fn elsewhere(variable: &str, service: &Path, here: &Path, home: &Path) -> Option<String> {
     (service != here).then(|| {
         format!(
-            "JUNIE_HOME here is {}, which the service does not see; run \
-             `launchctl setenv JUNIE_HOME {}`, then `agent-leds install` to restart it",
+            "{variable} here is {}, which the service does not see; run \
+             `launchctl setenv {variable} {}`, then `agent-leds install` to restart it",
             tilde(here, home),
             here.display()
         )
@@ -429,7 +440,7 @@ mod tests {
 
     /// The source of `harness` on `home`, as the daemon makes it.
     fn source_of(harness: Harness, home: &Path) -> Box<dyn Source> {
-        source::of(harness, home, &home.join(".junie"))
+        source::of(harness, home, &home.join(".claude"), &home.join(".junie"))
     }
 
     fn write(home: &Path, file: &str, text: &str) {
@@ -539,12 +550,35 @@ mod tests {
     fn a_junie_folder_the_service_does_not_read_needs_attention() {
         let home = Path::new("/Users/me");
         let default = home.join(".junie");
-        assert_eq!(elsewhere(&default, &default, home), None);
+        assert_eq!(elsewhere("JUNIE_HOME", &default, &default, home), None);
         assert_eq!(
-            elsewhere(&default, &home.join("work/junie"), home).unwrap(),
+            elsewhere("JUNIE_HOME", &default, &home.join("work/junie"), home).unwrap(),
             "JUNIE_HOME here is ~/work/junie, which the service does not see; run \
              `launchctl setenv JUNIE_HOME /Users/me/work/junie`, then `agent-leds install` to \
              restart it"
+        );
+    }
+
+    #[test]
+    fn a_claude_config_dir_the_service_does_not_read_needs_attention() {
+        let home = Path::new("/Users/me");
+        let service = source::claude::folder(None, home);
+        let here = source::claude::folder(Some("/Users/me/work/claude".as_ref()), home);
+        assert_eq!(service, home.join(".claude"));
+        assert_eq!(
+            source::claude::folder(Some("".as_ref()), home),
+            service,
+            "an empty CLAUDE_CONFIG_DIR is unset"
+        );
+        assert_eq!(
+            elsewhere("CLAUDE_CONFIG_DIR", &service, &service, home),
+            None
+        );
+        assert_eq!(
+            elsewhere("CLAUDE_CONFIG_DIR", &service, &here, home).unwrap(),
+            "CLAUDE_CONFIG_DIR here is ~/work/claude, which the service does not see; run \
+             `launchctl setenv CLAUDE_CONFIG_DIR /Users/me/work/claude`, then `agent-leds \
+             install` to restart it"
         );
     }
 
