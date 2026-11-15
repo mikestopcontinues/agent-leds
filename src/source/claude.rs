@@ -512,9 +512,10 @@ impl Claude {
                 pid: proc.pid,
                 start: StartCheck::Second(proc.start),
             };
-            (proc.session == id && liveness::alive(k, &liveness)).then(|| (other.clone(), liveness))
+            let alive = proc.session == id && liveness::alive(k, &liveness);
+            alive.then(|| (other.clone(), proc.start, liveness))
         });
-        let Some((other, liveness)) = other else {
+        let Some((other, start, liveness)) = other else {
             self.sessions.remove(id);
             out.push(observation(id, Event::Signal(Signal::Ended), None));
             return;
@@ -525,6 +526,7 @@ impl Claude {
             .flatten()
             .map_or(Status::Starting, |(process, _)| process.status());
         let session = self.sessions.get_mut(id).expect("owned");
+        session.start = start;
         session.owner = other;
         session.status = status;
         out.push(observation(
@@ -649,6 +651,32 @@ impl Claude {
         }
     }
 
+    /// Where the tail of a session's transcript leaves it, read against the
+    /// session file as it is now: back to where its last turn began, or to
+    /// what an earlier process wrote.
+    fn seed_transcript(&mut self, id: &str, path: &Path) -> io::Result<()> {
+        let start = self.sessions[id].start;
+        let anchors = |record: &Record| record.is_prompt() || record.before(start);
+        let (lines, tail) = tail::tail_back(path, |lines| {
+            let mut records = lines.iter().filter_map(|line| Record::read(line));
+            records.any(|record| anchors(&record))
+        })?;
+        let records: Vec<Record> = lines.iter().filter_map(|line| Record::read(line)).collect();
+        let session = self.sessions.get_mut(id).expect("started");
+        session.transcript = Some((path.to_owned(), tail));
+        let mut history = Vec::new();
+        // A turn's work without its start: the turn began further back.
+        let work = |record: &Record| record.is_model() || record.is_tool_result();
+        if !records.iter().any(anchors) && records.iter().any(work) {
+            session.open = true;
+            tell(id, session, Signal::Prompted, &mut history);
+        }
+        for record in &records {
+            self.record(id, record, &mut history);
+        }
+        Ok(())
+    }
+
     /// What a change of the session file's status says, once the
     /// transcript has been read up to it.
     fn edge(&mut self, id: &str, from: Status, to: Status, out: &mut Vec<Observation>) {
@@ -687,34 +715,6 @@ impl Claude {
             }
             _ => {}
         }
-    }
-}
-
-impl Claude {
-    /// Where the tail of a session's transcript leaves it, read against the
-    /// session file as it is now: back to where its last turn began, or to
-    /// what an earlier process wrote.
-    fn seed_transcript(&mut self, id: &str, path: &Path) -> io::Result<()> {
-        let start = self.sessions[id].start;
-        let anchors = |record: &Record| record.is_prompt() || record.before(start);
-        let (lines, tail) = tail::tail_back(path, |lines| {
-            let mut records = lines.iter().filter_map(|line| Record::read(line));
-            records.any(|record| anchors(&record))
-        })?;
-        let records: Vec<Record> = lines.iter().filter_map(|line| Record::read(line)).collect();
-        let session = self.sessions.get_mut(id).expect("started");
-        session.transcript = Some((path.to_owned(), tail));
-        let mut history = Vec::new();
-        // A turn's work without its start: the turn began further back.
-        let work = |record: &Record| record.is_model() || record.is_tool_result();
-        if !records.iter().any(anchors) && records.iter().any(work) {
-            session.open = true;
-            tell(id, session, Signal::Prompted, &mut history);
-        }
-        for record in &records {
-            self.record(id, record, &mut history);
-        }
-        Ok(())
     }
 }
 
@@ -838,7 +838,8 @@ impl Source for Claude {
         // A session started just now reads what its transcript holds of it.
         for o in &out {
             if let Event::Started(_) = o.event
-                && let Some((path, _)) = &self.sessions[&o.key.id].transcript
+                && let Some(session) = self.sessions.get(&o.key.id)
+                && let Some((path, _)) = &session.transcript
                 && !transcripts.iter().any(|(_, known)| known == path)
             {
                 transcripts.push((o.key.id.clone(), path.clone()));
