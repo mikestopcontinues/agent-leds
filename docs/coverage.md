@@ -63,7 +63,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### Prompted
 
-- Claude Code, file, observed: a transcript user record, not a tool result, with a promptSource (typed, sdk or a task notification) or an origin (a skill's slash command), keyed by its promptId; after the turn closed, the isMeta user record starting Stop hook feedback: that a Stop hook that blocks writes, or the model writing again, as after a compaction (probe-claude cc1, cc3; desktop transcripts 2.1.309, 2.1.317, 2.1.321; gaps/stophook-nb (a Stop hook that fails without blocking, 2.1.325))
+- Claude Code, file, observed: a transcript user record, not a tool result, with a promptSource (typed, sdk or a task notification) or an origin (a skill's slash command), keyed by its promptId; after the turn closed, the isMeta user record starting Stop hook feedback: that a Stop hook that blocks writes, or the model writing again, as after a compaction, keyed by that record's uuid (probe-claude cc1, cc3; desktop transcripts 2.1.309, 2.1.317, 2.1.321; gaps/stophook-nb (a Stop hook that fails without blocking, 2.1.325))
 - Codex, file, observed: event_msg task_started, keyed by its turn_id (probe-codex runA, runB, runC)
 - Codex, file, inferred: task_complete without an error while queue_1.sqlite holds a prompt queued for the thread, which Codex starts next (the queue from Codex 0.162's schema and a desktop rollout's queued turn, 2026-10-11, its row unseen)
 - Grok, file, observed: events.jsonl turn_started, keyed by its turn_number, including the turn a session starts by itself when a background subagent finishes (probe-grok prompt_submitted, runs a, e)

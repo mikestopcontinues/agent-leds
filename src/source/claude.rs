@@ -50,7 +50,7 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Prompted,
-        "a transcript user record, not a tool result, with a promptSource (typed, sdk or a task notification) or an origin (a skill's slash command), keyed by its promptId; after the turn closed, the isMeta user record starting Stop hook feedback: that a Stop hook that blocks writes, or the model writing again, as after a compaction",
+        "a transcript user record, not a tool result, with a promptSource (typed, sdk or a task notification) or an origin (a skill's slash command), keyed by its promptId; after the turn closed, the isMeta user record starting Stop hook feedback: that a Stop hook that blocks writes, or the model writing again, as after a compaction, keyed by that record's uuid",
         "probe-claude cc1, cc3; desktop transcripts 2.1.309, 2.1.317, 2.1.321; gaps/stophook-nb (a Stop hook that fails without blocking, 2.1.325)",
     ),
     file(
@@ -198,6 +198,7 @@ struct Record {
     /// Set on what the user sent, a slash command that runs a skill too.
     origin: Option<IgnoredAny>,
     prompt_id: Option<String>,
+    uuid: Option<String>,
     timestamp: Option<String>,
     #[serde(default)]
     is_api_error_message: bool,
@@ -797,6 +798,10 @@ impl Claude {
             if record.is_prompt() {
                 session.turn = record.prompt_id.clone().map(TurnKey);
                 session.asking = false;
+            } else if let Some(uuid) = &record.uuid {
+                // A turn that ends again counts as new, so it goes by a name
+                // of its own: the record that went on with it.
+                session.turn = Some(TurnKey(uuid.clone()));
             }
             session.closed_waiting = None;
             session.background = false;
@@ -1455,6 +1460,42 @@ mod tests {
             phase(&replay("a_turn_compacted_after_an_error_goes_on")),
             Phase::Stopped
         );
+    }
+
+    /// A turn a Stop hook reopened that ends again while the daemon is down
+    /// shows unread, though the end before it was read: it goes by the name
+    /// of the record that reopened it.
+    #[test]
+    fn a_turn_reopened_and_ended_while_the_daemon_was_down_shows_unread() {
+        let replay =
+            replay("a_stop_hook_that_blocks_reopens_the_turn_when_its_feedback_is_written");
+        let ended = |o: &Observation| o.event.signals().contains(&Signal::TurnEnded);
+        let mut saved = crate::queue::Queue::default();
+        for (o, _) in &replay.yielded {
+            saved.apply(o, 1);
+            if ended(o) {
+                break;
+            }
+        }
+        let key = saved.sessions()[0].key.clone();
+        let looked = Observation::new(
+            Harness::Claude,
+            &key.id,
+            Channel::Daemon,
+            Event::one(Signal::Looked),
+            None,
+        );
+        saved.apply(&looked, 2);
+        assert_eq!(saved.phase(&key), Phase::StoppedRead);
+        let restored = crate::queue::Queue::restore(saved, fixture::seed(&replay));
+        assert_eq!(restored.phase(&key), Phase::Stopped);
+        let turns: Vec<Option<TurnKey>> = replay
+            .yielded
+            .iter()
+            .filter(|(o, _)| ended(o))
+            .map(|(o, _)| o.turn.clone())
+            .collect();
+        assert_ne!(turns[0], turns[1]);
     }
 
     #[test]

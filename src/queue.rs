@@ -23,7 +23,8 @@ pub struct Key {
     pub id: String,
 }
 
-/// A harness's own name for a turn: Claude's promptId, Codex's turn_id,
+/// A harness's own name for a turn: Claude's promptId, or the uuid of the
+/// record that went on with a turn after it ended, Codex's turn_id,
 /// Grok's turn_number, Cursor's count of user lines, Junie's taskId,
 /// OpenCode's user message id, Pi's user entry id.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
