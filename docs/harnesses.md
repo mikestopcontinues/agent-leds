@@ -22,7 +22,7 @@ Each running Claude Code process, in a terminal or the desktop app, keeps a file
 | An interrupt in the transcript | idle (no light) |
 | The session file gone or naming another session, or its process gone | removed |
 
-A turn that ends with a subagent or a workflow running in the background is not the session's last word: Claude Code keeps the session file busy until that work is done, so the session stays green until it goes idle, and then it shows as stopped. The files are undocumented; the fixtures in `tests/fixtures/claude/`, recorded from real sessions, pin what the daemon expects of them. A run nobody watches is not shown: one of `claude -p` or of a program on the Agent SDK, whose session file names its entrypoint `sdk-cli`, `sdk-ts` or `sdk-py`.
+A turn that ends with a subagent or a workflow running in the background is not the session's last word: Claude Code keeps the session file busy until that work is done, so the session stays green until it goes idle, and then it shows as stopped. A Stop hook that blocks the end of a turn shows the turn working again once Claude Code records the hook's summary, so the session shows as stopped only while the hook runs. The files are undocumented; the fixtures in `tests/fixtures/claude/`, recorded from real sessions, pin what the daemon expects of them. A run nobody watches is not shown: one of `claude -p` or of a program on the Agent SDK, whose session file names its entrypoint `sdk-cli`, `sdk-ts` or `sdk-py`.
 
 ## Codex
 

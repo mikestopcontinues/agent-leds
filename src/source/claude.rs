@@ -46,8 +46,8 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Prompted,
-        "a transcript user record, not a tool result, with a promptSource (typed, sdk or a task notification) or an origin (a skill's slash command), keyed by its promptId; or the model writing again after its turn closed, as after a Stop hook that blocks or a compaction",
-        "probe-claude cc1, cc3; desktop transcripts 2.1.317, 2.1.321",
+        "a transcript user record, not a tool result, with a promptSource (typed, sdk or a task notification) or an origin (a skill's slash command), keyed by its promptId; after the turn closed, a stop_hook_summary with hookErrors and preventedContinuation false (a Stop hook that blocks), or the model writing again, as after a compaction",
+        "probe-claude cc1, cc3; desktop transcripts 2.1.309, 2.1.317, 2.1.321",
     ),
     file(
         Signal::PermissionAsked,
@@ -169,6 +169,11 @@ struct Record {
     /// What the desktop app's tool said of its result: `claude/endTurn` in
     /// its `_meta` when the tool ends the turn.
     mcp_meta: Option<Value>,
+    /// `stop_hook_summary` for what the Stop hooks said once they all ran.
+    subtype: Option<String>,
+    /// What the Stop hooks that blocked the stop gave the model.
+    hook_errors: Option<Vec<IgnoredAny>>,
+    prevented_continuation: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -277,6 +282,18 @@ impl Record {
 
     fn is_error(&self) -> bool {
         self.kind == "assistant" && self.is_api_error_message
+    }
+
+    /// Whether a Stop hook blocked the stop: it gave the model a reason to
+    /// go on, and did not stop Claude Code itself.
+    fn hook_blocked(&self) -> bool {
+        self.kind == "system"
+            && self.subtype.as_deref() == Some("stop_hook_summary")
+            && self
+                .hook_errors
+                .as_ref()
+                .is_some_and(|errors| !errors.is_empty())
+            && self.prevented_continuation == Some(false)
     }
 
     /// Whether the record calls the desktop app's `wrap_up`, which fills the
@@ -648,11 +665,11 @@ impl Claude {
         if record.before(session.start) {
             return;
         }
-        // The model writing after its turn closed goes on with that turn, as
-        // after a Stop hook that blocks or a compaction: what ends it is
-        // still to come. That is told before what the record itself says,
-        // which can be the end.
-        let goes_on = !session.open && record.is_model();
+        // A Stop hook that blocked the turn's end, or the model writing after
+        // its turn closed, as in a /goal loop or after a compaction, goes on
+        // with that turn: what ends it is still to come. That is told before
+        // what the record itself says, which can be the end.
+        let goes_on = !session.open && (record.hook_blocked() || record.is_model());
         if record.is_prompt() || goes_on {
             session.open = true;
             if record.is_prompt() {
@@ -1126,6 +1143,12 @@ mod tests {
             phase(&replay("a_stop_hook_that_blocks_keeps_the_turn_going")),
             Phase::Asked
         );
+    }
+
+    #[test]
+    fn a_stop_hook_that_blocks_reopens_the_turn_when_its_summary_is_written() {
+        let replay = replay("a_stop_hook_that_blocks_reopens_the_turn_when_its_summary_is_written");
+        assert_eq!(phase(&replay), Phase::Stopped);
     }
 
     #[test]

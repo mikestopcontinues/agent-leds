@@ -61,7 +61,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### Prompted
 
-- Claude Code, file, observed: a transcript user record, not a tool result, with a promptSource (typed, sdk or a task notification) or an origin (a skill's slash command), keyed by its promptId; or the model writing again after its turn closed, as after a Stop hook that blocks or a compaction (probe-claude cc1, cc3; desktop transcripts 2.1.317, 2.1.321)
+- Claude Code, file, observed: a transcript user record, not a tool result, with a promptSource (typed, sdk or a task notification) or an origin (a skill's slash command), keyed by its promptId; after the turn closed, a stop_hook_summary with hookErrors and preventedContinuation false (a Stop hook that blocks), or the model writing again, as after a compaction (probe-claude cc1, cc3; desktop transcripts 2.1.309, 2.1.317, 2.1.321)
 - Codex, file, observed: event_msg task_started, keyed by its turn_id (probe-codex runA, runB, runC)
 - Grok, file, observed: events.jsonl turn_started, keyed by its turn_number, including the turn a session starts by itself when a background subagent finishes (probe-grok prompt_submitted, runs a, e)
 - Cursor, hook, observed: beforeSubmitPrompt, for a chat bound to its process; the only word of a text-only turn until it ends (probe-cursor run F; 0.5.0 hooks)
