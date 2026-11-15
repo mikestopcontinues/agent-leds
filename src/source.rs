@@ -7,6 +7,7 @@
 //! and the table drops what is about a session nobody tracks.
 
 pub mod claude;
+pub mod cursor;
 #[cfg(test)]
 pub mod fixture;
 pub mod interim;
@@ -148,10 +149,13 @@ impl Told {
 /// hooks of the harnesses whose files are not read yet keep what they need
 /// between events in `state`.
 pub fn all(home: &Path, state: &Path) -> Vec<Box<dyn Source>> {
-    let mut sources: Vec<Box<dyn Source>> = vec![Box::new(claude::Claude::new(home))];
+    let mut sources: Vec<Box<dyn Source>> = vec![
+        Box::new(claude::Claude::new(home)),
+        Box::new(cursor::Cursor::new(home)),
+    ];
     for harness in Harness::ALL {
-        if harness != Harness::Claude {
-            sources.push(Box::new(interim::Interim::new(harness, home, state)));
+        if !matches!(harness, Harness::Claude | Harness::Cursor) {
+            sources.push(Box::new(interim::Interim::new(harness, state)));
         }
     }
     sources
