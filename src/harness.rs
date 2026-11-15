@@ -297,11 +297,16 @@ pub fn declares(harness: Harness, signal: Signal, channel: Channel) -> bool {
         .any(|declared| declared.signal == signal && declared.channel == channel)
 }
 
+/// Whether the harness has its folder in `home`.
+pub fn at_home(home: &Path, harness: Harness) -> bool {
+    home.join(harness.folder()).is_dir()
+}
+
 /// The harnesses that have a folder in `home`.
 fn used(home: &Path) -> impl Iterator<Item = Harness> {
     Harness::ALL
         .into_iter()
-        .filter(|harness| home.join(harness.folder()).is_dir())
+        .filter(|&harness| at_home(home, harness))
 }
 
 /// Registers the hook with every harness in use, replacing any earlier
@@ -312,10 +317,16 @@ pub fn install(home: &Path, exe: &Path) -> Vec<(Harness, Result<()>)> {
         .collect()
 }
 
-/// Checks the hooks registered with every harness in use against what an
-/// install from `exe` would write.
-pub fn check(home: &Path, exe: &Path) -> Vec<(Harness, Result<()>)> {
-    used(home)
+/// Checks the hooks registered with every harness `used` says is in use
+/// against what an install from `exe` would write.
+pub fn check(
+    home: &Path,
+    exe: &Path,
+    used: impl Fn(Harness) -> bool,
+) -> Vec<(Harness, Result<()>)> {
+    Harness::ALL
+        .into_iter()
+        .filter(|&harness| used(harness))
         .map(|harness| (harness, harness.check(home, exe)))
         .collect()
 }
