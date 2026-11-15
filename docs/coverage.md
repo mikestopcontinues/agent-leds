@@ -38,7 +38,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | [Started](#started) | file | file | file | hook | file* | hook | hook |
 | [Prompted](#prompted) | file | file | file | file+hook | file* | file+hook | file+hook |
-| [PermissionAsked](#permissionasked) | file | hook | file | — | file* | hook | — |
+| [PermissionAsked](#permissionasked) | file | hook | — | — | file* | hook | — |
 | [QuestionAsked](#questionasked) | file | file | file | — | file* | file | hook |
 | [Answered](#answered) | file | file | file | — | file* | file+hook | file*+hook |
 | [TurnEnded](#turnended) | file | file | file | file | file* | file | file |
@@ -76,7 +76,6 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 - Claude Code, file, observed: the session file going to status waiting, for anything but input needed; or a prompt read while the session file says so (probe-claude cc1, cc4, cc10)
 - Codex, hook, observed: PermissionRequest naming the turn the rollout has open (0.5.0 hooks during probe-codex runA PROMPT4 and codex2)
-- Grok, file, observed: events.jsonl permission_requested for a tool other than ask_user_question, still unresolved 250 ms after it was written; every tool writes one, and an approval Grok gives itself resolves within a few milliseconds (probe-grok permission_pending, runs a, h; grok5)
 - Junie, file, inferred: a SessionA2uxEvent in state INPUT_REQUIRED whose block carries an approvalRequest and is not COMPLETED, once per stepId (probe-junie permission_pending; Irrlicht real-terminal-approval)
 - OpenCode, hook, observed: permission.asked, for the session or a subagent's session under it (probe-opencode T3, T4, T7, T8, T12)
 
@@ -93,7 +92,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 - Claude Code, file, observed: the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt (probe-claude cc1, cc2)
 - Codex, file, observed: the output for the pending question's call_id; or, after the approval hook, the next call output or completed item that is not a subagent's (probe-codex runA PROMPT2, DENY-ESC; codex2 (approved))
-- Grok, file, observed: events.jsonl permission_resolved after a permission it told, whatever the decision, or tool_completed for ask_user_question (probe-grok runs a, h; grok5)
+- Grok, file, observed: events.jsonl tool_completed for ask_user_question (probe-grok question_pending, grok5)
 - Junie, file, inferred: the last waiting step written again as COMPLETED or in a state other than INPUT_REQUIRED, or a UserAsyncResponseEvent or UserResponseEvent while a step waits (probe-junie permission_resolved, question_answered; Irrlicht real-terminal-approval, real-lifecycle-session)
 - OpenCode, hook, observed: permission.replied, for the session or a subagent's session under it (probe-opencode T3, T7, T12)
 - OpenCode, file, observed: no question tool part running in the turn any more, while it runs (probe-opencode T5)
@@ -172,6 +171,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 **PermissionAsked**: an approval wait shows as the light it interrupts.
 
+- Grok: Idle, Working, Background, Asked, AskedRead, Stopped, StoppedRead, Failed → Blocked
 - Cursor: Idle, Working, Asked, AskedRead, Stopped, StoppedRead, Failed → Blocked
 - Pi: Idle, Working, Asked, AskedRead, Stopped, StoppedRead, Failed → Blocked
 

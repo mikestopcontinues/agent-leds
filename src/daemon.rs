@@ -85,8 +85,6 @@ trait World {
     fn alive(&mut self, liveness: &Liveness) -> bool;
     /// Whether a source left bytes unread at its read budget.
     fn behind(&self) -> bool;
-    /// When a source's hold first runs out, on the wall clock.
-    fn due(&self) -> Option<u64>;
 }
 
 /// The Mac the daemon runs on.
@@ -174,10 +172,6 @@ impl World for System {
 
     fn behind(&self) -> bool {
         self.sources.behind()
-    }
-
-    fn due(&self) -> Option<u64> {
-        self.sources.due()
     }
 }
 
@@ -317,11 +311,6 @@ impl<W: World> Daemon<W> {
             (self.queue.unread_since().is_some() || self.queue.tracked()).then_some(self.next_look),
             // A source left bytes to read.
             self.world.behind().then(|| self.world.instant()),
-            // A source holds something back until then.
-            self.world.due().map(|due| {
-                let wait = due.saturating_sub(self.world.now_ms());
-                self.world.instant() + Duration::from_millis(wait)
-            }),
         ]
         .into_iter()
         .flatten()
@@ -356,14 +345,6 @@ impl<W: World> Daemon<W> {
         }
         if self.world.behind() {
             let read = self.world.read(Read::Behind);
-            self.observe(read);
-        }
-        if self
-            .world
-            .due()
-            .is_some_and(|due| due <= self.world.now_ms())
-        {
-            let read = self.world.read(Read::Due);
             self.observe(read);
         }
     }
@@ -682,7 +663,6 @@ mod tests {
         asked: Vec<&'static str>,
         dead: HashSet<Liveness>,
         behind: bool,
-        due: Option<u64>,
     }
 
     impl World for Fake {
@@ -738,7 +718,6 @@ mod tests {
                 Read::All => ("all", self.reads.pop_front().unwrap_or_default()),
                 Read::Hook(_) => ("hook", self.reads.pop_front().unwrap_or_default()),
                 Read::Behind => ("behind", self.reads.pop_front().unwrap_or_default()),
-                Read::Due => ("due", self.reads.pop_front().unwrap_or_default()),
             };
             self.asked.push(asked);
             found
@@ -750,10 +729,6 @@ mod tests {
 
         fn behind(&self) -> bool {
             self.behind
-        }
-
-        fn due(&self) -> Option<u64> {
-            self.due
         }
     }
 
@@ -773,7 +748,6 @@ mod tests {
             asked: Vec::new(),
             dead: HashSet::new(),
             behind: false,
-            due: None,
         }
     }
 
@@ -1186,25 +1160,6 @@ mod tests {
         assert_eq!(daemon.deadline(), daemon.world.instant);
         daemon.take(Vec::new());
         assert_eq!(daemon.world.asked, ["seed", "behind"]);
-    }
-
-    #[test]
-    fn a_source_s_hold_brings_the_deadline_to_when_it_runs_out_and_is_read_then() {
-        let mut daemon = daemon();
-        play_out(&mut daemon);
-        daemon.next_check = daemon.world.instant + DEVICE_CHECK;
-        daemon.world.due = Some(daemon.world.now_ms + 250);
-        assert_eq!(
-            daemon.deadline(),
-            daemon.world.instant + Duration::from_millis(250)
-        );
-        daemon.take(Vec::new());
-        assert_eq!(daemon.world.asked, ["seed"]);
-        daemon.world.now_ms += 250;
-        daemon.world.instant += Duration::from_millis(250);
-        assert_eq!(daemon.deadline(), daemon.world.instant);
-        daemon.take(Vec::new());
-        assert_eq!(daemon.world.asked, ["seed", "due"]);
     }
 
     #[test]

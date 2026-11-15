@@ -13,9 +13,9 @@
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac/events.jsonl","line":{"ts":"2026-11-14T22:03:42.217Z","type":"tool_started","tool_name":"run_terminal_command"}}
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac/events.jsonl","line":{"ts":"2026-11-14T22:03:42.301Z","type":"phase_changed","phase":"permission_prompt"}}
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac/events.jsonl","line":{"ts":"2026-11-14T22:03:42.301Z","type":"permission_requested","tool_name":"run_terminal_command"}}
-{"expect":[["permission_asked","file"]]}
+{"expect":[]}
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac/events.jsonl","line":{"ts":"2026-11-14T22:03:46.883Z","type":"permission_resolved","tool_name":"run_terminal_command","decision":"deny","wait_ms":4582}}
-{"expect":[["answered","file"]]}
+{"expect":[]}
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac/events.jsonl","line":{"ts":"2026-11-14T22:03:46.883Z","type":"phase_changed","phase":"tool_execution"}}
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/9e3ad9ff-7f9e-4c95-8bc5-1fcb41a9cfac/events.jsonl","line":{"ts":"2026-11-14T22:03:46.966Z","type":"turn_ended","outcome":"cancelled","cancellation_category":"permission_rejected","cancellation_context":{"tool_name":"run_terminal_command","reason":"User rejected the execution"}}}
 {"expect":[[["interrupted","turn_ended"],"file"]]}

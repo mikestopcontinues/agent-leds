@@ -103,9 +103,6 @@ pub trait Source {
     fn current(&self, id: &str) -> Vec<(Signal, Option<TurnKey>)>;
     /// Whether a read stopped at its budget and left bytes to read.
     fn behind(&self) -> bool;
-    /// When, in Unix milliseconds, the source next holds something back
-    /// until: what it read then is read again, as for `changed(None)`.
-    fn due(&self) -> Option<u64>;
 }
 
 /// Where a source last left a session, by the signals it told: kept so the
@@ -177,8 +174,6 @@ pub enum Read<'a> {
     Hook(&'a Hook),
     /// Whatever a budgeted read left unread.
     Behind,
-    /// The sources whose hold has run out.
-    Due,
     /// Roots that have appeared since they were last looked for.
     Roots,
 }
@@ -279,14 +274,6 @@ impl Sources {
                 .filter(|source| source.behind())
                 .flat_map(|source| source.changed(kernel, None))
                 .collect(),
-            Read::Due => {
-                let now = kernel.now_ms();
-                self.sources
-                    .iter_mut()
-                    .filter(|source| source.due().is_some_and(|due| due <= now))
-                    .flat_map(|source| source.changed(kernel, None))
-                    .collect()
-            }
             Read::Roots => {
                 let mut found = Vec::new();
                 for index in self.watch() {
@@ -300,11 +287,6 @@ impl Sources {
     /// Whether any source left bytes unread.
     pub fn behind(&self) -> bool {
         self.sources.iter().any(|source| source.behind())
-    }
-
-    /// When the first source's hold runs out, in Unix milliseconds.
-    pub fn due(&self) -> Option<u64> {
-        self.sources.iter().filter_map(|source| source.due()).min()
     }
 
     /// Starts watching each root that exists and is not watched yet, and
@@ -412,10 +394,6 @@ mod tests {
 
         fn behind(&self) -> bool {
             false
-        }
-
-        fn due(&self) -> Option<u64> {
-            None
         }
     }
 

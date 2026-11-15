@@ -61,9 +61,8 @@ A thread whose `session_meta` names a subagent, by its `source` or its `thread_s
 | --- | --- |
 | A row in `active_sessions.json` whose process runs | tracked |
 | `turn_started` in the events, typed or after a background subagent finishes | working |
-| `permission_requested` still unresolved 250 ms after it was written | question |
 | `tool_started` for `ask_user_question` | question |
-| `permission_resolved` after such a prompt, or `tool_completed` for `ask_user_question` | working |
+| `tool_completed` for `ask_user_question` | working |
 | `turn_ended` completed, whose last message's last line ends in a question mark | question, as a weak signal |
 | `turn_ended` while the updates hold a subagent spawned and not finished | working, in the background |
 | `turn_ended` otherwise, including a cancel Grok made itself such as `max_turns` | stopped |
@@ -71,8 +70,9 @@ A thread whose `session_meta` names a subagent, by its `source` or its `thread_s
 | `turn_ended` cancelled by Ctrl-C, the stop button or the dashboard, or by rejecting or cancelling a permission | removed |
 | The row gone from `active_sessions.json`, as `/quit` leaves it even mid-turn, or its process gone | removed |
 
-Every tool, read-only ones too, writes a permission request, and Grok writes each request and its answer as separate lines. One Grok approves by itself is answered within 7 ms; one the user answers waits seconds. So a request counts only once it has gone 250 ms unanswered, and the light turns to question that much later. The question tool's own approval is never a wait. A row left by a process that was killed stays in the registry until another session starts, so a row counts only while its pid runs with the start it records. A subagent runs in a session folder of its own, beside its parent's, under an id the registry never lists, so it is never followed; the parent shows its work. The files are undocumented; the fixtures in `tests/fixtures/grok/`, recorded from Grok 1.0.77, pin what the daemon expects of them. The gaps:
+A row left by a process that was killed stays in the registry until another session starts, so a row counts only while its pid runs with the start it records. A subagent runs in a session folder of its own, beside its parent's, under an id the registry never lists, so it is never followed; the parent shows its work. The files are undocumented; the fixtures in `tests/fixtures/grok/`, recorded from Grok 1.0.77, pin what the daemon expects of them. The gaps:
 
+- A wait for the user's approval shows as working. Every tool, read-only ones too, writes a permission request and then its answer, and a request Grok approves by itself looks the same as one that waits on the user until the answer comes: the answer comes within 7 ms, or after the user has decided. Telling them apart by how long the answer takes would be a guess.
 - A turn that fails is known only from the hook. A daemon restarted after it keeps showing the error until the turn's end is written, and then shows stopped; one that was not running when the hook came shows what the files say. A request that cannot connect retries without end and never ends the turn, so the session stays green.
 - Grok sends `StopFailure` off the turn, so the hook can arrive after the turn's end is written, which shows stopped and then error, or after the next turn has started. The hook names its turn's `promptId`, and so do the agent's records in `updates.jsonl`, so a report on a turn the next one has replaced is dropped. A turn that fails before the agent writes anything has no such record: if the next turn has not written anything either when the report arrives, the next turn shows error until it writes something, and its own end still counts.
 - A run with `grok -p` gets no row, so it is not shown.

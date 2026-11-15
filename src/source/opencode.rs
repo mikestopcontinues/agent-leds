@@ -785,10 +785,6 @@ impl Source for OpenCode {
     fn behind(&self) -> bool {
         false
     }
-
-    fn due(&self) -> Option<u64> {
-        None
-    }
 }
 
 #[cfg(test)]

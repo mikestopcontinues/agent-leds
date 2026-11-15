@@ -28,9 +28,9 @@
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dbfe-861d-75c1-9570-edc65daadfe4/events.jsonl","line":{"ts":"2026-11-14T21:38:00.980Z","type":"tool_started","tool_name":"run_terminal_command"}}
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dbfe-861d-75c1-9570-edc65daadfe4/events.jsonl","line":{"ts":"2026-11-14T21:38:01.060Z","type":"phase_changed","phase":"permission_prompt"}}
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dbfe-861d-75c1-9570-edc65daadfe4/events.jsonl","line":{"ts":"2026-11-14T21:38:01.060Z","type":"permission_requested","tool_name":"run_terminal_command"}}
-{"expect":[["permission_asked","file"]]}
+{"expect":[]}
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dbfe-861d-75c1-9570-edc65daadfe4/events.jsonl","line":{"ts":"2026-11-14T21:38:13.374Z","type":"permission_resolved","tool_name":"run_terminal_command","decision":"allow","wait_ms":12314}}
-{"expect":[["answered","file"]]}
+{"expect":[]}
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dbfe-861d-75c1-9570-edc65daadfe4/events.jsonl","line":{"ts":"2026-11-14T21:38:13.374Z","type":"phase_changed","phase":"tool_execution"}}
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dbfe-861d-75c1-9570-edc65daadfe4/events.jsonl","line":{"ts":"2026-11-14T21:38:13.433Z","type":"tool_completed","tool_name":"run_terminal_command","duration_ms":24,"outcome":"success","tool_call_id":"call-8391de57-20cb-4ca2-8fcf-f418377f33f7-1"}}
 {"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dbfe-861d-75c1-9570-edc65daadfe4/events.jsonl","line":{"ts":"2026-11-14T21:38:13.433Z","type":"loop_started","loop_index":2}}

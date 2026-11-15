@@ -797,10 +797,6 @@ impl Source for Junie {
     fn behind(&self) -> bool {
         self.sessions.values().any(|session| session.behind)
     }
-
-    fn due(&self) -> Option<u64> {
-        None
-    }
 }
 
 #[cfg(test)]
