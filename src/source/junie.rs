@@ -16,7 +16,7 @@
 //! hundreds of gigabytes, as Junie writes terminal output into it, so it is
 //! only ever read from its end or from where it began after its session did.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::{CStr, OsStr};
 use std::fs;
 use std::io;
@@ -54,7 +54,7 @@ const fn file(signal: Signal, record: &'static str, cite: &'static str) -> Decla
 pub const SIGNALS: &[Declared] = &[
     file(
         Signal::Started,
-        "a sidecar in processes/ that is the newest for its pid, whose process started no later than its startedAt; or a CurrentDirectoryUpdatedEvent naming a new folder",
+        "a sidecar in processes/ that is the newest for its pid, whose process started no later than the millisecond of its startedAt; or a CurrentDirectoryUpdatedEvent naming a new folder",
         "probe-junie session_start; Irrlicht pid.go",
     ),
     file(
@@ -74,8 +74,8 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Answered,
-        "the last waiting step written again as COMPLETED or in a state other than INPUT_REQUIRED, or a UserAsyncResponseEvent or UserResponseEvent while a step waits",
-        "probe-junie permission_resolved, question_answered; Irrlicht real-terminal-approval, real-lifecycle-session",
+        "the last waiting step written again as COMPLETED or in a state other than INPUT_REQUIRED, or a UserAsyncResponseEvent, UserResponseEvent or CancelAgentEvent while a step waits",
+        "probe-junie permission_resolved, question_answered, interrupted; Irrlicht real-terminal-approval, real-lifecycle-session, parser_test.go",
     ),
     file(
         Signal::TurnEnded,
@@ -257,6 +257,99 @@ impl Record {
     fn works(&self) -> bool {
         self.block()
             .is_some_and(|(state, _)| matches!(state, Some("IN_PROGRESS" | "INPUT_REQUIRED")))
+    }
+
+    /// The record's kind, or its block's, when Junie was not seen to write it.
+    fn unknown(&self) -> Option<&str> {
+        if !KINDS.contains(&self.kind.as_str()) {
+            return Some(&self.kind);
+        }
+        let (_, block) = self.block()?;
+        (!BLOCKS.contains(&block.kind.as_str())).then_some(block.kind.as_str())
+    }
+}
+
+/// The kinds of record Junie was seen to write, in others' captures of
+/// 26.8.24 and in the parsers of Irrlicht and agentsview.
+const KINDS: &[&str] = &[
+    "AgentTaskFailedEvent",
+    "CancelAgentEvent",
+    "SessionA2uxEvent",
+    "SessionCostTrajectorySnapshotEvent",
+    "SessionTitleSetEvent",
+    "SystemMessageEvent",
+    "TaskStartedEvent",
+    "TaskState",
+    "UserAsyncResponseEvent",
+    "UserMessagesCommittedToHistory",
+    "UserMessagesDroppedFromHistory",
+    "UserMessagesFailedInHistory",
+    "UserPromptEvent",
+    "UserResponseEvent",
+];
+
+/// The kinds of block a SessionA2uxEvent was seen to wrap, from the same.
+const BLOCKS: &[&str] = &[
+    "AgentFailureEvent",
+    "AgentThoughtBlockUpdatedEvent",
+    "AskAsyncRequestUpdatedEvent",
+    "AvailablePullRequestsEvent",
+    "ChoiceRequestUpdatedEvent",
+    "ContextWindowReportEvent",
+    "CurrentDirectoryUpdatedEvent",
+    "FileChangesBlockUpdatedEvent",
+    "LlmResponseMetadataEvent",
+    "MarkdownBlockUpdatedEvent",
+    "McpBlockUpdatedEvent",
+    "ResultBlockUpdatedEvent",
+    "TerminalBlockUpdatedEvent",
+    "TipSuggestionCreatedEvent",
+    "ToolBlockUpdatedEvent",
+    "ViewFilesBlockUpdatedEvent",
+];
+
+/// What a read of a log could not make sense of: lines that are not
+/// records, and records of kinds Junie was not seen to write, by kind. A
+/// newer Junie that writes otherwise shows up here first.
+#[derive(Default)]
+struct Strange {
+    unparsed: usize,
+    kinds: BTreeMap<String, usize>,
+}
+
+impl Strange {
+    /// The record on a line, counted if it is none or of an unknown kind.
+    fn read(&mut self, line: &[u8]) -> Option<Record> {
+        let Some(record) = Record::read(line) else {
+            self.unparsed += 1;
+            return None;
+        };
+        if let Some(kind) = record.unknown() {
+            *self.kinds.entry(kind.to_owned()).or_default() += 1;
+        }
+        Some(record)
+    }
+
+    /// What `path`'s read could not make sense of, if anything.
+    fn unread(&self, path: &Path) -> Option<Unread> {
+        let mut said = Vec::new();
+        match self.unparsed {
+            0 => {}
+            1 => said.push("1 line is not a record".to_owned()),
+            n => said.push(format!("{n} lines are not records")),
+        }
+        if !self.kinds.is_empty() {
+            let kinds: Vec<String> = self
+                .kinds
+                .iter()
+                .map(|(kind, n)| format!("{kind} ({n})"))
+                .collect();
+            said.push(format!(
+                "records of kinds Junie was not seen to write: {}",
+                kinds.join(", ")
+            ));
+        }
+        (!said.is_empty()).then(|| Unread::new(path, said.join("; ")))
     }
 }
 
@@ -442,13 +535,14 @@ impl Junie {
         }
     }
 
-    /// Starts following a session its process took. When `seeding`, its log
-    /// is read back to where its last task began, and where that leaves the
-    /// session is told after its start. Otherwise the session begins idle: of
-    /// a log begun before the process took the session, as for a resume, only
-    /// what the process wrote counts; a log the process began is read from
-    /// its first line. A log that cannot be read is followed from what is
-    /// written to it next.
+    /// Starts following a session its process took. Of a log begun before
+    /// the process took the session, as for a resume, only what that process
+    /// wrote counts. When `seeding`, the log is read back to where that left
+    /// the session, which is told after its start. Otherwise the session
+    /// begins idle: a resumed log tells what the process wrote to it already,
+    /// and a log the process began is read from its first line. A log that
+    /// cannot be read is followed from what is written to it next. What a
+    /// read back could not make sense of is returned.
     fn start(
         &mut self,
         id: &str,
@@ -473,14 +567,21 @@ impl Junie {
         );
         let log = self.log(id);
         let created = created_ms(&log);
+        let since = match created {
+            Ok(created) if created < sidecar.started_at => Some(sidecar.started_at),
+            _ => None,
+        };
+        let mut read = Vec::new();
         let mut unread = None;
-        if seeding
-            && created.is_ok()
-            && let Err(error) = self.seed_log(id, &log)
-        {
-            unread = Some(Unread::new(&log, error));
-            let session = self.sessions.get_mut(id).expect("just started");
-            session.log = Tail::at_end(&log).ok();
+        if created.is_ok() && (seeding || since.is_some()) {
+            match self.read_back(id, &log, since, &mut read) {
+                Ok(strange) => unread = strange.unread(&log),
+                Err(error) => {
+                    unread = Some(Unread::new(&log, error));
+                    let session = self.sessions.get_mut(id).expect("just started");
+                    session.log = Tail::at_end(&log).ok();
+                }
+            }
         }
         let session = &self.sessions[id];
         out.push(Observation::new(
@@ -503,60 +604,49 @@ impl Junie {
                     session.turn.clone(),
                 ));
             }
-        } else if created.is_ok_and(|created| created < sidecar.started_at)
-            && let Err(error) = self.resume_log(id, &log, sidecar.started_at, out)
-        {
-            unread = Some(Unread::new(&log, error));
-            let session = self.sessions.get_mut(id).expect("just started");
-            session.log = Tail::at_end(&log).ok();
+        } else {
+            out.extend(read);
         }
         unread.map_or(Ok(()), Err)
     }
 
-    /// Opens the log of a session a process resumed, at its end, and tells
-    /// what the process wrote to it already: from the first task it began,
-    /// which was written after the process took the session at `start`.
-    fn resume_log(
+    /// Opens a session's log at its end, and tells into `out` what its tail
+    /// says: read back to where its last task began or, of a log a process
+    /// resumed after taking the session at `since`, from the first task that
+    /// process began. Returns what the read could not make sense of.
+    fn read_back(
         &mut self,
         id: &str,
         path: &Path,
-        start: u64,
+        since: Option<u64>,
         out: &mut Vec<Observation>,
-    ) -> io::Result<()> {
-        let (lines, tail) = tail::tail_back(path, |line| {
-            Record::read(line).is_some_and(|record| record.before(start))
-        })?;
-        self.sessions.get_mut(id).expect("started").log = Some(tail);
-        let records: Vec<Record> = lines
-            .iter()
-            .filter_map(|line| Record::read(line))
-            .skip_while(|record| !record.starts_turn() || record.before(start))
-            .collect();
-        for record in &records {
-            self.record(id, record, out);
-        }
-        Ok(())
-    }
-
-    /// Where the tail of a session's log leaves it: read back to where its
-    /// last task began.
-    fn seed_log(&mut self, id: &str, path: &Path) -> io::Result<()> {
+    ) -> io::Result<Strange> {
         let (lines, tail) = tail::tail_back(path, |line| {
             Record::read(line).is_some_and(|record| record.starts_turn())
         })?;
-        let records: Vec<Record> = lines.iter().filter_map(|line| Record::read(line)).collect();
+        let mut strange = Strange::default();
+        let mut records: Vec<Record> = lines.iter().filter_map(|line| strange.read(line)).collect();
+        // What came before the first task the process began is a dead
+        // process's. A task start's stamp tells whose it is; a block's does
+        // not, since a task's end writes its blocks again with their first
+        // stamps, a dead process's among them.
+        if let Some(start) = since {
+            let first = records
+                .iter()
+                .position(|record| record.starts_turn() && !record.before(start));
+            records.drain(..first.unwrap_or(records.len()));
+        }
         let session = self.sessions.get_mut(id).expect("started");
         session.log = Some(tail);
-        let mut history = Vec::new();
         // A task's work without its start: the task began further back.
         if !records.iter().any(Record::starts_turn) && records.iter().any(Record::works) {
             session.task = Some(Task::default());
-            tell(id, session, [Signal::Prompted], &mut history);
+            tell(id, session, [Signal::Prompted], out);
         }
         for record in &records {
-            self.record(id, record, &mut history);
+            self.record(id, record, out);
         }
-        Ok(())
+        Ok(strange)
     }
 
     /// Reads what was appended to a session's log, from its first line if
@@ -624,9 +714,14 @@ impl Junie {
                     task.failed = true;
                 }
             }
+            // A cancel names no step either, and ends whatever waited.
             "CancelAgentEvent" => {
                 if let Some(task) = &mut session.task {
                     task.cancelled = true;
+                }
+                if !session.waiting.is_empty() {
+                    session.waiting.clear();
+                    tell(id, session, [Signal::Answered], out);
                 }
             }
             // An answer names no step: whatever waited is answered.
@@ -1047,6 +1142,41 @@ mod tests {
         assert!(source.behind());
         source.changed(&replay.kernel, None);
         assert!(!source.behind());
+    }
+
+    #[test]
+    fn a_seed_counts_what_a_log_holds_that_junie_was_not_seen_to_write() {
+        let replay = replay("turn_ended.file");
+        let log = replay
+            .home
+            .path()
+            .join(".junie/sessions/session-260824-174155-sm5c/events.jsonl");
+        assert!(fixture::unread(&replay).is_empty());
+        let lines = [
+            r#"{"kind": "TaskPausedEvent", "timestampMs": 1787586140000}"#,
+            r#"{"timestampMs": 1787586140001}"#,
+            r#"{"kind": "SessionA2uxEvent", "event": {"state": "IN_PROGRESS", "agentEvent": {"kind": "PlanBlockUpdatedEvent"}}}"#,
+            "not json",
+            r#"{"kind": "SessionA2uxEvent", "event": {"state": "IN_PROGRESS", "agentEvent": {"kind": "PlanBlockUpdatedEvent"}}}"#,
+        ];
+        let mut file = fs::OpenOptions::new().append(true).open(&log).unwrap();
+        std::io::Write::write_all(&mut file, (lines.join("\n") + "\n").as_bytes()).unwrap();
+        let seed = replay.source().seed(&replay.kernel, &[]).unwrap();
+        let unread: Vec<(&Path, &str)> = seed
+            .unread
+            .iter()
+            .map(|unread| (unread.path.as_path(), unread.error.as_str()))
+            .collect();
+        assert_eq!(
+            unread,
+            [(
+                log.as_path(),
+                "2 lines are not records; records of kinds Junie was not seen to write: \
+                 PlanBlockUpdatedEvent (2), TaskPausedEvent (1)"
+            )]
+        );
+        // What it did make sense of still seeds the session.
+        assert_eq!(seed.observations.len(), 2);
     }
 
     #[test]

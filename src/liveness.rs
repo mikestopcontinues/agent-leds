@@ -34,7 +34,8 @@ pub enum StartCheck {
     /// and Cursor's `.running` markers.
     Second(i64),
     /// A stamp in Unix milliseconds the process wrote after it started
-    /// (Junie's `startedAt`). A later process with the same pid starts after it.
+    /// (Junie's `startedAt`), perhaps its start floored to the millisecond.
+    /// A later process with the same pid starts in a later millisecond.
     NotAfterMs(u64),
 }
 
@@ -83,7 +84,7 @@ pub fn alive(k: &dyn Kernel, liveness: &Liveness) -> bool {
         Liveness::Process { pid, start } => k.started_us(*pid).is_some_and(|us| match *start {
             StartCheck::ExactUs(expected) => us == expected,
             StartCheck::Second(second) => (us / 1_000_000) as i64 == second,
-            StartCheck::NotAfterMs(stamp) => us <= stamp * 1_000,
+            StartCheck::NotAfterMs(stamp) => us / 1_000 <= stamp,
         }),
         Liveness::Lock { path } => k
             .locked(path)
@@ -234,6 +235,11 @@ mod tests {
         assert!(alive(
             &System,
             &process(me, StartCheck::NotAfterMs(started_ms + 1))
+        ));
+        // The start floored to its millisecond, whatever microseconds follow.
+        assert!(alive(
+            &System,
+            &process(me, StartCheck::NotAfterMs(started_ms))
         ));
         assert!(!alive(
             &System,
