@@ -509,9 +509,8 @@ impl Junie {
         start: u64,
         out: &mut Vec<Observation>,
     ) -> io::Result<()> {
-        let (lines, tail) = tail::tail_back(path, |lines| {
-            let mut records = lines.iter().filter_map(|line| Record::read(line));
-            records.any(|record| record.before(start))
+        let (lines, tail) = tail::tail_back(path, |line| {
+            Record::read(line).is_some_and(|record| record.before(start))
         })?;
         self.sessions.get_mut(id).expect("started").log = Some(tail);
         let records: Vec<Record> = lines
@@ -528,9 +527,8 @@ impl Junie {
     /// Where the tail of a session's log leaves it: read back to where its
     /// last task began.
     fn seed_log(&mut self, id: &str, path: &Path) -> io::Result<()> {
-        let (lines, tail) = tail::tail_back(path, |lines| {
-            let mut records = lines.iter().filter_map(|line| Record::read(line));
-            records.any(|record| record.starts_turn())
+        let (lines, tail) = tail::tail_back(path, |line| {
+            Record::read(line).is_some_and(|record| record.starts_turn())
         })?;
         let records: Vec<Record> = lines.iter().filter_map(|line| Record::read(line)).collect();
         let session = self.sessions.get_mut(id).expect("started");

@@ -479,15 +479,14 @@ impl Grok {
         let reader = session.reader(log);
         let lines = match &mut reader.tail {
             None => {
-                let anchors = |line: &Vec<u8>| match log {
+                let anchors = |line: &[u8]| match log {
                     Log::Events => Record::read(line).is_some_and(|record| {
                         record.kind == "turn_started" || record.before(start)
                     }),
                     Log::Updates => Update::read(line)
                         .is_some_and(|update| update.is_prompt() || update.before(start)),
                 };
-                let Ok((lines, tail)) = tail::tail_back(&path, |lines| lines.iter().any(anchors))
-                else {
+                let Ok((lines, tail)) = tail::tail_back(&path, anchors) else {
                     return;
                 };
                 reader.tail = Some(tail);

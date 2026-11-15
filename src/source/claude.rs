@@ -675,9 +675,8 @@ impl Claude {
     fn seed_transcript(&mut self, id: &str, path: &Path) -> io::Result<()> {
         let start = self.sessions[id].start;
         let anchors = |record: &Record| record.is_prompt() || record.before(start);
-        let (lines, tail) = tail::tail_back(path, |lines| {
-            let mut records = lines.iter().filter_map(|line| Record::read(line));
-            records.any(|record| anchors(&record))
+        let (lines, tail) = tail::tail_back(path, |line| {
+            Record::read(line).is_some_and(|record| anchors(&record))
         })?;
         let records: Vec<Record> = lines.iter().filter_map(|line| Record::read(line)).collect();
         let session = self.sessions.get_mut(id).expect("started");

@@ -248,9 +248,8 @@ fn header(path: &Path) -> io::Result<Option<Entry>> {
 
 /// Whether a tail of a session file reaches back to a prompt, where the
 /// turn the file ends on began.
-fn holds_prompt(lines: &[Vec<u8>]) -> bool {
-    let mut entries = lines.iter().filter_map(|line| Entry::read(line));
-    entries.any(|entry| entry.is_prompt())
+fn holds_prompt(line: &[u8]) -> bool {
+    Entry::read(line).is_some_and(|entry| entry.is_prompt())
 }
 
 /// What the extension passes on, by Pi's own name for the event.

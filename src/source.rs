@@ -203,7 +203,8 @@ pub fn all(home: &Path, junie: &Path) -> Vec<Box<dyn Source>> {
 pub enum Read<'a> {
     /// Daemon start, with the hook-bound sessions saved in the queue.
     Seed(&'a [(Key, Liveness)]),
-    /// Files the watcher says changed.
+    /// Files the watcher says changed, and whatever a budgeted read left
+    /// unread, each tail read once.
     Paths(&'a [PathBuf]),
     /// Everything, because the watcher dropped events.
     All,
@@ -283,7 +284,10 @@ impl Sources {
                 }
                 let mut changed = Vec::new();
                 for (source, paths) in self.sources.iter_mut().zip(routed) {
-                    if !paths.is_empty() {
+                    // Reading everything reads the changed files too.
+                    if source.behind() {
+                        changed.extend(source.changed(kernel, None));
+                    } else if !paths.is_empty() {
                         changed.extend(source.changed(kernel, Some(&paths)));
                     }
                 }
@@ -376,6 +380,7 @@ mod tests {
         root: PathBuf,
         seen: Arc<Mutex<Seen>>,
         log: Option<Tail>,
+        behind: bool,
     }
 
     impl Source for Folder {
@@ -424,7 +429,7 @@ mod tests {
         }
 
         fn behind(&self) -> bool {
-            false
+            self.behind
         }
     }
 
@@ -466,6 +471,7 @@ mod tests {
             root: root.clone(),
             seen: seen.clone(),
             log: None,
+            behind: false,
         };
         let (sender, inputs) = mpsc::channel();
         let mut sources = Sources::start(vec![Box::new(source)], sender).unwrap();
@@ -513,6 +519,7 @@ mod tests {
             root,
             seen: Arc::new(Mutex::new(Seen::default())),
             log: None,
+            behind: false,
         });
         let seen: Vec<Arc<Mutex<Seen>>> = folders.iter().map(|f| f.seen.clone()).collect();
         let (sender, _inputs) = mpsc::channel();
@@ -528,5 +535,23 @@ mod tests {
         std::fs::create_dir(&late).unwrap();
         sources.read(Read::Roots);
         assert_eq!(rescans(), [1, 1]);
+    }
+
+    #[test]
+    fn a_source_left_behind_reads_everything_when_its_files_change() {
+        let folder = tempfile::tempdir().unwrap();
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        let source = Folder {
+            root: folder.path().to_owned(),
+            seen: seen.clone(),
+            log: None,
+            behind: true,
+        };
+        let (sender, _inputs) = mpsc::channel();
+        let mut sources = Sources::start(vec![Box::new(source)], sender).unwrap();
+        let changed = folder.path().canonicalize().unwrap().join("1.json");
+        sources.read(Read::Paths(&[changed]));
+        let seen = seen.lock().unwrap();
+        assert_eq!((seen.rescans, seen.paths.len()), (1, 0));
     }
 }

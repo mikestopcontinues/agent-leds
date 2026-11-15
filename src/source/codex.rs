@@ -523,9 +523,8 @@ impl Codex {
         let thread = self.threads.get_mut(id).expect("started");
         let start = thread.start;
         // Back to the last turn's start, or to what an earlier process wrote.
-        let read = tail::tail_back(&thread.rollout, |lines| {
-            let mut records = lines.iter().filter_map(|line| Record::read(line));
-            records.any(|record| record.starts_turn() || record.before(start))
+        let read = tail::tail_back(&thread.rollout, |line| {
+            Record::read(line).is_some_and(|record| record.starts_turn() || record.before(start))
         });
         let lines = match read {
             Ok((lines, tail)) => {

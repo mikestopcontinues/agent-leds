@@ -339,13 +339,14 @@ impl<W: World> Daemon<W> {
             files.dedup();
             let read = self.world.read(Read::Paths(&files));
             self.observe(read);
+        } else if self.world.behind() {
+            // Each tail is read once between animation steps, so what a read
+            // of files leaves unread waits for the next wake.
+            let read = self.world.read(Read::Behind);
+            self.observe(read);
         }
         for (request, reply) in requests {
             let _ = reply.send(self.handle(request));
-        }
-        if self.world.behind() {
-            let read = self.world.read(Read::Behind);
-            self.observe(read);
         }
     }
 
@@ -1160,6 +1161,19 @@ mod tests {
         assert_eq!(daemon.deadline(), daemon.world.instant);
         daemon.take(Vec::new());
         assert_eq!(daemon.world.asked, ["seed", "behind"]);
+    }
+
+    #[test]
+    fn a_wake_that_reads_files_leaves_what_is_behind_to_the_next() {
+        let mut daemon = daemon();
+        play_out(&mut daemon);
+        daemon.world.behind = true;
+        daemon.take(vec![Input::Files(vec![
+            "/Users/me/.claude/sessions/1.json".into(),
+        ])]);
+        assert_eq!(daemon.world.asked, ["seed", "paths"]);
+        daemon.take(Vec::new());
+        assert_eq!(daemon.world.asked, ["seed", "paths", "behind"]);
     }
 
     #[test]

@@ -13,8 +13,9 @@ use std::mem;
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::Path;
 
-/// The most a `Tail` reads in one call, so a burst of appends is read in
-/// slices between animation steps.
+/// The most a `Tail` reads in one call. The daemon reads each tail at most
+/// once each time it wakes, so a burst of appends is read in slices between
+/// animation steps.
 pub const READ_BUDGET: u64 = 8 << 20;
 
 /// The longest line a `Tail` hands over. The records that carry state are
@@ -147,27 +148,36 @@ impl Tail {
 }
 
 /// Reads backward from the end in windows of 256 KiB, doubling up to 16 MiB,
-/// until `anchored` accepts the window's lines (they reach back to where the
-/// state they fold into began), or the window reaches the start of the file.
-/// Drops the window's first, partial line. Returns the lines in file order and a Tail at the
+/// until the window holds a line `anchors` accepts (one where the state the
+/// lines fold into began), or reaches the start of the file. Each byte is
+/// read once, and each line offered to `anchors` once. Drops the window's
+/// first, partial line. Returns the lines in file order and a Tail at the
 /// end, which holds back a last line that is not finished.
 pub fn tail_back(
     path: &Path,
-    mut anchored: impl FnMut(&[Vec<u8>]) -> bool,
+    mut anchors: impl FnMut(&[u8]) -> bool,
 ) -> io::Result<(Vec<Vec<u8>>, Tail)> {
     let file = File::open(path)?;
     let metadata = file.metadata()?;
     let size = metadata.len();
     let mut window = FIRST_WINDOW;
+    // What is read so far, from `begin` to the end.
+    let (mut bytes, mut begin) = (Vec::new(), size);
+    // The lines at the end that were offered to `anchors` already.
+    let mut offered = 0;
     loop {
-        let begin = size.saturating_sub(window);
-        let mut bytes = vec![0; (size - begin) as usize];
-        file.read_exact_at(&mut bytes, begin)?;
+        let start = size.saturating_sub(window);
+        let mut earlier = vec![0; (begin - start) as usize];
+        file.read_exact_at(&mut earlier, start)?;
+        earlier.append(&mut bytes);
+        (bytes, begin) = (earlier, start);
         let mut tail = Tail::new(&metadata, size, begin > 0);
         let lines = tail.split(&bytes);
-        if anchored(&lines) || begin == 0 || window >= LAST_WINDOW {
+        let new = &lines[..lines.len() - offered];
+        if new.iter().any(|line| anchors(line)) || begin == 0 || window >= LAST_WINDOW {
             return Ok((lines, tail));
         }
+        offered = lines.len();
         window *= 2;
     }
 }
@@ -338,19 +348,22 @@ mod tests {
 
         // The anchor, record 1000, is 500 KB from the end: past the first
         // window and inside the second.
-        let mut windows = Vec::new();
-        let (found, mut tail) = tail_back(&path, |lines| {
-            windows.push(lines.len());
-            lines.iter().any(|line| *line == record(1000).as_bytes())
+        let mut offered = Vec::new();
+        let (found, mut tail) = tail_back(&path, |line| {
+            offered.push(line.to_vec());
+            line == record(1000).as_bytes()
         })
         .unwrap();
-        assert_eq!(windows.len(), 2);
-        assert_eq!(windows[1], found.len());
         let expected: Vec<Vec<u8>> = (1500 - found.len()..1500)
             .map(|n| record(n).into_bytes())
             .collect();
         assert_eq!(found, expected);
-        assert!(windows[0] < windows[1]);
+        // A second window, which offers no line the first did.
+        assert!(found.len() > 256);
+        let all = offered.len();
+        offered.sort();
+        offered.dedup();
+        assert_eq!(offered.len(), all);
 
         append(&path, b" now\n");
         assert_eq!(
@@ -369,7 +382,7 @@ mod tests {
             false
         })
         .unwrap();
-        assert_eq!(asked, 1);
+        assert_eq!(asked, 2);
         assert_eq!(found, [b"first".to_vec(), b"second".to_vec()]);
     }
 
