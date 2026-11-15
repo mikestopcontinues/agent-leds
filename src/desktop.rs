@@ -204,6 +204,28 @@ mod tests {
         }
     }
 
+    /// A session file the desktop app wrote, with its long and personal
+    /// fields left out: tests/fixtures/claude/looked.daemon.json, which the
+    /// fixture check names for Claude Code's Looked.
+    #[test]
+    fn the_app_s_own_session_file_says_when_it_was_opened() {
+        let sessions = Sessions::new();
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/looked.daemon.json");
+        let id = "0b62eed6-7d2b-48af-aa10-f9e4bb191b9d";
+        sessions.write(
+            &format!("local_{id}.json"),
+            &fs::read_to_string(fixture).unwrap(),
+        );
+        let mut desktop = Desktop::default();
+        assert_eq!(
+            desktop.opened(&sessions, 1794760894468),
+            HashMap::from([(id.to_owned(), 1794760894468)])
+        );
+        assert!(desktop.opened(&sessions, 1794760894469).is_empty());
+        assert_eq!(desktop.open(&sessions).as_deref(), Some(id));
+    }
+
     #[test]
     fn the_system_says_how_long_the_user_has_been_idle() {
         assert!(idle() < Duration::MAX);

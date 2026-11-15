@@ -180,7 +180,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### Looked
 
-- Claude Code, daemon, observed: the desktop app's file for the session, ~/Library/Application Support/Claude/claude-code-sessions/*.json, with a lastFocusedAt since the light took its state; or the session it names opened last while the app is in front and the keyboard or pointer was used in the last five seconds; not for a session run in a terminal, which the desktop app keeps no file for (the desktop app's session files, as desktop.rs and its tests read them)
+- Claude Code, daemon, observed: the desktop app's file for the session, ~/Library/Application Support/Claude/claude-code-sessions/*.json, with a lastFocusedAt since the light took its state; or the session it names opened last while the app is in front and the keyboard or pointer was used in the last five seconds; not for a session run in a terminal, which the desktop app keeps no file for (the desktop app's session files, as desktop.rs reads them; a desktop session's file, 2026-11-15 (looked.daemon.json))
 - OpenCode, file, observed: 2.x: the session seen idle since it last went idle, as the terminal interface writes once it shows the session while its terminal has focus; not for a 1.x session, whose rows record no viewing, or a 2.x session no terminal interface shows, as one `opencode run` or another client runs through the service (gaps oc8 (2.3.0 session.viewed))
 
 ## Moves each harness cannot make

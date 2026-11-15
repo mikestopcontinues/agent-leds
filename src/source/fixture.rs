@@ -730,13 +730,21 @@ mod tests {
     #[test]
     fn every_declared_row_is_demonstrated_by_a_fixture_of_its_evidence() {
         for harness in Harness::ALL {
-            // What the daemon reads itself, as Claude Code's desktop app, is
-            // no source's, and is tested where it is read.
-            let sourced = harness::signals(harness)
-                .iter()
-                .filter(|declared| declared.channel != Channel::Daemon);
-            for declared in sourced {
+            for declared in harness::signals(harness) {
                 let name = demonstrating(harness, declared);
+                // What the daemon reads itself, Claude Code's desktop app, is
+                // no source's: desktop.rs's tests read the app's own file.
+                if declared.channel == Channel::Daemon {
+                    assert!(
+                        harness == Harness::Claude && declared.signal == Signal::Looked,
+                        "{}: nothing demonstrates {:?} on {:?}",
+                        harness.title(),
+                        declared.signal,
+                        declared.channel
+                    );
+                    assert!(folder(harness).join(format!("{name}.json")).is_file());
+                    continue;
+                }
                 assert!(
                     names(harness).contains(&name),
                     "{}: no fixture {name} demonstrates {:?} on {:?}",
