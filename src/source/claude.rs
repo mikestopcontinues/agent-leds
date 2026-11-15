@@ -155,6 +155,7 @@ struct Record {
     /// Set on what the user sent, a slash command that runs a skill too.
     origin: Option<IgnoredAny>,
     prompt_id: Option<String>,
+    timestamp: Option<String>,
     #[serde(default)]
     is_api_error_message: bool,
     /// Set on a subagent's records, which carry the parent's session id.
@@ -271,10 +272,11 @@ impl Record {
         self.kind == "assistant" && self.is_api_error_message
     }
 
-    /// Whether the record starts or ends a turn, so a tail that holds one
-    /// says where the session stands.
-    fn anchors(&self) -> bool {
-        self.is_prompt() || self.is_interrupt() || self.end().is_some() || self.is_error()
+    /// Whether the record was written before a process that started at
+    /// `start`: an earlier process wrote it, or it was copied.
+    fn before(&self, start: i64) -> bool {
+        let written = self.timestamp.as_deref().and_then(liveness::iso_second);
+        written.is_some_and(|written| written < start)
     }
 }
 
@@ -287,6 +289,8 @@ struct Proc {
 
 /// What the files have said of one session.
 struct Session {
+    /// When the process that runs it started, as a Unix second.
+    start: i64,
     /// The session file of the process that runs it. A file another process
     /// left naming the same session, as a killed one does before a resume,
     /// says nothing of it.
@@ -466,6 +470,7 @@ impl Claude {
         self.sessions.insert(
             id.clone(),
             Session {
+                start,
                 owner: path.to_owned(),
                 status: Status::Starting,
                 transcript,
@@ -563,13 +568,19 @@ impl Claude {
         }
     }
 
-    /// What one transcript record says, read against the session file as it
-    /// is now.
     fn line(&mut self, id: &str, line: &[u8], out: &mut Vec<Observation>) {
-        let Some(record) = Record::read(line) else {
-            return;
-        };
+        if let Some(record) = Record::read(line) {
+            self.record(id, &record, out);
+        }
+    }
+
+    /// What one transcript record says, read against the session file as it
+    /// is now. Only what the session's process wrote counts.
+    fn record(&mut self, id: &str, record: &Record, out: &mut Vec<Observation>) {
         let session = self.sessions.get_mut(id).expect("tracked");
+        if record.before(session.start) {
+            return;
+        }
         // The model writing after its turn closed goes on with that turn, as
         // after a Stop hook that blocks or a compaction: what ends it is
         // still to come.
@@ -588,6 +599,10 @@ impl Claude {
                 _ => Signal::Prompted,
             };
             tell(id, session, signal, out);
+        }
+        // A turn whose start was not read is named by its other records.
+        if session.open && session.turn.is_none() {
+            session.turn = record.prompt_id.clone().map(TurnKey);
         }
         if record.is_interrupt() {
             if session.open {
@@ -657,6 +672,40 @@ impl Claude {
     }
 }
 
+impl Claude {
+    /// Where the tail of a session's transcript leaves it, read against the
+    /// session file as it is now: back to where its last turn began, or to
+    /// what an earlier process wrote.
+    fn seed_transcript(&mut self, id: &str, path: PathBuf) -> io::Result<()> {
+        let start = self.sessions[id].start;
+        let anchors = |record: &Record| record.is_prompt() || record.before(start);
+        let (lines, tail) = tail::tail_back(&path, |lines| {
+            let mut records = lines.iter().filter_map(|line| Record::read(line));
+            records.any(|record| anchors(&record))
+        })?;
+        let records: Vec<Record> = lines.iter().filter_map(|line| Record::read(line)).collect();
+        // Nothing read back starts a turn: one began further back.
+        let began_before = !records.iter().any(anchors);
+        let session = self.sessions.get_mut(id).expect("started");
+        session.transcript = Some((path, tail));
+        session.open = began_before;
+        let mut history = Vec::new();
+        for record in &records {
+            self.record(id, record, &mut history);
+        }
+        let session = self.sessions.get_mut(id).expect("started");
+        if began_before && session.open {
+            match session.status {
+                Status::Busy => tell(id, session, Signal::Prompted, &mut history),
+                Status::Waiting(_) => {}
+                // Not at work, so whatever that turn was is over.
+                Status::Idle | Status::Starting => session.open = false,
+            }
+        }
+        Ok(())
+    }
+}
+
 fn observation(id: &str, event: Event, turn: Option<TurnKey>) -> Observation {
     Observation {
         key: Key {
@@ -694,26 +743,17 @@ impl Source for Claude {
                 continue;
             };
             let id = started[0].key.id.clone();
-            // Where the transcript's tail leaves the session, read against
-            // the session file as it is now.
             if let Some(transcript) = self.find(&id) {
-                let (lines, tail) = tail::tail_back(&transcript, |lines| {
-                    lines
-                        .iter()
-                        .any(|line| Record::read(line).is_some_and(|record| record.anchors()))
-                })?;
-                let session = self.sessions.get_mut(&id).expect("just started");
-                session.transcript = Some((transcript, tail));
-                let mut history = Vec::new();
-                for line in lines {
-                    self.line(&id, &line, &mut history);
-                }
+                self.seed_transcript(&id, transcript)?;
             }
             for (id, from, to) in edges {
                 self.edge(&id, from, to, &mut Vec::new());
             }
             let turn = self.sessions[&id].turn.clone();
             let current = self.current(&id);
+            for o in &mut started {
+                o.turn = turn.clone();
+            }
             seeded.extend(started);
             seeded.extend(
                 current
@@ -841,14 +881,21 @@ mod tests {
     fn a_daemon_started_after_any_fixture_seeds_the_phases_it_reached() {
         for name in fixture::names(Harness::Claude) {
             let replay = replay(&name);
-            let seeded = fixture::seed(&replay);
-            let phases: Vec<(Key, Phase)> = seeded
-                .sessions()
-                .iter()
-                .map(|session| (session.key.clone(), session.phase))
-                .collect();
-            let replayed: Vec<(Key, Phase)> = replay.phases().into_iter().collect();
-            assert_eq!(phases, replayed, "{name}");
+            // The turn too, which a saved read mark or dismissal is kept by.
+            let where_ = |queue: &crate::queue::Queue| -> Vec<(Key, Phase, Option<TurnKey>)> {
+                let mut sessions: Vec<_> = queue
+                    .sessions()
+                    .iter()
+                    .map(|session| (session.key.clone(), session.phase, session.turn.clone()))
+                    .collect();
+                sessions.sort_by(|a, b| a.0.cmp(&b.0));
+                sessions
+            };
+            assert_eq!(
+                where_(&fixture::seed(&replay)),
+                where_(&replay.queue),
+                "{name}"
+            );
         }
     }
 

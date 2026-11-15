@@ -93,14 +93,27 @@ pub fn alive(k: &dyn Kernel, liveness: &Liveness) -> bool {
 /// The Unix second of a `ps` lstart text such as "Sat Nov 14 21:55:57 2026",
 /// read as UTC whatever the local time zone is.
 pub fn lstart(text: &str) -> Option<i64> {
-    let text = CString::new(text.trim()).ok()?;
+    utc(text.trim(), c"%a %b %e %H:%M:%S %Y", false)
+}
+
+/// The Unix second of an ISO 8601 UTC time such as
+/// "2026-11-14T21:56:09.103Z", as Claude Code stamps its records, to set
+/// beside a process's lstart.
+pub fn iso_second(text: &str) -> Option<i64> {
+    utc(text, c"%Y-%m-%dT%H:%M:%S", true)
+}
+
+/// The Unix second `text` gives in `format`, read as UTC, with whatever
+/// follows the format left unread only if `rest` allows it.
+fn utc(text: &str, format: &CStr, rest: bool) -> Option<i64> {
+    let text = CString::new(text).ok()?;
     // SAFETY: tm is plain data, for which all zeroes is a valid value.
     let mut tm: libc::tm = unsafe { mem::zeroed() };
     // SAFETY: both strings are NUL-terminated and outlive the call, and
     // strptime writes only into the tm it is given.
-    let rest = unsafe { libc::strptime(text.as_ptr(), c"%a %b %e %H:%M:%S %Y".as_ptr(), &mut tm) };
+    let unread = unsafe { libc::strptime(text.as_ptr(), format.as_ptr(), &mut tm) };
     // SAFETY: a non-null result points into `text`, at what was not parsed.
-    if rest.is_null() || unsafe { *rest } != 0 {
+    if unread.is_null() || (!rest && unsafe { *unread } != 0) {
         return None;
     }
     // SAFETY: tm was filled by strptime; timegm reads no time zone.
@@ -250,6 +263,17 @@ mod tests {
         assert_eq!(lstart("cursor-agent|Sat Nov 14 21:54:52 2026"), None);
         assert_eq!(lstart("Sat Nov 14 21:54:52 2026 extra"), None);
         assert_eq!(lstart(""), None);
+    }
+
+    #[test]
+    fn a_record_s_time_reads_as_the_second_of_a_process_start() {
+        assert_eq!(
+            iso_second("2026-11-14T21:55:57.103Z"),
+            lstart("Sat Nov 14 21:55:57 2026")
+        );
+        assert_eq!(iso_second("2026-11-01T09:05:03Z"), Some(1_793_523_903));
+        assert_eq!(iso_second("Sat Nov 14 21:55:57 2026"), None);
+        assert_eq!(iso_second(""), None);
     }
 
     #[test]

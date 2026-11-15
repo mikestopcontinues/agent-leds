@@ -5,7 +5,8 @@
 //! where it comes from, `{"cite": "probe-claude cc1", "evidence": "observed"}`,
 //! and each line after is one step:
 //!
-//! - `{"append": "<path under home>", "line": ...}` adds a line to a file;
+//! - `{"append": "<path under home>", "line": ...}` adds a line to a file,
+//!   `"times": <n>` times over if it says so;
 //! - `{"write": "<path>", "text": ...}` rewrites a file in place;
 //! - `{"delete": "<path>"}`;
 //! - `{"hook": <payload>, "ancestry": [<proc>, ...]}` delivers a hook;
@@ -72,6 +73,7 @@ enum Step {
     Append {
         append: String,
         line: Value,
+        times: Option<usize>,
     },
     Write {
         write: String,
@@ -207,13 +209,16 @@ impl Replay {
         let path = self.home.path().join(step.file().expect("a file step"));
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         match step {
-            Step::Append { line, .. } => {
+            Step::Append { line, times, .. } => {
                 let mut file = OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(&path)
                     .unwrap();
-                writeln!(file, "{}", text(line)).unwrap();
+                let line = text(line);
+                for _ in 0..times.unwrap_or(1) {
+                    writeln!(file, "{line}").unwrap();
+                }
             }
             Step::Write { text: value, .. } => fs::write(&path, text(value)).unwrap(),
             Step::Delete { .. } => fs::remove_file(&path).unwrap(),
@@ -268,6 +273,16 @@ impl Replay {
     }
 }
 
+/// What a source reads of files that changed, and then of whatever its
+/// budget left unread, as the daemon reads it.
+fn changed(source: &mut dyn Source, k: &dyn Kernel, paths: &[PathBuf]) -> Vec<Observation> {
+    let mut observations = source.changed(k, Some(paths));
+    while source.behind() {
+        observations.extend(source.changed(k, None));
+    }
+    observations
+}
+
 /// Replays a fixture, checking its expectations and the three properties.
 pub fn replay(harness: Harness, name: &str) -> Replay {
     let fixture = load(harness, name);
@@ -293,7 +308,7 @@ pub fn replay(harness: Harness, name: &str) -> Replay {
             ),
             step if step.file().is_some() => {
                 let path = replay.write(step);
-                source.changed(&replay.kernel, Some(&[path]))
+                changed(source.as_mut(), &replay.kernel, &[path])
             }
             step => {
                 replay.kernel(step);
@@ -351,14 +366,14 @@ fn coalesce(harness: Harness, name: &str, fixture: &Fixture) -> BTreeMap<Key, Ph
         if step.file().is_some() {
             pending.push(replay.write(step));
             if pending.len() == 2 {
-                let observations = source.changed(&replay.kernel, Some(&pending));
+                let observations = changed(source.as_mut(), &replay.kernel, &pending);
                 replay.take(observations, number);
                 pending.clear();
             }
             continue;
         }
         if !pending.is_empty() {
-            let observations = source.changed(&replay.kernel, Some(&pending));
+            let observations = changed(source.as_mut(), &replay.kernel, &pending);
             replay.take(observations, number);
             pending.clear();
         }
@@ -379,7 +394,7 @@ fn coalesce(harness: Harness, name: &str, fixture: &Fixture) -> BTreeMap<Key, Ph
         replay.take(observations, number);
     }
     if !pending.is_empty() {
-        let observations = source.changed(&replay.kernel, Some(&pending));
+        let observations = changed(source.as_mut(), &replay.kernel, &pending);
         replay.take(observations, fixture.steps.len());
     }
     replay.phases()

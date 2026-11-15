@@ -135,9 +135,9 @@ impl Tail {
 }
 
 /// Reads backward from the end in windows of 256 KiB, doubling up to 16 MiB,
-/// until `anchored` accepts the window's lines (the fold has seen a turn start
-/// or end), or the window reaches the start of the file. Drops the window's
-/// first, partial line. Returns the lines in file order and a Tail at the
+/// until `anchored` accepts the window's lines (they reach back to where the
+/// state they fold into began), or the window reaches the start of the file.
+/// Drops the window's first, partial line. Returns the lines in file order and a Tail at the
 /// end, which holds back a last line that is not finished.
 pub fn tail_back(
     path: &Path,
