@@ -11,6 +11,6 @@
 {"expect": [["ended", "file"]]}
 {"alive": 51000, "started_us": 4102444799000000}
 {"write": ".junie/processes/51000-session-260825-151015-19jp-5e2a7c1d9b40.json", "text": {"pid": 51000, "sessionId": "session-260825-151015-19jp", "projectPath": "/Users/me/Code/app", "startedAt": 4102444800000}}
-{"expect": [["started", "file"]], "restart": "blocked"}
+{"expect": [["started", "file"]]}
 {"append": ".junie/sessions/session-260825-151015-19jp/events.jsonl", "line": {"kind": "UserPromptEvent", "requestId": "prompt-260825-152200-r4ne", "prompt": "PROBE prompt", "presentablePrompt": "PROBE prompt", "requiresConfirmation": true, "timestampMs": 4102444810000}}
 {"expect": [["prompted", "file"]]}

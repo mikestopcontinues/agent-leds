@@ -441,13 +441,13 @@ impl Junie {
         }
     }
 
-    /// Starts following a session its process took. When `seeding`, its log
-    /// is read back to where its last task began, and where that leaves the
-    /// session is told after its start. Otherwise the session begins idle: of
-    /// a log begun before the process took the session, as for a resume, only
-    /// what the process wrote counts; a log the process began is read from
-    /// its first line. A log that cannot be read is followed from what is
-    /// written to it next.
+    /// Starts following a session its process took. Of a log begun before
+    /// the process took the session, as for a resume, only what that process
+    /// wrote counts. When `seeding`, the log is read back to where that left
+    /// the session, which is told after its start. Otherwise the session
+    /// begins idle: a resumed log tells what the process wrote to it already,
+    /// and a log the process began is read from its first line. A log that
+    /// cannot be read is followed from what is written to it next.
     fn start(
         &mut self,
         id: &str,
@@ -472,10 +472,15 @@ impl Junie {
         );
         let log = self.log(id);
         let created = created_ms(&log);
+        let since = match created {
+            Ok(created) if created < sidecar.started_at => Some(sidecar.started_at),
+            _ => None,
+        };
+        let mut read = Vec::new();
         let mut unread = None;
-        if seeding
-            && created.is_ok()
-            && let Err(error) = self.seed_log(id, &log)
+        if created.is_ok()
+            && (seeding || since.is_some())
+            && let Err(error) = self.read_back(id, &log, since, &mut read)
         {
             unread = Some(Unread::new(&log, error));
             let session = self.sessions.get_mut(id).expect("just started");
@@ -502,58 +507,50 @@ impl Junie {
                     session.turn.clone(),
                 ));
             }
-        } else if created.is_ok_and(|created| created < sidecar.started_at)
-            && let Err(error) = self.resume_log(id, &log, sidecar.started_at, out)
-        {
-            unread = Some(Unread::new(&log, error));
-            let session = self.sessions.get_mut(id).expect("just started");
-            session.log = Tail::at_end(&log).ok();
+        } else {
+            out.extend(read);
         }
         unread.map_or(Ok(()), Err)
     }
 
-    /// Opens the log of a session a process resumed, at its end, and tells
-    /// what the process wrote to it already: from the first task it began,
-    /// which was written after the process took the session at `start`.
-    fn resume_log(
+    /// Opens a session's log at its end, and tells into `out` what its tail
+    /// says: read back to where its last task began or, of a log a process
+    /// resumed after taking the session at `since`, from the first task that
+    /// process began.
+    fn read_back(
         &mut self,
         id: &str,
         path: &Path,
-        start: u64,
+        since: Option<u64>,
         out: &mut Vec<Observation>,
     ) -> io::Result<()> {
-        let (lines, tail) = tail::tail_back(path, |line| {
-            Record::read(line).is_some_and(|record| record.before(start))
-        })?;
-        self.sessions.get_mut(id).expect("started").log = Some(tail);
-        let records: Vec<Record> = lines
-            .iter()
-            .filter_map(|line| Record::read(line))
-            .skip_while(|record| !record.starts_turn() || record.before(start))
-            .collect();
-        for record in &records {
-            self.record(id, record, out);
+        let anchors = |record: &Record| match since {
+            Some(start) => record.before(start),
+            None => record.starts_turn(),
+        };
+        let (lines, tail) =
+            tail::tail_back(path, |line| Record::read(line).is_some_and(|r| anchors(&r)))?;
+        let mut records: Vec<Record> = lines.iter().filter_map(|line| Record::read(line)).collect();
+        // What came before the first task the process began is a dead
+        // process's; a block's stamp goes backwards, a task start's does not.
+        // A read that stopped short of the resume holds only the process's.
+        if let Some(start) = since
+            && records.iter().any(|record| record.before(start))
+        {
+            let first = records
+                .iter()
+                .position(|record| record.starts_turn() && !record.before(start));
+            records.drain(..first.unwrap_or(records.len()));
         }
-        Ok(())
-    }
-
-    /// Where the tail of a session's log leaves it: read back to where its
-    /// last task began.
-    fn seed_log(&mut self, id: &str, path: &Path) -> io::Result<()> {
-        let (lines, tail) = tail::tail_back(path, |line| {
-            Record::read(line).is_some_and(|record| record.starts_turn())
-        })?;
-        let records: Vec<Record> = lines.iter().filter_map(|line| Record::read(line)).collect();
         let session = self.sessions.get_mut(id).expect("started");
         session.log = Some(tail);
-        let mut history = Vec::new();
         // A task's work without its start: the task began further back.
         if !records.iter().any(Record::starts_turn) && records.iter().any(Record::works) {
             session.task = Some(Task::default());
-            tell(id, session, [Signal::Prompted], &mut history);
+            tell(id, session, [Signal::Prompted], out);
         }
         for record in &records {
-            self.record(id, record, &mut history);
+            self.record(id, record, out);
         }
         Ok(())
     }
