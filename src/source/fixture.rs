@@ -535,15 +535,79 @@ mod tests {
         }
     }
 
+    /// A sweep ends a session through the channel that started it, so Ended
+    /// must come on that channel too, or a session whose process is gone
+    /// keeps its light.
     #[test]
     fn every_harness_declares_how_its_sessions_start_and_end() {
         for harness in Harness::ALL {
-            for signal in [Signal::Started, Signal::Ended] {
+            let started: Vec<Channel> = harness::signals(harness)
+                .iter()
+                .filter(|declared| declared.signal == Signal::Started)
+                .map(|declared| declared.channel)
+                .collect();
+            assert!(
+                !started.is_empty(),
+                "{} declares no Started",
+                harness.title()
+            );
+            for channel in started {
                 assert!(
-                    harness::signals(harness)
-                        .iter()
-                        .any(|declared| declared.signal == signal),
-                    "{} declares no {signal:?}",
+                    harness::declares(harness, Signal::Ended, channel),
+                    "{} starts sessions on {channel:?} and does not end them there",
+                    harness.title()
+                );
+            }
+        }
+    }
+
+    /// The hook event a fixture's hook step stands for, as an install
+    /// registers it.
+    fn registered(harness: Harness, payload: &Value) -> Option<String> {
+        let named = |field: &str| payload.get(field)?.as_str().map(str::to_owned);
+        match harness {
+            // Grok names its events in snake case, and is registered for them
+            // in Pascal case.
+            Harness::Grok => Some(
+                named("hookEventName")?
+                    .split('_')
+                    .map(|word| word[..1].to_uppercase() + &word[1..])
+                    .collect(),
+            ),
+            _ => named("hook_event_name"),
+        }
+    }
+
+    #[test]
+    fn install_registers_exactly_the_hooks_the_source_reads() {
+        for harness in Harness::ALL {
+            let events = harness.events();
+            // Claude Code has no hooks, and OpenCode and Pi load a plugin.
+            if events.is_empty() {
+                continue;
+            }
+            let mut heard = HashSet::new();
+            for name in names(harness) {
+                let fixture = load(harness, &name);
+                let replay = replay(harness, &name);
+                for (o, step) in &replay.yielded {
+                    let Step::Hook { hook, .. } = &fixture.steps[step - 1] else {
+                        continue;
+                    };
+                    let event = registered(harness, hook).expect("a hook names its event");
+                    assert!(
+                        events.contains(&event.as_str()),
+                        "{}: {name} yields {:?} from {event}, which install does not register",
+                        harness.title(),
+                        o.event.signal()
+                    );
+                    heard.insert(event);
+                }
+            }
+            for event in events {
+                assert!(
+                    heard.contains(event),
+                    "{}: install registers {event}, and no fixture's {event} yields anything",
                     harness.title()
                 );
             }

@@ -135,7 +135,7 @@ impl Harness {
     }
 
     /// The events an install registers the hook for, and the only ones.
-    fn events(self) -> Vec<&'static str> {
+    pub fn events(self) -> Vec<&'static str> {
         match self {
             Harness::Claude => claude::HOOKS.to_vec(),
             Harness::Codex => codex::HOOKS.to_vec(),
