@@ -981,6 +981,39 @@ mod tests {
     }
 
     #[test]
+    fn a_task_whose_start_is_beyond_the_seed_s_window_seeds_working() {
+        let replay = replay("prompted.file");
+        let log = replay
+            .home
+            .path()
+            .join(".junie/sessions/session-260824-174155-sm5c/events.jsonl");
+        let line = serde_json::json!({
+            "kind": "SessionA2uxEvent",
+            "event": {
+                "state": "IN_PROGRESS",
+                "agentEvent": {
+                    "kind": "TerminalBlockUpdatedEvent",
+                    "stepId": "3e0adc81-026b-488e-a22a-2389704716ce",
+                    "status": "IN_PROGRESS",
+                    "output": "x".repeat(1 << 20)
+                }
+            },
+            "taskId": "task-260824-174337-1avu"
+        });
+        let mut file = fs::OpenOptions::new().append(true).open(&log).unwrap();
+        for _ in 0..17 {
+            std::io::Write::write_all(&mut file, format!("{line}\n").as_bytes()).unwrap();
+        }
+        let seeded = fixture::seed(&replay);
+        let session = &seeded.sessions()[0];
+        assert_eq!(session.phase, Phase::Working);
+        assert_eq!(
+            session.turn,
+            Some(TurnKey("task-260824-174337-1avu".to_owned()))
+        );
+    }
+
+    #[test]
     fn a_log_left_partly_read_stays_behind_until_it_is_read_to_its_end() {
         let replay = replay("turn_ended.file");
         let home = replay.home.path();
