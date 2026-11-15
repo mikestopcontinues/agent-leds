@@ -22,9 +22,13 @@ The front of the queue is the light furthest from you, at the right of each pict
 You need a SidePulse Pro in your Mac's SD slot and [Homebrew](https://brew.sh). Remove SidePulse's own software first: two programs writing to the card overwrite each other.
 
 ```sh
+brew tap mikestopcontinues/tap
+brew trust --formula mikestopcontinues/tap/agent-leds
 brew install mikestopcontinues/tap/agent-leds
 agent-leds install
 ```
+
+Homebrew 7 installs a formula from a tap only once you trust it, which the second line does for this formula alone.
 
 `agent-leds install` starts the service at login. The service reads each harness's own session files as they change. Where a harness writes nothing at some moment, such as while Codex waits on an approval, the install adds a hook for that moment alone: Codex, Grok and Cursor get one or two hooks, OpenCode and Pi a plugin of their own, and Claude Code and Junie nothing. It touches only the harnesses you use (`~/.claude`, `~/.codex`, `~/.grok`, `~/.cursor`, `~/.junie`, `~/.config/opencode`, `~/.pi`), leaves other hooks alone, and removes any of its own that this version no longer uses. Grok's hook makes Grok ask once to trust each folder it starts in other than the home folder, as it does while any hook is registered; `grok --trust` grants it. Run it again after you start using another harness. After `brew upgrade agent-leds` the service restarts on the new version by itself; run `agent-leds install` as well whenever `agent-leds doctor` then reports a hook or plugin from another version, since a version that hooks the harnesses differently cannot follow their sessions through the old hooks.
 
