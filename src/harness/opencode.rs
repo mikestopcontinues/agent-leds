@@ -1,6 +1,8 @@
 //! OpenCode: it runs plugins rather than hook commands, so a plugin of
 //! ours in `~/.config/opencode/plugins/` passes the events its database does
-//! not record to the hook.
+//! not record to the hook. One file serves both versions: its default export
+//! holds the `server` that OpenCode 1.x runs and the `setup` that 2.x runs.
+//! 2.x loads it again when the file changes, a background service included.
 
 use super::Plugin;
 
@@ -10,8 +12,9 @@ pub const PLUGIN: Plugin = Plugin {
 };
 
 /// The events the plugin passes on, by the name it gives each: `busy` as a
-/// session goes busy, with the pid of the OpenCode process, and three of
-/// OpenCode's own.
+/// session goes busy (1.x) or starts a run (2.x), with the pid of the
+/// OpenCode process, and three of OpenCode's own, `session.error` only from
+/// 1.x.
 pub const HOOKS: &[&str] = &[
     "busy",
     "permission.asked",
@@ -29,10 +32,36 @@ mod tests {
 
     use super::*;
 
-    /// What the plugin passes on of OpenCode's events, run by Node with a
-    /// stand-in for the binary that writes down each payload with the pid
-    /// of the process that ran it, and the pid of the plugin's process.
+    /// What the plugin passes on of OpenCode 1.x's events, which 1.x hands
+    /// to `server`'s `event`.
     fn passed(events: Value) -> (Vec<(i32, Value)>, i32) {
+        let (payloads, pid) = run(&format!(
+            "const hooks = await plugin.server({{ directory: '/Users/me/Code/app' }});\n\
+             for (const event of {events}) await hooks.event({{ event }});\n\
+             console.log(process.pid);"
+        ));
+        (payloads, serde_json::from_value(pid).unwrap())
+    }
+
+    /// What the plugin passes on of OpenCode 2.x's events, which 2.x
+    /// streams to `setup` from `event.subscribe`, and the types it asks for.
+    fn streamed(events: Value) -> (Vec<(i32, Value)>, Value) {
+        run(&format!(
+            "let types;\n\
+             const subscribe = (options) => {{\n\
+               types = options.types;\n\
+               return (async function* () {{ for (const event of {events}) yield event; }})();\n\
+             }};\n\
+             await plugin.setup({{ location: {{ directory: '/Users/me/Code/app' }}, event: {{ subscribe }} }});\n\
+             await new Promise((done) => setTimeout(done, 0));\n\
+             console.log(JSON.stringify(types));"
+        ))
+    }
+
+    /// Runs `script` in Node with the plugin imported as `plugin`, and a
+    /// stand-in for the binary that writes down each payload with the pid of
+    /// the process that ran it. Says those, and the JSON the script printed.
+    fn run(script: &str) -> (Vec<(i32, Value)>, Value) {
         let folder = tempfile::tempdir().unwrap();
         let out = folder.path().join("out");
         let exe = folder.path().join("agent-leds");
@@ -48,10 +77,7 @@ mod tests {
         let plugin = folder.path().join("agent-leds.mjs");
         fs::write(&plugin, PLUGIN.text(&exe)).unwrap();
         let run = format!(
-            "const {{ AgentLeds }} = await import({plugin});\n\
-             const hooks = await AgentLeds({{ directory: '/Users/me/Code/app' }});\n\
-             for (const event of {events}) await hooks.event({{ event }});\n\
-             console.log(process.pid);",
+            "const {{ default: plugin }} = await import({plugin});\n{script}",
             plugin = json!(plugin.to_string_lossy()),
         );
         let node = Command::new("node")
@@ -63,11 +89,7 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&node.stderr)
         );
-        let pid = String::from_utf8(node.stdout)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
+        let printed = serde_json::from_slice(&node.stdout).unwrap();
         let text = fs::read_to_string(&out).unwrap_or_default();
         let payloads = text
             .lines()
@@ -79,7 +101,7 @@ mod tests {
                 )
             })
             .collect();
-        (payloads, pid)
+        (payloads, printed)
     }
 
     fn status(session: &str, kind: &str) -> Value {
@@ -160,6 +182,62 @@ mod tests {
                 json!({ "event": "busy", "session": session, "pid": pid, "directory": "/Users/me/Code/app" }),
                 json!({ "event": "session.error", "session": session, "error": "UnknownError" }),
             ]
+        );
+    }
+
+    /// OpenCode 2.3.0's events in a run, as the probe's plugin saw them in
+    /// gaps oc8: the run's start, a permission asked and replied, the end
+    /// that the database writes, and a subagent's permission.
+    #[test]
+    fn the_plugin_passes_on_a_2x_run_s_start_with_its_own_pid_and_its_permissions() {
+        let session = "ses_e202ce171ffeQ3yI7wCxTO328I";
+        let child = "ses_e202904f4ffegKoZPcGV7jVtmD";
+        let event = |kind: &str, data: Value| json!({ "id": "evt_1dfd31eb9001", "created": 1794756517563u64, "type": kind, "data": data });
+        let (payloads, types) = streamed(json!([
+            event("session.execution.started", json!({ "sessionID": session })),
+            event(
+                "session.tool.called",
+                json!({ "sessionID": session, "assistantMessageID": "msg_1dfd31eb90019d6FKj8BuWHElr", "id": "call_01a1dfd3221e73ddbbc3c91b", "input": { "command": "sleep 2 && echo hi" }, "executed": false })
+            ),
+            event(
+                "permission.asked",
+                json!({ "id": "per_1dfd3228e001weupwRT1frii2n", "sessionID": session, "action": "shell", "resources": ["sleep 2", "echo hi"], "save": ["sleep *", "echo *"], "source": { "type": "tool", "messageID": "msg_1dfd31eb90019d6FKj8BuWHElr", "id": "call_01a1dfd3221e73ddbbc3c91b" } })
+            ),
+            event(
+                "permission.replied",
+                json!({ "sessionID": session, "requestID": "per_1dfd3228e001weupwRT1frii2n", "reply": "once" })
+            ),
+            event(
+                "session.execution.succeeded",
+                json!({ "sessionID": session })
+            ),
+            event("session.execution.started", json!({ "sessionID": child })),
+            event(
+                "permission.asked",
+                json!({ "id": "per_1dfd7541c0015QcrFxQOtvhQPa", "sessionID": child, "action": "shell", "resources": ["ls -la"] })
+            ),
+            event("models-dev.refreshed", json!({})),
+        ]));
+        let pid = payloads[0].0;
+        assert!(payloads.iter().all(|(parent, _)| *parent == pid));
+        let payloads: Vec<Value> = payloads.into_iter().map(|(_, payload)| payload).collect();
+        assert_eq!(
+            payloads,
+            [
+                json!({ "event": "busy", "session": session, "pid": pid, "directory": "/Users/me/Code/app" }),
+                json!({ "event": "permission.asked", "session": session }),
+                json!({ "event": "permission.replied", "session": session }),
+                json!({ "event": "busy", "session": child, "pid": pid, "directory": "/Users/me/Code/app" }),
+                json!({ "event": "permission.asked", "session": child }),
+            ]
+        );
+        assert_eq!(
+            types,
+            json!([
+                "session.execution.started",
+                "permission.asked",
+                "permission.replied"
+            ])
         );
     }
 

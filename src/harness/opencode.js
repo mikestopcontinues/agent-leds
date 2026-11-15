@@ -1,25 +1,27 @@
 // agent-leds: tells the agent-leds service what OpenCode's database does not
 // record. `agent-leds install` writes this file and `agent-leds uninstall`
-// removes it.
+// removes it. OpenCode 1.x runs `server`, and 2.x runs `setup`.
 import { spawnSync } from "node:child_process";
 
 const AGENT_LEDS = "__AGENT_LEDS__";
 
-export const AgentLeds = async ({ directory }) => {
+// The hook runs with no shell between, so its parent is this process: the
+// one that runs the session, a 2.x service included.
+const send = (payload) => {
+  try {
+    spawnSync(AGENT_LEDS, ["hook", "opencode"], {
+      input: JSON.stringify(payload),
+      stdio: ["pipe", "ignore", "ignore"],
+      timeout: 2000,
+    });
+  } catch {}
+};
+
+const busy = (session, directory) => send({ event: "busy", session, pid: process.pid, directory: directory ?? "" });
+
+const server = async ({ directory }) => {
   /** The sessions that are busy, so each run is told once and not at every step. */
-  const busy = new Set();
-
-  // The hook runs with no shell between, so its parent is this process.
-  const send = (payload) => {
-    try {
-      spawnSync(AGENT_LEDS, ["hook", "opencode"], {
-        input: JSON.stringify(payload),
-        stdio: ["pipe", "ignore", "ignore"],
-        timeout: 2000,
-      });
-    } catch {}
-  };
-
+  const running = new Set();
   return {
     event: async ({ event }) => {
       const p = event.properties ?? {};
@@ -27,10 +29,10 @@ export const AgentLeds = async ({ directory }) => {
       switch (event.type) {
         case "session.status":
           // A retry is the same run going on.
-          if (p.status?.type === "idle") busy.delete(p.sessionID);
-          else if (p.status?.type === "busy" && !busy.has(p.sessionID)) {
-            busy.add(p.sessionID);
-            send({ event: "busy", session: p.sessionID, pid: process.pid, directory: directory ?? "" });
+          if (p.status?.type === "idle") running.delete(p.sessionID);
+          else if (p.status?.type === "busy" && !running.has(p.sessionID)) {
+            running.add(p.sessionID);
+            busy(p.sessionID, directory);
           }
           return;
         case "permission.asked":
@@ -42,10 +44,28 @@ export const AgentLeds = async ({ directory }) => {
           // it is a file OpenCode could not read, and the run goes on, or a
           // prompt that wrote nothing; a context overflow is compacted, or
           // else written on the message.
-          if (!busy.has(p.sessionID) || p.error?.name === "ContextOverflowError") return;
+          if (!running.has(p.sessionID) || p.error?.name === "ContextOverflowError") return;
           send({ event: event.type, session: p.sessionID, error: p.error?.name ?? "Error" });
           return;
       }
     },
   };
 };
+
+// 2.x writes how each run ends; only the run's start, with this process, and
+// its permissions are not written.
+const TYPES = ["session.execution.started", "permission.asked", "permission.replied"];
+
+const setup = async (api) => {
+  const directory = api.location?.directory;
+  (async () => {
+    for await (const event of api.event.subscribe({ types: TYPES })) {
+      const session = event.data?.sessionID;
+      if (!session) continue;
+      if (event.type === "session.execution.started") busy(session, directory);
+      else if (TYPES.includes(event.type)) send({ event: event.type, session });
+    }
+  })().catch(() => {});
+};
+
+export default { id: "agent-leds", server, setup };
