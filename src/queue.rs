@@ -315,8 +315,9 @@ impl Queue {
     /// mark or a dismissal, or a hook took it there from where the daemon
     /// alone could take what the files still show, as with a dialog open,
     /// a failure only a hook tells, or a prompt after a dismissal.
-    /// A turn that ended while the daemon was down shows unread, and a
-    /// session whose process is gone is not in `fresh` at all. A session
+    /// A turn that ended while the daemon was down shows unread, a wait that
+    /// began then shows, and a session whose process is gone is not in
+    /// `fresh` at all. A session
     /// only its hooks told of, which no file can contradict, is kept as it
     /// was saved.
     pub fn restore(saved: Queue, fresh: Queue) -> Queue {
@@ -335,10 +336,25 @@ impl Queue {
             }
             // Nothing new was heard of it, so its silence goes on.
             session.seen = old.seen;
+            if old.turn.is_none() {
+                continue;
+            }
+            // A wait that began while the daemon was down shows, and lets go
+            // back to where the daemon left the session, a read mark or a
+            // dismissal included, if it could have gone there from where the
+            // wait found it.
+            if session.phase == Phase::Blocked && old.phase != Phase::Blocked {
+                if let Some(held) = session.held
+                    && fsm::reachable(held, &daemon).contains(&old.phase)
+                {
+                    session.held = Some(old.phase);
+                }
+                continue;
+            }
             let reached = fsm::reachable(session.phase, &daemon);
             let kept = reached.contains(&old.phase)
                 || old.hooked.is_some_and(|from| reached.contains(&from));
-            if old.turn.is_some() && kept {
+            if kept {
                 session.phase = old.phase;
                 session.held = old.held;
                 session.since = old.since;
@@ -907,6 +923,26 @@ mod tests {
         // What the files told is theirs to tell again.
         let restored = Queue::restore(one(&[TurnFailed], false, false), seeded(&[Prompted], "t1"));
         assert_eq!(phase(&restored, "a"), Working);
+    }
+
+    /// A wait that began after the turn while the daemon was down, as a
+    /// worker request does, shows, and lets go back to the read mark or the
+    /// dismissal the session had, as it would had the daemon been up.
+    #[test]
+    fn a_wait_that_began_while_the_daemon_was_down_shows_and_lets_go_back() {
+        for (looked, dismissed, back) in [(true, false, StoppedRead), (false, true, Idle)] {
+            let saved = one(&[TurnEnded], looked, dismissed);
+            let mut restored = Queue::restore(saved, seeded(&[TurnEnded, PermissionAsked], "t1"));
+            assert_eq!(phase(&restored, "a"), Blocked);
+            restored.apply(&signal("a", Released, Some("t1")), 200);
+            assert_eq!(phase(&restored, "a"), back);
+        }
+        // The same wait, open before the daemon stopped, keeps what it held.
+        let mut saved = one(&[TurnEnded], true, false);
+        saved.apply(&signal("a", PermissionAsked, Some("t1")), 4);
+        let mut restored = Queue::restore(saved, seeded(&[TurnEnded, PermissionAsked], "t1"));
+        restored.apply(&signal("a", Released, Some("t1")), 200);
+        assert_eq!(phase(&restored, "a"), StoppedRead);
     }
 
     #[test]
