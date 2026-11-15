@@ -46,8 +46,8 @@ use state::State;
     about = "Shows a queue of agent sessions on a SidePulse Pro, the eight-light card in a \
              MacBook's SD slot: red for an error, orange for a question, blue for stopped and \
              unread, green for working",
-    after_help = "Run `agent-leds install` once to start the service. It reads Claude Code's and \
-                  Junie's own files, and registers its hooks with Codex, Grok, Cursor, OpenCode and Pi."
+    after_help = "Run `agent-leds install` once to start the service. It reads Claude Code's, \
+                  Grok's and Junie's own files, and registers its hooks with Codex, Cursor, OpenCode and Pi."
 )]
 struct Cli {
     #[command(subcommand)]

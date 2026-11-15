@@ -24,7 +24,7 @@ What each harness's files record was established with real sessions on 2026-11-1
 | --- | --- | --- |
 | Claude Code | none | The session file and transcript record every moment. |
 | Codex | `PermissionRequest` | Nothing is written while an approval waits. |
-| Grok | `StopFailure` | A terminal API error has not been seen in its files. |
+| Grok | none | Its event log records ends, failures and cancels. |
 | Cursor | `beforeSubmitPrompt`, `stop` | Prompts given as arguments and text-only turns write nothing until the turn ends, and some interrupts write nothing at all. The prompt hook also binds the session to its process. |
 | Junie | none | Its event log records waits, ends, failures and cancels. |
 | OpenCode | plugin: busy with pid, `permission.asked`, `permission.replied`, `session.error` | A pending permission looks like a running tool; errors before a turn starts and the process are not recorded. |
@@ -49,6 +49,5 @@ What each harness's files record was established with real sessions on 2026-11-1
 These need a real session to settle, and each would change a declared signal:
 
 - Whether a permission prompt in the Claude desktop app sets the session file's `waiting` status, as the CLI's does. If not, Claude Code needs a `PermissionRequest` hook.
-- What Grok writes for a terminal API error. If its files record it, the `StopFailure` hook goes.
 - Junie's whole file format, which needs Junie installed.
 - Whether turns that retry after a failed request should show as something other than working.

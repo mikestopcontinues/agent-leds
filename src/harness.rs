@@ -227,7 +227,7 @@ impl Harness {
     /// after what its files show.
     pub fn registered(self) -> &'static str {
         match self {
-            Harness::Claude | Harness::Junie => "no hooks",
+            Harness::Claude | Harness::Grok | Harness::Junie => "no hooks",
             Harness::OpenCode | Harness::Pi => "plugin installed",
             _ => "hooks registered",
         }

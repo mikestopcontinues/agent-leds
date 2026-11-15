@@ -43,7 +43,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 | [Answered](#answered) | file | file | file | — | file* | file+hook | file*+hook |
 | [TurnEnded](#turnended) | file | file | file | file | file* | file | file |
 | [TurnEndedAsking](#turnendedasking) | file | file | file | file | file* | file | file |
-| [TurnFailed](#turnfailed) | file | file | hook* | file* | file* | file+hook* | hook |
+| [TurnFailed](#turnfailed) | file | file | file | file* | file* | file+hook* | hook |
 | [Interrupted](#interrupted) | file | file | file | file+hook* | file* | file+hook | file+hook |
 | [Backgrounded](#backgrounded) | file | file | file | — | — | — | — |
 | [BackgroundDone](#backgrounddone) | file | file | file* | — | — | — | — |
@@ -123,7 +123,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 - Claude Code, file, observed: an assistant record with isApiErrorMessage (probe-claude cc4, cc5)
 - Codex, file, observed: task_complete with an error (probe-codex runC; 119 such records in earlier rollouts)
-- Grok, hook, inferred: stop_failure whose promptId is the newest turn's in updates.jsonl, or one never seen while that turn has named none; Grok can report a turn after the next has started, and that report tells nothing; no terminal API error was produced in the probe, whose refused connections retried without end (probe-grok turn_error, runs c, k; Grok's hook docs)
+- Grok, file, observed: events.jsonl turn_ended with outcome error, written as a turn ends on an API error, before Grok runs StopFailure for it; whether a refusal or a max_output_tokens end writes it is unverified, and a request that cannot connect retries without end (gaps p2; probe-grok runs c, k)
 - Cursor, file, inferred: turn_ended with status error, from the bundle's code; not reproduced (probe-cursor turn_error (bundle 2986/7777.index.js))
 - Junie, file, inferred: TaskState after a task started, when it is FAILED, which only Irrlicht's parser reads, or the task had an AgentFailureEvent or an AgentTaskFailedEvent (probe-junie turn_error; Irrlicht real-failed-session)
 - OpenCode, file, observed: that message carrying an error, a MessageAbortedError included (probe-opencode T7–T9)

@@ -5,8 +5,7 @@
 //! record at a time: `events.jsonl` says when a turn starts, waits and ends,
 //! and `updates.jsonl` holds what the agent wrote and the subagents it left
 //! running. The events own every boundary; the updates are read to their end
-//! when a turn ends, for its final text. One hook remains, StopFailure, for a
-//! turn that ends on an API error, which no file was seen to record.
+//! when a turn ends, for its final text. No hook is needed.
 //!
 //! Every tool writes a permission request, and nothing in the request tells
 //! one Grok approves by itself from one that waits on the user, so an
@@ -47,7 +46,7 @@ const fn file(
     }
 }
 
-/// What Grok's files and its one hook tell.
+/// What Grok's files tell.
 pub const SIGNALS: &[Declared] = &[
     file(
         Signal::Started,
@@ -86,6 +85,12 @@ pub const SIGNALS: &[Declared] = &[
         "probe-grok run a",
     ),
     file(
+        Signal::TurnFailed,
+        Evidence::Observed,
+        "events.jsonl turn_ended with outcome error, written as a turn ends on an API error, before Grok runs StopFailure for it; whether a refusal or a max_output_tokens end writes it is unverified, and a request that cannot connect retries without end",
+        "gaps p2; probe-grok runs c, k",
+    ),
+    file(
         Signal::Backgrounded,
         Evidence::Observed,
         "a turn_ended while updates.jsonl has a subagent_spawned with no subagent_finished",
@@ -109,13 +114,6 @@ pub const SIGNALS: &[Declared] = &[
         "the session's row gone from active_sessions.json, as /quit leaves it even mid-turn, or its process gone",
         "probe-grok quit/crash, runs a, b, c",
     ),
-    Declared {
-        signal: Signal::TurnFailed,
-        channel: Channel::Hook,
-        evidence: Evidence::Inferred,
-        record: "stop_failure whose promptId is the newest turn's in updates.jsonl, or one never seen while that turn has named none; Grok can report a turn after the next has started, and that report tells nothing; no terminal API error was produced in the probe, whose refused connections retried without end",
-        cite: "probe-grok turn_error, runs c, k; Grok's hook docs",
-    },
 ];
 
 /// The gestures that cancel a turn for the user, as the pager names them.
@@ -191,16 +189,6 @@ struct Update {
 #[derive(Deserialize)]
 struct Params {
     update: Change,
-    #[serde(rename = "_meta")]
-    meta: Option<Meta>,
-}
-
-#[derive(Deserialize)]
-struct Meta {
-    /// The prompt whose turn wrote the record: set on what the agent writes
-    /// and the tools it calls, never on the prompt itself.
-    #[serde(rename = "promptId")]
-    prompt_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -225,22 +213,6 @@ impl Update {
     fn is_prompt(&self) -> bool {
         self.params.update.kind == "user_message_chunk"
     }
-
-    fn prompt_id(&self) -> Option<&str> {
-        self.params.meta.as_ref()?.prompt_id.as_deref()
-    }
-}
-
-/// A StopFailure hook as Grok sends it, its fields in camelCase.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Payload {
-    hook_event_name: String,
-    session_id: String,
-    /// The prompt whose turn failed.
-    prompt_id: Option<String>,
-    /// Set when a subagent's turn failed, which is no session of ours.
-    subagent_type: Option<String>,
 }
 
 /// The two logs of a session.
@@ -282,15 +254,6 @@ struct Session {
     turn: Option<TurnKey>,
     /// Whether an ask_user_question waits on the user.
     question: bool,
-    /// The turn the StopFailure hook ended, with the prompt the hook named:
-    /// that turn's end in the file says nothing more, unless a later prompt's
-    /// records show the hook was about an earlier turn.
-    failed: Option<(u64, Option<String>)>,
-    /// The prompt of the newest turn in updates.jsonl, once a record of
-    /// that turn names it.
-    prompt: Option<String>,
-    /// The prompts of the turns before it.
-    prompts: HashSet<String>,
     /// The subagents spawned and not finished.
     children: HashSet<String>,
     /// The last thing the agent wrote since the latest prompt.
@@ -303,17 +266,6 @@ impl Session {
         match log {
             Log::Events => &mut self.events,
             Log::Updates => &mut self.updates,
-        }
-    }
-
-    /// Whether a report names the newest turn: no prompt at all, the newest
-    /// one, or one never seen while the newest turn has not named its own,
-    /// as a turn that fails before the agent writes anything never does.
-    fn newest(&self, prompt: Option<&str>) -> bool {
-        match (prompt, self.prompt.as_deref()) {
-            (None, _) => true,
-            (Some(prompt), Some(newest)) => prompt == newest,
-            (Some(prompt), None) => !self.prompts.contains(prompt),
         }
     }
 }
@@ -429,9 +381,6 @@ impl Grok {
                 open: None,
                 turn: None,
                 question: false,
-                failed: None,
-                prompt: None,
-                prompts: HashSet::new(),
                 children: HashSet::new(),
                 text: String::new(),
                 told: Told::default(),
@@ -548,17 +497,16 @@ impl Grok {
                 session.open = record.turn_number;
                 session.turn = record.turn_number.map(|n| TurnKey(n.to_string()));
                 session.question = false;
-                session.failed = None;
-                tell(id, session, Channel::File, [Signal::Prompted], out);
+                tell(id, session, [Signal::Prompted], out);
             }
             _ if session.open.is_none() => {}
             "tool_started" if tool == Some(QUESTION_TOOL) => {
                 session.question = true;
-                tell(id, session, Channel::File, [Signal::QuestionAsked], out);
+                tell(id, session, [Signal::QuestionAsked], out);
             }
             "tool_completed" if tool == Some(QUESTION_TOOL) && session.question => {
                 session.question = false;
-                tell(id, session, Channel::File, [Signal::Answered], out);
+                tell(id, session, [Signal::Answered], out);
             }
             "turn_ended" => self.end(id, &record, out),
             _ => {}
@@ -576,15 +524,8 @@ impl Grok {
             }
         }
         let session = self.sessions.get_mut(id).expect("tracked");
-        let turn = session.open.take();
+        session.open = None;
         session.question = false;
-        // The StopFailure hook told how this turn ended.
-        if let (Some(turn), Some((failed, prompt))) = (turn, &session.failed)
-            && turn == *failed
-            && session.newest(prompt.as_deref())
-        {
-            return;
-        }
         let mut end = BTreeSet::from([Signal::TurnEnded]);
         match record.outcome.as_deref() {
             Some("completed") if ends_on_question(&session.text) => {
@@ -593,12 +534,15 @@ impl Grok {
             Some("cancelled") if record.by_user() => {
                 end.insert(Signal::Interrupted);
             }
+            Some("error") => {
+                end.insert(Signal::TurnFailed);
+            }
             _ => {}
         }
         if !session.children.is_empty() {
             end.insert(Signal::Backgrounded);
         }
-        tell(id, session, Channel::File, end, out);
+        tell(id, session, end, out);
     }
 
     /// What one updates record says.
@@ -610,15 +554,6 @@ impl Grok {
         if update.before(session.start) {
             return;
         }
-        // The record's prompt is the newest turn's from now on.
-        if let Some(named) = update.prompt_id()
-            && session.prompt.as_deref() != Some(named)
-        {
-            session
-                .prompts
-                .extend(session.prompt.replace(named.to_owned()));
-            session.prompts.remove(named);
-        }
         let change = update.params.update;
         let text = || {
             let text = change
@@ -628,10 +563,7 @@ impl Grok {
             text.and_then(Value::as_str).unwrap_or_default().to_owned()
         };
         match change.kind.as_str() {
-            "user_message_chunk" => {
-                session.text.clear();
-                session.prompts.extend(session.prompt.take());
-            }
+            "user_message_chunk" => session.text.clear(),
             "agent_message_chunk" => session.text = text(),
             "subagent_spawned" => {
                 session.children.extend(change.child_session_id.clone());
@@ -642,7 +574,7 @@ impl Grok {
                 }
                 // A subagent that wakes its parent starts a turn instead.
                 if session.children.is_empty() && !change.will_wake {
-                    tell(id, session, Channel::File, [Signal::BackgroundDone], out);
+                    tell(id, session, [Signal::BackgroundDone], out);
                 }
             }
             _ => {}
@@ -650,19 +582,20 @@ impl Grok {
     }
 }
 
-/// Tells what one record or the hook says.
+/// Tells what one record says.
 fn tell(
     id: &str,
     session: &mut Session,
-    channel: Channel,
     signals: impl IntoIterator<Item = Signal>,
     out: &mut Vec<Observation>,
 ) {
-    out.push(
-        session
-            .told
-            .observe(Harness::Grok, id, channel, signals, session.turn.clone()),
-    );
+    out.push(session.told.observe(
+        Harness::Grok,
+        id,
+        Channel::File,
+        signals,
+        session.turn.clone(),
+    ));
 }
 
 impl Source for Grok {
@@ -750,25 +683,8 @@ impl Source for Grok {
         out
     }
 
-    fn hook(&mut self, k: &dyn Kernel, hook: &Hook) -> Vec<Observation> {
-        let mut out = self.changed(k, None);
-        let Ok(payload) = Payload::deserialize(&hook.payload) else {
-            return out;
-        };
-        if payload.hook_event_name != "stop_failure" || payload.subagent_type.is_some() {
-            return out;
-        }
-        let id = payload.session_id;
-        let Some(session) = self.sessions.get_mut(&id) else {
-            return out;
-        };
-        // Grok may report a turn after the next one has started.
-        if !session.newest(payload.prompt_id.as_deref()) {
-            return out;
-        }
-        session.failed = session.open.map(|turn| (turn, payload.prompt_id));
-        tell(&id, session, Channel::Hook, [Signal::TurnFailed], &mut out);
-        out
+    fn hook(&mut self, _k: &dyn Kernel, _hook: &Hook) -> Vec<Observation> {
+        Vec::new()
     }
 
     fn behind(&self) -> bool {
@@ -848,14 +764,6 @@ mod tests {
                 sessions.sort_by(|a, b| a.0.cmp(&b.0));
                 sessions
             };
-            // A failure only the hook told is not in the files.
-            if replay
-                .phases()
-                .values()
-                .any(|phase| *phase == Phase::Failed)
-            {
-                continue;
-            }
             assert_eq!(
                 where_(&fixture::seed(&replay)),
                 where_(&replay.queue),
@@ -908,32 +816,8 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_end_after_stop_failure_stays_failed() {
-        let replay = replay("a_turn_end_after_stop_failure_stays_failed");
-        assert_eq!(phase(&replay), Phase::Failed);
-    }
-
-    #[test]
-    fn a_late_stop_failure_leaves_the_next_turn_working() {
-        let replay = replay("a_late_stop_failure_leaves_the_next_turn_working");
-        let told = told(&replay);
-        assert!(
-            told.iter()
-                .all(|signals| !signals.contains(&Signal::TurnFailed)),
-            "{told:?}"
-        );
-        assert_eq!(phase(&replay), Phase::Stopped);
-    }
-
-    #[test]
-    fn a_late_stop_failure_does_not_swallow_the_next_turn_s_end() {
-        let replay = replay("a_late_stop_failure_does_not_swallow_the_next_turn_s_end");
-        assert_eq!(phase(&replay), Phase::Stopped);
-    }
-
-    #[test]
-    fn a_stop_failure_after_its_turn_ended_fails_it() {
-        let replay = replay("a_stop_failure_after_its_turn_ended_fails_it");
+    fn a_turn_that_ends_on_an_api_error_fails() {
+        let replay = replay("turn_failed.file");
         assert_eq!(phase(&replay), Phase::Failed);
     }
 
