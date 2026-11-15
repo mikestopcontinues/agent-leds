@@ -210,7 +210,8 @@ pub enum Read<'a> {
     Hook(&'a Hook),
     /// Whatever a budgeted read left unread.
     Behind,
-    /// Roots that have appeared since they were last looked for.
+    /// Roots that have appeared since they were last looked for, and then
+    /// everything, as for `All`, if one has.
     Roots,
 }
 
@@ -310,13 +311,10 @@ impl Sources {
                 .filter(|source| source.behind())
                 .flat_map(|source| source.changed(kernel, None))
                 .collect(),
-            Read::Roots => {
-                let mut found = Vec::new();
-                for index in self.watch() {
-                    found.extend(self.sources[index].changed(&self.kernel, None));
-                }
-                found
-            }
+            // Watching a new root restarts the watcher's stream for every
+            // root, which drops what changed under any of them meanwhile.
+            Read::Roots if self.watch() => self.read(Read::All),
+            Read::Roots => Vec::new(),
         }
     }
 
@@ -326,9 +324,9 @@ impl Sources {
     }
 
     /// Starts watching each root that exists and is not watched yet, and
-    /// says which sources gained one.
-    fn watch(&mut self) -> Vec<usize> {
-        let mut gained = Vec::new();
+    /// says whether any was.
+    fn watch(&mut self) -> bool {
+        let mut gained = false;
         for (index, source) in self.sources.iter().enumerate() {
             for root in source.roots() {
                 if self.watched.iter().any(|(_, watched, _)| *watched == root) {
@@ -342,9 +340,7 @@ impl Sources {
                     continue;
                 }
                 self.watched.push((canonical, root, index));
-                if !gained.contains(&index) {
-                    gained.push(index);
-                }
+                gained = true;
             }
         }
         gained
@@ -371,6 +367,8 @@ mod tests {
         paths: Vec<PathBuf>,
         texts: HashMap<PathBuf, String>,
         lines: usize,
+        /// How often it was told to read everything.
+        rescans: usize,
     }
 
     /// A source of one folder that reads whatever it is told changed.
@@ -399,6 +397,7 @@ mod tests {
 
         fn changed(&mut self, _k: &dyn Kernel, paths: Option<&[PathBuf]>) -> Vec<Observation> {
             let mut seen = self.seen.lock().unwrap();
+            seen.rescans += usize::from(paths.is_none());
             for path in paths.unwrap_or_default() {
                 seen.paths.push(path.clone());
                 if path
@@ -503,5 +502,31 @@ mod tests {
         }
         drop(file);
         assert!(until(&mut sources, &inputs, &seen, |seen| seen.lines == 200));
+    }
+
+    #[test]
+    fn a_root_that_appears_has_every_source_read_again() {
+        let folder = tempfile::tempdir().unwrap();
+        let (early, late) = (folder.path().join("early"), folder.path().join("late"));
+        std::fs::create_dir(&early).unwrap();
+        let folders = [early, late.clone()].map(|root| Folder {
+            root,
+            seen: Arc::new(Mutex::new(Seen::default())),
+            log: None,
+        });
+        let seen: Vec<Arc<Mutex<Seen>>> = folders.iter().map(|f| f.seen.clone()).collect();
+        let (sender, _inputs) = mpsc::channel();
+        let boxed = folders.map(|f| Box::new(f) as Box<dyn Source>);
+        let mut sources = Sources::start(boxed.into(), sender).unwrap();
+        let rescans = || {
+            seen.iter()
+                .map(|s| s.lock().unwrap().rescans)
+                .collect::<Vec<_>>()
+        };
+        sources.read(Read::Roots);
+        assert_eq!(rescans(), [0, 0]);
+        std::fs::create_dir(&late).unwrap();
+        sources.read(Read::Roots);
+        assert_eq!(rescans(), [1, 1]);
     }
 }
