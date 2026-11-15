@@ -101,7 +101,7 @@ pub const SIGNALS: &[Declared] = &[
         Signal::Ended,
         Channel::File,
         Evidence::Observed,
-        "the .running marker of the process the chat is bound to deleted, as a quit does; or the chat's store.db-wal, once seen, deleted while the process runs on, as /new and resuming another chat do",
+        "the .running marker of the process the chat is bound to deleted, as a quit does; or the chat's store.db-wal, once seen or once the daemon starts to find store.db made, gone while the process runs on, as /new and resuming another chat leave it",
         "probe-cursor runs A, C, D, G, I; gaps cursor pty and /new runs",
     ),
     Declared::new(
@@ -113,8 +113,11 @@ pub const SIGNALS: &[Declared] = &[
     ),
 ];
 
-/// The write-ahead log of a chat's store, `store.db`, which SQLite keeps
-/// while a connection holds the store open.
+/// A chat's store.
+const DB: &str = "store.db";
+
+/// The write-ahead log of a chat's store, which SQLite keeps while a
+/// connection holds the store open.
 const WAL: &str = "store.db-wal";
 
 /// A hook payload, with the fields the daemon reads.
@@ -293,7 +296,8 @@ struct Session {
     taken: Option<Vec<u8>>,
     level: Option<Level>,
     told: Told,
-    /// Whether the chat's store has been seen held open.
+    /// Whether the process has held the chat's store open: seen so, or made
+    /// before the daemon started.
     held: bool,
 }
 
@@ -448,7 +452,8 @@ impl Cursor {
     /// holds the store of the chat it is on open from the chat's first
     /// prompt, and SQLite deletes the store's write-ahead log when its last
     /// connection closes. A log not seen yet says nothing: the prompt's hook
-    /// comes before the store is made.
+    /// comes before the store is made. A store made before the daemon
+    /// started was held, so its log gone says so too.
     fn let_go(&mut self, id: &str, out: &mut Vec<Observation>) {
         if !self.sessions.contains_key(id) {
             return;
@@ -642,8 +647,9 @@ impl Source for Cursor {
     }
 
     /// Each chat a hook bound before the daemon started, whose process still
-    /// runs, as its transcript leaves it. A chat no hook bound names no
-    /// process, so it shows from its next prompt.
+    /// runs and still holds the chat's store, if the store was made, as its
+    /// transcript leaves it. A chat no hook bound names no process, so it
+    /// shows from its next prompt.
     fn seed(&mut self, k: &dyn Kernel, bound: &[(String, Liveness)]) -> Result<Seed> {
         let mut seeded = Vec::new();
         let mut unread = Vec::new();
@@ -661,13 +667,20 @@ impl Source for Cursor {
             let Some(marker) = self.marker(pid, start) else {
                 continue;
             };
-            self.sessions
-                .insert(id.clone(), Session::new(pid, start, marker));
+            let mut session = Session::new(pid, start, marker);
+            // The process made the store at the chat's first prompt, or
+            // opened it on resuming the chat, before the prompt.
+            session.held = self.store(id).is_some_and(|store| store.join(DB).is_file());
+            self.sessions.insert(id.clone(), session);
+            let mut ended = Vec::new();
+            self.let_go(id, &mut ended);
+            if !ended.is_empty() {
+                continue;
+            }
             // The chat is still followed, from its next read.
             if let Err(error) = self.read(id, &mut Vec::new()) {
                 unread.push(error);
             }
-            self.let_go(id, &mut Vec::new());
             let turn = self.sessions[id].turn();
             let start = Start {
                 cwd: self.folder(id),
@@ -990,6 +1003,19 @@ mod tests {
             .map(|(o, _)| o.channel)
             .collect();
         assert_eq!(ended, [Channel::File]);
+    }
+
+    #[test]
+    fn a_chat_left_while_the_daemon_was_stopped_is_not_followed() {
+        let replay = replay("a_chat_whose_store_is_held");
+        assert_eq!(fixture::restart(&replay).sessions().len(), 1);
+        // /new while the daemon was stopped: the store stays, its log goes.
+        let store = replay.home.path().join(
+            ".cursor/chats/8c06ea56610da84475132a9aaefbb90e/01f0f07f-a15b-4a43-a037-ec9e03b971b0",
+        );
+        fs::remove_file(store.join(WAL)).unwrap();
+        assert!(store.join(DB).is_file());
+        assert!(fixture::restart(&replay).sessions().is_empty());
     }
 
     #[test]
