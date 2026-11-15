@@ -56,13 +56,14 @@ A Codex subagent runs no hooks. The session that starts one reports its `spawn_a
 | `turn_ended` completed, whose last message's last line ends in a question mark | question, as a weak signal |
 | `turn_ended` while the updates hold a subagent spawned and not finished | working, in the background |
 | `turn_ended` otherwise, including a cancel Grok made itself such as `max_turns` | stopped |
-| The `StopFailure` hook | error |
+| The `StopFailure` hook, for the newest turn | error |
 | `turn_ended` cancelled by Ctrl-C, the stop button or the dashboard, or by rejecting or cancelling a permission | removed |
 | The row gone from `active_sessions.json`, as `/quit` leaves it even mid-turn, or its process gone | removed |
 
 Every tool, read-only ones too, writes a permission request, and Grok writes each request and its answer as separate lines. One Grok approves by itself is answered within 7 ms; one the user answers waits seconds. So a request counts only once it has gone 250 ms unanswered, and the light turns to question that much later. The question tool's own approval is never a wait. A row left by a process that was killed stays in the registry until another session starts, so a row counts only while its pid runs with the start it records. A subagent runs in a session folder of its own, beside its parent's, under an id the registry never lists, so it is never followed; the parent shows its work. The files are undocumented; the fixtures in `tests/fixtures/grok/`, recorded from Grok 1.0.77, pin what the daemon expects of them. The gaps:
 
 - A turn that fails is known only from the hook, so a daemon started after it shows what the files say: working, or stopped once the turn's end is written. A request that cannot connect retries without end and never ends the turn, so the session stays green.
+- Grok sends `StopFailure` off the turn, so the hook can arrive after the turn's end is written, which shows stopped and then error, or after the next turn has started. The hook names its turn's `promptId`, and so do the agent's records in `updates.jsonl`, so a report on a turn the next one has replaced is dropped. A turn that fails before the agent writes anything has no such record: if the next turn has not written anything either when the report arrives, the next turn shows error until it writes something, and its own end still counts.
 - A run with `grok -p` gets no row, so it is not shown.
 - A subagent that finishes after its parent's turn without waking it should show the session as stopped. That was never seen: the one that finished after its turn woke its parent, which started a turn, and the ones that did not wake it finished inside the turn.
 - Plan approval, the leader process (`use_leader`) and several windows on one session have not been tried.

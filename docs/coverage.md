@@ -111,7 +111,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 ### TurnFailed
 
 - Claude Code, file, observed: an assistant record with isApiErrorMessage (probe-claude cc4, cc5)
-- Grok, hook, inferred: stop_failure; no terminal API error was produced in the probe, whose refused connections retried without end (probe-grok turn_error, runs c, k; Grok's hook docs)
+- Grok, hook, inferred: stop_failure whose promptId is the newest turn's in updates.jsonl, or one never seen while that turn has named none; Grok can report a turn after the next has started, and that report tells nothing; no terminal API error was produced in the probe, whose refused connections retried without end (probe-grok turn_error, runs c, k; Grok's hook docs)
 - Cursor, hook, inferred: stop with status error; not reproduced in the probe (0.5.0 hooks, probe-cursor runs A–I)
 - Junie, hook, inferred: StopFailure (0.5.0 hooks; Junie was not installed for the probe)
 - OpenCode, hook, observed: session.idle after an error (0.5.0 plugin, probe-opencode T2–T17)
