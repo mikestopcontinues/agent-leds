@@ -73,8 +73,8 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Answered,
-        "the last waiting step written again as COMPLETED or in a state other than INPUT_REQUIRED, or a UserAsyncResponseEvent or UserResponseEvent while a step waits",
-        "probe-junie permission_resolved, question_answered; Irrlicht real-terminal-approval, real-lifecycle-session",
+        "the last waiting step written again as COMPLETED or in a state other than INPUT_REQUIRED, or a UserAsyncResponseEvent, UserResponseEvent or CancelAgentEvent while a step waits",
+        "probe-junie permission_resolved, question_answered, interrupted; Irrlicht real-terminal-approval, real-lifecycle-session, parser_test.go",
     ),
     file(
         Signal::TurnEnded,
@@ -623,9 +623,14 @@ impl Junie {
                     task.failed = true;
                 }
             }
+            // A cancel names no step either, and ends whatever waited.
             "CancelAgentEvent" => {
                 if let Some(task) = &mut session.task {
                     task.cancelled = true;
+                }
+                if !session.waiting.is_empty() {
+                    session.waiting.clear();
+                    tell(id, session, [Signal::Answered], out);
                 }
             }
             // An answer names no step: whatever waited is answered.
