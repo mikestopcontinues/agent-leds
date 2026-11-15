@@ -125,15 +125,18 @@ impl Harness {
     fn event(self, payload: &Value) -> Option<Event> {
         match self {
             // Read by sources of their own.
-            Harness::Claude | Harness::Codex | Harness::Grok | Harness::Cursor | Harness::Junie => {
-                None
-            }
-            Harness::OpenCode => opencode::event(payload),
+            Harness::Claude
+            | Harness::Codex
+            | Harness::Grok
+            | Harness::Cursor
+            | Harness::Junie
+            | Harness::OpenCode => None,
             Harness::Pi => pi::event(payload),
         }
     }
 
-    /// The events an install registers the hook for, and the only ones.
+    /// The events an install registers the hook for, and the only ones. For
+    /// OpenCode, the events its plugin passes on, by the names it gives them.
     pub fn events(self) -> Vec<&'static str> {
         match self {
             Harness::Claude => claude::HOOKS.to_vec(),
@@ -141,8 +144,9 @@ impl Harness {
             Harness::Grok => grok::HOOKS.to_vec(),
             Harness::Cursor => cursor::HOOKS.to_vec(),
             Harness::Junie => junie::HOOKS.to_vec(),
-            // These load a plugin of ours, which `check` looks at instead.
-            Harness::OpenCode | Harness::Pi => Vec::new(),
+            Harness::OpenCode => opencode::HOOKS.to_vec(),
+            // This loads a plugin of ours, which `check` looks at instead.
+            Harness::Pi => Vec::new(),
         }
     }
 
@@ -293,7 +297,7 @@ pub fn signals(harness: Harness) -> &'static [Declared] {
         Harness::Grok => source::grok::SIGNALS,
         Harness::Cursor => source::cursor::SIGNALS,
         Harness::Junie => source::junie::SIGNALS,
-        Harness::OpenCode => opencode::SIGNALS,
+        Harness::OpenCode => source::opencode::SIGNALS,
         Harness::Pi => pi::SIGNALS,
     }
 }

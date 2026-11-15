@@ -11,6 +11,10 @@
 //!   once;
 //! - `{"write": "<path>", "text": ...}` rewrites a file in place;
 //! - `{"delete": "<path>"}`;
+//! - `{"sql": "<path>", "run": "<statements>"}` runs SQL on a database in
+//!   WAL mode, as another process committing to it, and `"from": "<file>"`
+//!   in place of `run` runs a file in the harness's fixture folder, such as
+//!   the schema of the harness's database;
 //! - `{"hook": <payload>, "ancestry": [<proc>, ...]}` delivers a hook;
 //! - `{"lock": "<path>", "at": "<ISO 8601 UTC time>"}` is a process opening
 //!   a file, creating it if it is not there, and holding a lock on it: the
@@ -104,6 +108,11 @@ enum Step {
     Delete {
         delete: String,
     },
+    Sql {
+        sql: String,
+        run: Option<String>,
+        from: Option<String>,
+    },
     Hook {
         hook: Value,
         #[serde(default)]
@@ -156,7 +165,8 @@ impl Step {
             Step::Append { append: path, .. }
             | Step::Write { write: path, .. }
             | Step::Delete { delete: path }
-            | Step::Lock { lock: path, .. } => Some(path),
+            | Step::Lock { lock: path, .. }
+            | Step::Sql { sql: path, .. } => Some(path),
             _ => None,
         }
     }
@@ -280,6 +290,18 @@ impl Replay {
                 });
                 file.set_modified(at).unwrap();
                 self.kernel.locks.insert(path.clone());
+            }
+            Step::Sql { run, from, .. } => {
+                let statements = match (run, from) {
+                    (Some(run), None) => run.clone(),
+                    (None, Some(from)) => fs::read_to_string(folder(self.harness).join(from))
+                        .unwrap_or_else(|e| panic!("{}: {from}: {e}", self.name)),
+                    _ => panic!("{}: a sql step has run or from, not both", self.name),
+                };
+                let db = rusqlite::Connection::open(&path).unwrap();
+                db.pragma_update(None, "journal_mode", "wal").unwrap();
+                db.execute_batch(&statements)
+                    .unwrap_or_else(|e| panic!("{}: {e}: {statements}", self.name));
             }
             _ => unreachable!(),
         }
@@ -668,6 +690,8 @@ mod tests {
                     .map(|word| word[..1].to_uppercase() + &word[1..])
                     .collect(),
             ),
+            // OpenCode's plugin names the event it passes on.
+            Harness::OpenCode => named("event"),
             _ => named("hook_event_name"),
         }
     }
@@ -676,7 +700,7 @@ mod tests {
     fn install_registers_exactly_the_hooks_the_source_reads() {
         for harness in Harness::ALL {
             let events = harness.events();
-            // Claude Code has no hooks, and OpenCode and Pi load a plugin.
+            // Claude Code has no hooks, and Pi loads a plugin.
             if events.is_empty() {
                 continue;
             }

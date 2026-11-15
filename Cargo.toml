@@ -20,6 +20,7 @@ notify = { version = "8.2.2", default-features = false, features = ["macos_fseve
 objc2-core-foundation = "0.3.2"
 objc2-disk-arbitration = "0.3.2"
 plist = "1.10.3"
+rusqlite = "0.43.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 shlex = "2.0.1"

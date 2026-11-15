@@ -25,16 +25,20 @@ impl Interim {
 }
 
 /// Which of the hook's ancestors runs the session, until the harness's own
-/// files name it: the parent for OpenCode and Pi, whose plugins run the hook
-/// themselves.
+/// files name it: the parent for Pi, whose extension runs the hook itself.
 fn process(harness: Harness, ancestry: &[Proc]) -> Option<Liveness> {
     let exact = |proc: &Proc| Liveness::Process {
         pid: proc.pid,
         start: StartCheck::ExactUs(proc.started_us),
     };
     match harness {
-        Harness::OpenCode | Harness::Pi => ancestry.first().map(exact),
-        Harness::Claude | Harness::Codex | Harness::Grok | Harness::Cursor | Harness::Junie => None,
+        Harness::Pi => ancestry.first().map(exact),
+        Harness::Claude
+        | Harness::Codex
+        | Harness::Grok
+        | Harness::Cursor
+        | Harness::Junie
+        | Harness::OpenCode => None,
     }
 }
 
@@ -115,9 +119,7 @@ impl Source for Interim {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fsm::Phase;
     use crate::liveness::System;
-    use crate::source::fixture;
 
     #[test]
     fn a_daemon_starting_again_starts_each_hook_bound_session_still_running() {
@@ -140,15 +142,5 @@ mod tests {
             ("a", Channel::Hook, true)
         );
         assert!(matches!(&o.event, Event::Started(start) if start.liveness == running));
-    }
-
-    #[test]
-    fn a_subagent_at_work_keeps_its_parent_asking() {
-        let replay = fixture::replay(
-            Harness::OpenCode,
-            "a_subagent_at_work_keeps_its_parent_asking",
-        );
-        let phases: Vec<Phase> = replay.phases().into_values().collect();
-        assert_eq!(phases, [Phase::Blocked]);
     }
 }

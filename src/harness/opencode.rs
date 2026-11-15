@@ -1,201 +1,179 @@
 //! OpenCode: it runs plugins rather than hook commands, so a plugin of
-//! ours in `~/.config/opencode/plugins/` passes its events to the hook.
+//! ours in `~/.config/opencode/plugins/` passes the events its database does
+//! not record to the hook.
 
-use serde::Deserialize;
-use serde_json::Value;
-
-use super::{Event, Hook, Plugin, ends_on_question, hooked, or_empty};
-use crate::coverage::{Declared, Evidence};
-use crate::fsm::Signal;
+use super::Plugin;
 
 pub const PLUGIN: Plugin = Plugin {
     path: ".config/opencode/plugins/agent-leds.js",
     source: include_str!("opencode.js"),
 };
 
-/// What OpenCode's hooks tell, until its own files are read.
-pub const SIGNALS: &[Declared] = &[
-    hooked(
-        Signal::Started,
-        Evidence::Observed,
-        "any event the plugin passes on, from the OpenCode process that runs the hook",
-        "0.5.0 plugin, probe-opencode T2–T17",
-    ),
-    hooked(
-        Signal::Prompted,
-        Evidence::Observed,
-        "session.status going busy, permission.replied, question.replied or question.rejected",
-        "0.5.0 plugin, probe-opencode T2–T17",
-    ),
-    hooked(
-        Signal::PermissionAsked,
-        Evidence::Observed,
-        "permission.asked",
-        "0.5.0 plugin, probe-opencode T2–T17",
-    ),
-    hooked(
-        Signal::QuestionAsked,
-        Evidence::Observed,
-        "question.asked",
-        "0.5.0 plugin, probe-opencode T2–T17",
-    ),
-    hooked(
-        Signal::TurnEnded,
-        Evidence::Observed,
-        "session.idle, however the run ended",
-        "0.5.0 plugin, probe-opencode T2–T17",
-    ),
-    hooked(
-        Signal::TurnEndedAsking,
-        Evidence::Observed,
-        "session.idle whose last assistant message asks",
-        "0.5.0 plugin, probe-opencode T2–T17",
-    ),
-    hooked(
-        Signal::TurnFailed,
-        Evidence::Observed,
-        "session.idle after an error",
-        "0.5.0 plugin, probe-opencode T2–T17",
-    ),
-    hooked(
-        Signal::Interrupted,
-        Evidence::Observed,
-        "session.idle after MessageAbortedError",
-        "0.5.0 plugin, probe-opencode T2–T17",
-    ),
-    hooked(
-        Signal::Backgrounded,
-        Evidence::Observed,
-        "any event of a subagent's session, put to its parent",
-        "0.5.0 plugin, probe-opencode T2–T17",
-    ),
-    hooked(
-        Signal::Ended,
-        Evidence::Observed,
-        "session.deleted, or the OpenCode process gone",
-        "0.5.0 plugin, probe-opencode T2–T17",
-    ),
+/// The events the plugin passes on, by the name it gives each: `busy` as a
+/// session goes busy, with the pid of the OpenCode process, and three of
+/// OpenCode's own.
+pub const HOOKS: &[&str] = &[
+    "busy",
+    "permission.asked",
+    "permission.replied",
+    "session.error",
 ];
-
-/// An event as the plugin passes it on: OpenCode's own name for it, and
-/// the session it belongs to. A subagent's event names the session that
-/// started the subagent.
-#[derive(Deserialize)]
-struct Payload {
-    event: String,
-    session: String,
-    #[serde(default, deserialize_with = "or_empty")]
-    directory: String,
-    #[serde(default)]
-    subagent: bool,
-    /// The name of the error the run ended on, at `session.idle`.
-    error: Option<String>,
-    /// The text of the last assistant message, at `session.idle`.
-    #[serde(default, deserialize_with = "or_empty")]
-    message: String,
-}
-
-pub fn event(payload: &Value) -> Option<Event> {
-    let payload = Payload::deserialize(payload).ok()?;
-    let hook = match payload.event.as_str() {
-        // The plugin reports a session going busy once per run.
-        "session.busy" => Hook::UserPromptSubmit,
-        "permission.asked" => Hook::PermissionRequest,
-        "question.asked" => Hook::Elicitation,
-        "permission.replied" | "question.replied" | "question.rejected" => Hook::ElicitationResult,
-        // A run ends idle however it ended; the error says how.
-        "session.idle" => Hook::Stop,
-        "session.deleted" => Hook::SessionEnd,
-        _ => return None,
-    };
-    Some(Event {
-        hook,
-        asks: hook == Hook::Stop && ends_on_question(&payload.message),
-        // The user stopped the run, which OpenCode tells as an error too.
-        interrupted: hook == Hook::Stop && payload.error.as_deref() == Some("MessageAbortedError"),
-        failed: hook == Hook::Stop && payload.error.is_some(),
-        session: payload.session,
-        cwd: payload.directory,
-        subagent: payload.subagent,
-    })
-}
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
 
-    use serde_json::json;
+    use serde_json::{Value, json};
 
-    use super::super::tests::signals;
-    use super::super::{Harness, interim};
     use super::*;
-    use crate::fsm::Signal;
 
-    fn event(name: &str, extra: Value) -> Option<Vec<Signal>> {
-        let mut event = json!({ "event": name, "session": "ses_1", "directory": "/Users/me/Code/app", "subagent": false });
-        event
-            .as_object_mut()
+    /// What the plugin passes on of OpenCode's events, run by Node with a
+    /// stand-in for the binary that writes down each payload with the pid
+    /// of the process that ran it, and the pid of the plugin's process.
+    fn passed(events: Value) -> (Vec<(i32, Value)>, i32) {
+        let folder = tempfile::tempdir().unwrap();
+        let out = folder.path().join("out");
+        let exe = folder.path().join("agent-leds");
+        fs::write(
+            &exe,
+            format!(
+                "#!/bin/sh\n[ \"$1 $2\" = 'hook opencode' ] || exit 1\nprintf '%s ' \"$PPID\" >> '{}'\ncat >> '{0}'\necho >> '{0}'\n",
+                out.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        let plugin = folder.path().join("agent-leds.mjs");
+        fs::write(&plugin, PLUGIN.text(&exe)).unwrap();
+        let run = format!(
+            "const {{ AgentLeds }} = await import({plugin});\n\
+             const hooks = await AgentLeds({{ directory: '/Users/me/Code/app' }});\n\
+             for (const event of {events}) await hooks.event({{ event }});\n\
+             console.log(process.pid);",
+            plugin = json!(plugin.to_string_lossy()),
+        );
+        let node = Command::new("node")
+            .args(["--input-type=module", "-e", &run])
+            .output()
+            .expect("node runs the plugin");
+        assert!(
+            node.status.success(),
+            "{}",
+            String::from_utf8_lossy(&node.stderr)
+        );
+        let pid = String::from_utf8(node.stdout)
             .unwrap()
-            .extend(extra.as_object().unwrap().clone());
-        signals(Harness::OpenCode, event)
+            .trim()
+            .parse()
+            .unwrap();
+        let text = fs::read_to_string(&out).unwrap_or_default();
+        let payloads = text
+            .lines()
+            .map(|line| {
+                let (parent, payload) = line.split_once(' ').unwrap();
+                (
+                    parent.parse().unwrap(),
+                    serde_json::from_str(payload).unwrap(),
+                )
+            })
+            .collect();
+        (payloads, pid)
+    }
+
+    fn status(session: &str, kind: &str) -> Value {
+        json!({ "type": "session.status", "properties": { "sessionID": session, "status": { "type": kind } } })
+    }
+
+    /// OpenCode's events in a run, as the probe saw them on the event stream:
+    /// busy twice at each step, a permission, an abort.
+    #[test]
+    fn the_plugin_passes_on_a_run_once_with_its_own_pid_and_what_the_database_does_not_record() {
+        let session = "ses_e23f20dc0ffe0K5UEiYZ4lxHfx";
+        let (payloads, pid) = passed(json!([
+            status(session, "busy"),
+            status(session, "busy"),
+            { "type": "message.updated", "properties": { "info": { "id": "msg_1", "sessionID": session, "role": "assistant" } } },
+            { "type": "permission.asked", "properties": { "id": "per_1dc10dc8f001i7QPGQfw1Ith8O", "sessionID": session, "permission": "bash", "patterns": ["sleep 30"] } },
+            { "type": "permission.replied", "properties": { "sessionID": session, "requestID": "per_1dc10dc8f001i7QPGQfw1Ith8O", "reply": "once" } },
+            status(session, "busy"),
+            { "type": "session.error", "properties": { "sessionID": session, "error": { "name": "MessageAbortedError", "data": { "message": "Aborted" } } } },
+            status(session, "idle"),
+            { "type": "session.idle", "properties": { "sessionID": session } },
+            // A retry is the same run; idle ends it.
+            status(session, "busy"),
+            { "type": "session.status", "properties": { "sessionID": session, "status": { "type": "retry", "attempt": 1 } } },
+            status(session, "busy"),
+            status(session, "idle"),
+            { "type": "session.error", "properties": { "error": { "name": "UnknownError" } } },
+            { "type": "question.asked", "properties": { "id": "que_1", "sessionID": session } },
+            { "type": "session.deleted", "properties": { "info": { "id": session } } },
+        ]));
+        // The plugin runs the hook itself, with no shell between.
+        assert!(payloads.iter().all(|(parent, _)| *parent == pid));
+        let payloads: Vec<Value> = payloads.into_iter().map(|(_, payload)| payload).collect();
+        let busy = json!({ "event": "busy", "session": session, "pid": pid, "directory": "/Users/me/Code/app" });
+        assert_eq!(
+            payloads,
+            [
+                busy.clone(),
+                json!({ "event": "permission.asked", "session": session }),
+                json!({ "event": "permission.replied", "session": session }),
+                json!({ "event": "session.error", "session": session, "error": "MessageAbortedError" }),
+                busy,
+            ]
+        );
+        let mut events: Vec<&str> = payloads
+            .iter()
+            .map(|payload| payload["event"].as_str().unwrap())
+            .collect();
+        events.sort();
+        events.dedup();
+        let mut hooks = HOOKS.to_vec();
+        hooks.sort();
+        assert_eq!(events, hooks);
+    }
+
+    /// The errors OpenCode 1.19.5 publishes and goes on from, among those
+    /// that end a run.
+    #[test]
+    fn the_plugin_passes_on_only_an_error_that_ends_the_run() {
+        let session = "ses_e23ee5772ffeEVRcj47R02tvbh";
+        let error = |name: &str, message: &str| json!({ "type": "session.error", "properties": { "sessionID": session, "error": { "name": name, "data": { "message": message } } } });
+        let (payloads, pid) = passed(json!([
+            // A file the prompt names cannot be read; the run goes on.
+            error("UnknownError", "ENOENT: no such file or directory"),
+            status(session, "busy"),
+            // The context overflows, and the session is compacted.
+            error("ContextOverflowError", "prompt is too long"),
+            status(session, "busy"),
+            error("UnknownError", "Model not found: opencode/no-such-model."),
+            status(session, "idle"),
+            // The prompt's request fails after the run has ended.
+            error("UnknownError", "Model not found: opencode/no-such-model."),
+        ]));
+        let payloads: Vec<Value> = payloads.into_iter().map(|(_, payload)| payload).collect();
+        assert_eq!(
+            payloads,
+            [
+                json!({ "event": "busy", "session": session, "pid": pid, "directory": "/Users/me/Code/app" }),
+                json!({ "event": "session.error", "session": session, "error": "UnknownError" }),
+            ]
+        );
     }
 
     #[test]
-    fn maps_a_run() {
-        let none = json!({});
-        let working = Some(vec![Signal::Prompted]);
-        let question = Some(vec![Signal::QuestionAsked]);
-        assert_eq!(event("session.busy", none.clone()), working);
-        assert_eq!(
-            event("permission.asked", none.clone()),
-            Some(vec![Signal::PermissionAsked])
-        );
-        assert_eq!(event("permission.replied", none.clone()), working);
-        assert_eq!(event("question.asked", none.clone()), question);
-        assert_eq!(event("question.rejected", none.clone()), working);
-        let idle = |error: Value, message: &str| {
-            event(
-                "session.idle",
-                json!({ "error": error, "message": message }),
-            )
-        };
-        assert_eq!(idle(Value::Null, "done"), Some(vec![Signal::TurnEnded]));
-        assert_eq!(
-            idle(Value::Null, "Red or blue?"),
-            Some(vec![Signal::TurnEnded, Signal::TurnEndedAsking])
-        );
-        assert_eq!(
-            idle(json!("MessageAbortedError"), ""),
-            Some(vec![
-                Signal::TurnEnded,
-                Signal::TurnFailed,
-                Signal::Interrupted
-            ])
-        );
-        assert_eq!(
-            idle(json!("ProviderAuthError"), ""),
-            Some(vec![Signal::TurnEnded, Signal::TurnFailed])
-        );
-        assert_eq!(
-            event("session.deleted", none.clone()),
-            Some(vec![Signal::Ended])
-        );
-        assert_eq!(event("session.compacted", none), None);
-    }
-
-    #[test]
-    fn a_subagent_s_events_say_its_parent_is_at_work() {
-        let idle = json!({
-            "event": "session.idle", "session": "ses_parent", "directory": "/Users/me/Code/app",
-            "subagent": true, "error": null, "message": "done"
-        });
-        assert_eq!(
-            interim(Harness::OpenCode, &idle),
-            Some((
-                "ses_parent".into(),
-                "/Users/me/Code/app".into(),
-                BTreeSet::from([Signal::Backgrounded])
-            ))
-        );
+    fn the_plugin_passes_on_a_subagent_s_events_under_its_own_session() {
+        let child = "ses_e23ed2339ffeTL0ywE5nig2JRH";
+        let (payloads, _) = passed(json!([
+            status(child, "busy"),
+            { "type": "permission.asked", "properties": { "id": "per_1dc12e08e001fRVLcMJg4fWfpR", "sessionID": child, "permission": "bash" } },
+        ]));
+        let sessions: Vec<&Value> = payloads
+            .iter()
+            .map(|(_, payload)| &payload["session"])
+            .collect();
+        assert_eq!(sessions, [child, child]);
     }
 }

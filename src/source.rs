@@ -14,6 +14,7 @@ pub mod fixture;
 pub mod grok;
 pub mod interim;
 pub mod junie;
+pub mod opencode;
 pub mod tail;
 
 use std::collections::BTreeSet;
@@ -160,12 +161,10 @@ pub fn all(home: &Path, junie: &Path) -> Vec<Box<dyn Source>> {
         Box::new(grok::Grok::new(home)),
         Box::new(cursor::Cursor::new(home)),
         Box::new(junie::Junie::new(junie)),
+        Box::new(opencode::OpenCode::new(home)),
     ];
     for harness in Harness::ALL {
-        if !matches!(
-            harness,
-            Harness::Claude | Harness::Codex | Harness::Grok | Harness::Cursor | Harness::Junie
-        ) {
+        if harness == Harness::Pi {
             sources.push(Box::new(interim::Interim::new(harness)));
         }
     }
