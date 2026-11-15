@@ -40,7 +40,8 @@ pub struct Observation {
     pub event: Event,
     /// The harness's name for the turn it is about, when it gives one.
     pub turn: Option<TurnKey>,
-    /// Startup seeding: applied, never announced.
+    /// Applied, never announced: startup seeding, or a source putting a
+    /// session back where a wait found it.
     pub quiet: bool,
 }
 

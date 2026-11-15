@@ -74,7 +74,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### PermissionAsked
 
-- Claude Code, file, observed: the session file going to status waiting, for anything but input needed; or a prompt read while the session file says so (probe-claude cc1, cc4, cc10)
+- Claude Code, file, observed: the session file going to status waiting, for anything but input needed or dialog open; for dialog open only while a turn runs or work one left runs on; or a prompt read while the session file waits (probe-claude cc1, cc4, cc10; gaps/dialog.log)
 - Codex, hook, observed: PermissionRequest naming the turn the rollout has open (0.5.0 hooks during probe-codex runA PROMPT4 and codex2)
 - Junie, file, inferred: a SessionA2uxEvent in state INPUT_REQUIRED whose block carries an approvalRequest and is not COMPLETED, once per stepId (probe-junie permission_pending; Irrlicht real-terminal-approval)
 - OpenCode, hook, observed: permission.asked, for the session or a subagent's session under it (probe-opencode T3, T4, T7, T8, T12)
@@ -90,7 +90,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### Answered
 
-- Claude Code, file, observed: the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt (probe-claude cc1, cc2)
+- Claude Code, file, observed: the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt; or from a wait that began after the turn closed, such as a worker or sandbox request, to idle or busy, followed, unannounced, by the signals that put the session back where the wait found it (probe-claude cc1, cc2)
 - Codex, file, observed: the output for the pending question's call_id; or, after the approval hook or a daemon start inside a turn, the next call output, completed item that is not a subagent's, or task_complete (probe-codex runA PROMPT2, DENY-ESC; codex2 (approved))
 - Grok, file, observed: events.jsonl tool_completed for ask_user_question (probe-grok question_pending, grok5)
 - Junie, file, inferred: the last waiting step written again as COMPLETED or in a state other than INPUT_REQUIRED, or a UserAsyncResponseEvent or UserResponseEvent while a step waits (probe-junie permission_resolved, question_answered; Irrlicht real-terminal-approval, real-lifecycle-session)
@@ -132,7 +132,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### Interrupted
 
-- Claude Code, file, observed: a user text starting [Request interrupted by user (probe-claude cc1–cc4)
+- Claude Code, file, observed: a user text starting [Request interrupted by user; or, after a wait answered that began before any turn, the session put back with no light (probe-claude cc1–cc4)
 - Codex, file, observed: event_msg turn_aborted for any reason but replaced, which a new turn follows; a cancelled approval writes it too (probe-codex runA CTRLC-INTERRUPT, DENY-ESC; codex2)
 - Grok, file, observed: a cancelled turn_ended triggered by ctrl_c, the stop button or the dashboard, or cancelled as permission_rejected or permission_cancelled (probe-grok interrupted, runs a, h)
 - Cursor, hook, inferred: stop with status aborted, for a chat bound to its process; Cursor runs it on every interrupt, from the bundle's code (probe-cursor run B, turn 3 (no write); bundle 2986.index.js, the abort path)

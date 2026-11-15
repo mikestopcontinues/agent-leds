@@ -15,6 +15,8 @@ Each running Claude Code process, in a terminal or the desktop app, keeps a file
 | A prompt in the transcript | working |
 | The session file waiting on a permission | question |
 | The session file waiting for input needed | question |
+| The session file saying a dialog is open, while a turn runs or work it left runs on | question |
+| The session file done waiting on a request made after the turn ended | back to how the turn ended, unannounced |
 | The end of a turn whose last line ends in a question mark, or, in the desktop app, whose last `wrap_up` call put a question in the next-step box | question, as a weak signal |
 | The end of a turn while the session file stays busy | working, in the background |
 | The end of a turn otherwise, or a background turn going idle | stopped |
@@ -22,7 +24,7 @@ Each running Claude Code process, in a terminal or the desktop app, keeps a file
 | An interrupt in the transcript | idle (no light) |
 | The session file gone or naming another session, or its process gone | removed |
 
-A turn that ends with a subagent or a workflow running in the background is not the session's last word: Claude Code keeps the session file busy until that work is done, so the session stays green until it goes idle, and then it shows as stopped. A Stop hook that blocks the end of a turn shows the turn working again once Claude Code records the hook's summary, so the session shows as stopped only while the hook runs. The files are undocumented; the fixtures in `tests/fixtures/claude/`, recorded from real sessions, pin what the daemon expects of them. A run nobody watches is not shown: one of `claude -p` or of a program on the Agent SDK, whose session file names its entrypoint `sdk-cli`, `sdk-ts` or `sdk-py`.
+A turn that ends with a subagent or a workflow running in the background is not the session's last word: Claude Code keeps the session file busy until that work is done, so the session stays green until it goes idle, and then it shows as stopped. A Stop hook that blocks the end of a turn shows the turn working again once Claude Code records the hook's summary, so the session shows as stopped only while the hook runs. A dialog opened at the prompt, such as `/model` or `/config`, changes no light. The files are undocumented; the fixtures in `tests/fixtures/claude/`, recorded from real sessions, pin what the daemon expects of them. A run nobody watches is not shown: one of `claude -p` or of a program on the Agent SDK, whose session file names its entrypoint `sdk-cli`, `sdk-ts` or `sdk-py`.
 
 ## Codex
 

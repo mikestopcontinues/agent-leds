@@ -51,8 +51,8 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::PermissionAsked,
-        "the session file going to status waiting, for anything but input needed; or a prompt read while the session file says so",
-        "probe-claude cc1, cc4, cc10",
+        "the session file going to status waiting, for anything but input needed or dialog open; for dialog open only while a turn runs or work one left runs on; or a prompt read while the session file waits",
+        "probe-claude cc1, cc4, cc10; gaps/dialog.log",
     ),
     file(
         Signal::QuestionAsked,
@@ -61,7 +61,7 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Answered,
-        "the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt",
+        "the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt; or from a wait that began after the turn closed, such as a worker or sandbox request, to idle or busy, followed, unannounced, by the signals that put the session back where the wait found it",
         "probe-claude cc1, cc2",
     ),
     file(
@@ -81,7 +81,7 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Interrupted,
-        "a user text starting [Request interrupted by user",
+        "a user text starting [Request interrupted by user; or, after a wait answered that began before any turn, the session put back with no light",
         "probe-claude cc1–cc4",
     ),
     file(
@@ -112,6 +112,9 @@ enum Status {
     Busy,
     /// Waiting on the user, for the wait signal given.
     Waiting(Signal),
+    /// A dialog is open, such as the one `/model` or `/config` opens at the
+    /// prompt. It holds up only a turn that runs, or work one left running.
+    Dialog,
 }
 
 /// A session file as Claude Code writes it.
@@ -142,6 +145,7 @@ impl Process {
             (None, _) => Status::Starting,
             (Some("busy"), _) => Status::Busy,
             (Some("waiting"), Some("input needed")) => Status::Waiting(Signal::QuestionAsked),
+            (Some("waiting"), Some("dialog open")) => Status::Dialog,
             (Some("waiting"), _) => Status::Waiting(Signal::PermissionAsked),
             _ => Status::Idle,
         }
@@ -353,6 +357,9 @@ struct Session {
     /// How a turn that closed while the process waited on the user ended,
     /// told once the wait is over.
     closed_waiting: Option<BTreeSet<Signal>>,
+    /// For a wait that began after the turn closed, the signals that put the
+    /// session back where the wait found it, told once it is answered.
+    left: Option<Vec<Signal>>,
     /// Whether the last turn ended with delegated work still running.
     background: bool,
     told: Told,
@@ -542,6 +549,7 @@ impl Claude {
                 turn: None,
                 asking: false,
                 closed_waiting: None,
+                left: None,
                 background: false,
                 told: Told::default(),
             },
@@ -677,6 +685,7 @@ impl Claude {
                 session.asking = false;
             }
             session.closed_waiting = None;
+            session.left = None;
             session.background = false;
             // A prompt written after the session file said it waits, as a
             // permission asked at once is, is told with the wait.
@@ -759,32 +768,59 @@ impl Claude {
         let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
+        let over = matches!(to, Status::Busy | Status::Idle | Status::Starting);
         match (from, to) {
-            (_, Status::Waiting(wait)) if from != to => tell(id, session, [wait], out),
-            (Status::Waiting(_), Status::Busy) if session.open => {
-                tell(id, session, [Signal::Answered], out)
+            (_, Status::Waiting(wait)) if from != to => wait_begins(id, session, wait, out),
+            // A dialog the user opened at the prompt holds nothing up.
+            (_, Status::Dialog) if from != to => {
+                if session.open || session.background {
+                    wait_begins(id, session, Signal::PermissionAsked, out);
+                }
             }
-            // Denied or dismissed: the turn's end, an interrupt, follows.
-            (Status::Waiting(_), Status::Idle | Status::Starting) if session.open => {
+            // Answered, or denied or dismissed, when the turn's end, an
+            // interrupt, follows.
+            (Status::Waiting(_) | Status::Dialog, _) if over && session.open => {
                 tell(id, session, [Signal::Answered], out)
             }
             // A subagent was let go on after the turn ended: the wait is
             // over, then how the turn ended is told, with the work going on.
             (Status::Waiting(_), Status::Busy) => {
+                session.left = None;
                 let mut end = session.closed_waiting.take().unwrap_or_default();
                 end.insert(Signal::Backgrounded);
                 session.background = true;
                 tell(id, session, [Signal::Answered], out);
                 tell(id, session, end, out);
             }
-            (Status::Waiting(_), Status::Idle | Status::Starting) if !session.open => {
+            // The turn closed while it waited, or its work ran on: how it
+            // ended is told once the wait is over.
+            (Status::Waiting(_), Status::Idle | Status::Starting)
+                if session.closed_waiting.is_some() || session.background =>
+            {
+                session.left = None;
                 let end = session.closed_waiting.take();
-                let end = end.or(session
-                    .background
-                    .then(|| BTreeSet::from([Signal::TurnEnded])));
+                let end = end.unwrap_or_else(|| BTreeSet::from([Signal::TurnEnded]));
                 session.background = false;
-                if let Some(end) = end {
-                    tell(id, session, end, out);
+                tell(id, session, end, out);
+            }
+            // A wait that began after the turn closed, answered.
+            (Status::Waiting(_) | Status::Dialog, _) if over => {
+                let Some(left) = session.left.take() else {
+                    return;
+                };
+                tell(id, session, [Signal::Answered], out);
+                // Back where the wait found it, which is no news: an Idle
+                // session is put back as an interrupt leaves one.
+                let back = if left.is_empty() {
+                    vec![Signal::Interrupted]
+                } else {
+                    left
+                };
+                tell(id, session, back, out);
+                out.last_mut().expect("just told").quiet = true;
+                if to != Status::Busy && session.background {
+                    session.background = false;
+                    tell(id, session, [Signal::BackgroundDone], out);
                 }
             }
             (Status::Busy, Status::Idle | Status::Starting)
@@ -812,6 +848,20 @@ fn open(path: &Path, start: i64) -> io::Result<Tail> {
     } else {
         Tail::at_end(path)
     }
+}
+
+/// Tells a wait on the user. For one that begins after the turn closed, and
+/// finds the session not waiting already, it keeps where the session stood.
+fn wait_begins(id: &str, session: &mut Session, wait: Signal, out: &mut Vec<Observation>) {
+    let current = session.told.current();
+    let waiting = matches!(
+        current[..],
+        [Signal::PermissionAsked | Signal::QuestionAsked]
+    );
+    if !session.open && !waiting {
+        session.left = Some(current);
+    }
+    tell(id, session, [wait], out);
 }
 
 /// Tells what one record or one change of the session file says.
@@ -1143,6 +1193,22 @@ mod tests {
             phase(&replay("a_stop_hook_that_blocks_keeps_the_turn_going")),
             Phase::Asked
         );
+    }
+
+    #[test]
+    fn a_dialog_opened_at_the_prompt_holds_nothing_up() {
+        let replay = replay("a_dialog_opened_at_the_prompt_holds_nothing_up");
+        assert_eq!(phase(&replay), Phase::Idle);
+    }
+
+    #[test]
+    fn a_wait_answered_after_the_turn_ended_goes_back_to_how_it_ended() {
+        let replay = replay("a_wait_answered_after_the_turn_ended_goes_back_to_how_it_ended");
+        assert_eq!(phase(&replay), Phase::Stopped);
+        // Going back is no news: the turn's end was announced when it came.
+        let (back, _) = replay.yielded.last().unwrap();
+        assert_eq!(back.event.signals(), BTreeSet::from([Signal::TurnEnded]));
+        assert!(back.quiet);
     }
 
     #[test]
