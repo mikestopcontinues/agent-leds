@@ -9,6 +9,10 @@
 //!   `"times": <n>` times over if it says so;
 //! - `{"write": "<path>", "text": ...}` rewrites a file in place;
 //! - `{"delete": "<path>"}`;
+//! - `{"sql": "<path>", "run": "<statements>"}` runs SQL on a database in
+//!   WAL mode, as another process committing to it, and `"from": "<file>"`
+//!   in place of `run` runs a file in the harness's fixture folder, such as
+//!   the schema of the harness's database;
 //! - `{"hook": <payload>, "ancestry": [<proc>, ...]}` delivers a hook;
 //! - `{"alive": <pid>, "started_us": <n>}` and `{"exit": <pid>}` start and
 //!   end a process, and `{"lock": "<path>"}` and `{"unlock": "<path>"}` take
@@ -86,6 +90,11 @@ enum Step {
     Delete {
         delete: String,
     },
+    Sql {
+        sql: String,
+        run: Option<String>,
+        from: Option<String>,
+    },
     Hook {
         hook: Value,
         #[serde(default)]
@@ -133,7 +142,8 @@ impl Step {
         match self {
             Step::Append { append: path, .. }
             | Step::Write { write: path, .. }
-            | Step::Delete { delete: path } => Some(path),
+            | Step::Delete { delete: path }
+            | Step::Sql { sql: path, .. } => Some(path),
             _ => None,
         }
     }
@@ -240,6 +250,18 @@ impl Replay {
             }
             Step::Write { text: value, .. } => fs::write(&path, text(value)).unwrap(),
             Step::Delete { .. } => fs::remove_file(&path).unwrap(),
+            Step::Sql { run, from, .. } => {
+                let statements = match (run, from) {
+                    (Some(run), None) => run.clone(),
+                    (None, Some(from)) => fs::read_to_string(folder(self.harness).join(from))
+                        .unwrap_or_else(|e| panic!("{}: {from}: {e}", self.name)),
+                    _ => panic!("{}: a sql step has run or from, not both", self.name),
+                };
+                let db = rusqlite::Connection::open(&path).unwrap();
+                db.pragma_update(None, "journal_mode", "wal").unwrap();
+                db.execute_batch(&statements)
+                    .unwrap_or_else(|e| panic!("{}: {e}: {statements}", self.name));
+            }
             _ => unreachable!(),
         }
         path
