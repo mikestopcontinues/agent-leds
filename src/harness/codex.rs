@@ -20,7 +20,7 @@ use crate::fsm::Signal;
 pub const CONFIG: &str = ".codex/config.toml";
 
 /// The hook events the daemon needs, in the order a turn produces them.
-pub const EVENTS: [&str; 7] = [
+pub const HOOKS: [&str; 7] = [
     "UserPromptSubmit",
     "PreToolUse",
     "PermissionRequest",
@@ -129,7 +129,8 @@ fn proposes_plan(message: &str) -> bool {
 pub fn install(home: &Path, exe: &Path) -> Result<()> {
     let config = home.join(CONFIG);
     let command = Harness::Codex.command(exe);
-    edit(&config, |config| register(config, &command))?;
+    let path = config.to_string_lossy().into_owned();
+    edit(&config, |config| register(config, &path, &command))?;
     let hashes = hashes(home).context(
         "the hooks are in config.toml, but Codex will not run them until it is told to trust \
          them; run `agent-leds install` again once `codex` works",
@@ -140,7 +141,7 @@ pub fn install(home: &Path, exe: &Path) -> Result<()> {
 pub fn uninstall(home: &Path) -> Result<()> {
     let config = home.join(CONFIG);
     edit(&config, |document| {
-        unregister(document, &config.to_string_lossy());
+        unregister(document, &config.to_string_lossy(), &[]);
         Ok(())
     })
 }
@@ -239,12 +240,15 @@ pub fn trusted(home: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Registers `command` for every event. Codex trusts a hook by its place
-/// among the groups of its event, so a group that is there already keeps
-/// its place, and a new one goes after the others.
-fn register(config: &mut DocumentMut, command: &str) -> Result<()> {
+/// Registers `command` for every event in HOOKS and for no other, in the
+/// config at `path`. Codex trusts a hook by its place among the groups of
+/// its event, so a group that is there already keeps its place, and a new
+/// one goes after the others; a group of ours under any other event, as an
+/// older version registered, goes with its trust records.
+fn register(config: &mut DocumentMut, path: &str, command: &str) -> Result<()> {
+    unregister(config, path, &HOOKS);
     let hooks = hooks_table(config)?;
-    for event in EVENTS {
+    for event in HOOKS {
         let groups = hooks
             .entry(event)
             .or_insert_with(|| Item::ArrayOfTables(ArrayOfTables::new()));
@@ -283,16 +287,22 @@ fn trust(config: &mut DocumentMut, hashes: &[(String, String)]) -> Result<()> {
     Ok(())
 }
 
-/// Removes the groups an install added, the events left with no group, and
-/// what was recorded about trusting them. Codex keys that record by a
-/// group's place among its event's groups, so the groups after a removed one
-/// take their records with them as they move up.
-fn unregister(config: &mut DocumentMut, path: &str) {
+/// Removes the groups an install added under every event but those in
+/// `keep`, the events left with no group, and what was recorded about
+/// trusting them. Codex keys that record by a group's place among its
+/// event's groups, so the groups after a removed one take their records
+/// with them as they move up.
+fn unregister(config: &mut DocumentMut, path: &str, keep: &[&str]) {
     let Some(hooks) = config.get_mut("hooks").and_then(Item::as_table_mut) else {
         return;
     };
+    let events: Vec<String> = hooks
+        .iter()
+        .map(|(event, _)| event.to_owned())
+        .filter(|event| event != "state" && !keep.contains(&event.as_str()))
+        .collect();
     let mut moves = Vec::new();
-    for event in EVENTS {
+    for event in &events {
         let Some(groups) = hooks.get_mut(event).and_then(Item::as_array_of_tables_mut) else {
             continue;
         };
@@ -398,8 +408,8 @@ fn hashes(home: &Path) -> Result<Vec<(String, String)>> {
             ))
         })
         .collect();
-    if hashes.len() != EVENTS.len() {
-        bail!("Codex lists {} of the {} hooks", hashes.len(), EVENTS.len());
+    if hashes.len() != HOOKS.len() {
+        bail!("Codex lists {} of the {} hooks", hashes.len(), HOOKS.len());
     }
     Ok(hashes)
 }
@@ -602,7 +612,7 @@ trusted_hash = "sha256:271070a9"
             (format!("{PATH}:interrupt:0:0"), "sha256:9c2e".to_owned()),
         ];
         edit(config, |config| {
-            register(config, "/bin/agent-leds hook codex")
+            register(config, PATH, "/bin/agent-leds hook codex")
         })
         .unwrap();
         edit(config, |config| trust(config, &hashes)).unwrap();
@@ -610,7 +620,7 @@ trusted_hash = "sha256:271070a9"
 
     fn uninstall(config: &Path) {
         edit(config, |config| {
-            unregister(config, PATH);
+            unregister(config, PATH, &[]);
             Ok(())
         })
         .unwrap();
@@ -639,7 +649,7 @@ trusted_hash = "sha256:271070a9"
             parsed["hooks"]["state"][format!("{PATH}:stop:1:0").as_str()]["trusted_hash"].as_str(),
             Some("sha256:0d1f")
         );
-        for event in EVENTS {
+        for event in HOOKS {
             assert!(
                 parsed["hooks"][event].is_array(),
                 "{event} is not registered"
@@ -695,8 +705,39 @@ trusted_hash = "sha256:7777"
     }
 
     #[test]
+    fn installing_removes_a_hook_of_ours_under_an_event_no_longer_used() {
+        let home = Home::new();
+        home.write(CONFIG, THEIRS);
+        let config = home.join(CONFIG);
+        let leftover = r#"
+[[hooks.Notification]]
+[[hooks.Notification.hooks]]
+type = "command"
+command = "/opt/homebrew/bin/agent-leds hook codex"
+
+[hooks.state."/Users/me/.codex/config.toml:notification:0:0"]
+trusted_hash = "sha256:5151"
+"#;
+        fs::write(&config, THEIRS.to_owned() + leftover).unwrap();
+        assert!(
+            Harness::Codex
+                .check(&home, Path::new("/opt/homebrew/bin/agent-leds"))
+                .unwrap_err()
+                .to_string()
+                .contains("does not use is registered for Notification")
+        );
+        install(&config, 1);
+        let parsed: toml::Value = toml::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+        assert!(parsed["hooks"].get("Notification").is_none());
+        let state = parsed["hooks"]["state"].as_table().unwrap();
+        assert!(!state.contains_key(&format!("{PATH}:notification:0:0")));
+        uninstall(&config);
+        assert_eq!(fs::read_to_string(&config).unwrap(), THEIRS);
+    }
+
+    #[test]
     fn every_event_registered_is_one_the_daemon_follows() {
-        for event in EVENTS {
+        for event in HOOKS {
             assert!(Hook::named(event).is_some(), "{event}");
         }
     }
@@ -711,10 +752,10 @@ trusted_hash = "sha256:7777"
     fn the_hooks_registered_are_listed_by_event() {
         let home = Home::new();
         let command = "/bin/agent-leds hook codex";
-        edit(&home.join(CONFIG), |config| register(config, command)).unwrap();
+        edit(&home.join(CONFIG), |config| register(config, PATH, command)).unwrap();
         let listed = hooks(&home).unwrap();
         let events: Vec<&str> = listed.iter().map(|(event, _)| event.as_str()).collect();
-        assert_eq!(events, EVENTS);
+        assert_eq!(events, HOOKS);
         assert!(listed.iter().all(|(_, hook)| hook == command));
     }
 }

@@ -134,14 +134,14 @@ impl Harness {
         }
     }
 
-    /// The events an install registers the hook for.
+    /// The events an install registers the hook for, and the only ones.
     fn events(self) -> Vec<&'static str> {
         match self {
-            Harness::Claude => claude::EVENTS.to_vec(),
-            Harness::Codex => codex::EVENTS.to_vec(),
-            Harness::Grok => grok::EVENTS.map(|(event, _)| event).to_vec(),
-            Harness::Cursor => cursor::EVENTS.to_vec(),
-            Harness::Junie => junie::EVENTS.to_vec(),
+            Harness::Claude => claude::HOOKS.to_vec(),
+            Harness::Codex => codex::HOOKS.to_vec(),
+            Harness::Grok => grok::HOOKS.map(|(event, _)| event).to_vec(),
+            Harness::Cursor => cursor::HOOKS.to_vec(),
+            Harness::Junie => junie::HOOKS.to_vec(),
             // These load a plugin of ours, which `check` looks at instead.
             Harness::OpenCode | Harness::Pi => Vec::new(),
         }
@@ -160,8 +160,9 @@ impl Harness {
     }
 
     /// What is wrong with the hooks registered with the harness: whether
-    /// each event has the hook an install from `exe` writes, and nothing
-    /// else of agent-leds' or of SidePulse's own software.
+    /// our hooks are exactly the ones an install from `exe` writes, for
+    /// exactly the events it writes them for, with nothing of SidePulse's
+    /// own software beside them.
     fn check(self, home: &Path, exe: &Path) -> Result<()> {
         match self {
             Harness::OpenCode => return opencode::PLUGIN.check(home, exe),
@@ -172,17 +173,30 @@ impl Harness {
         let ours: Vec<&(String, String)> =
             hooks.iter().filter(|(_, hook)| self.owns(hook)).collect();
         let mut problems = Vec::new();
-        let missing: Vec<&str> = self
-            .events()
-            .into_iter()
+        let events = self.events();
+        let missing: Vec<&str> = events
+            .iter()
+            .copied()
             .filter(|event| !ours.iter().any(|(registered, _)| registered == event))
             .collect();
-        if ours.is_empty() {
+        let mut leftover: Vec<&str> = ours
+            .iter()
+            .map(|(event, _)| event.as_str())
+            .filter(|event| !events.contains(event))
+            .collect();
+        leftover.dedup();
+        if ours.is_empty() && !events.is_empty() {
             problems.push("not registered; run `agent-leds install`".to_owned());
         } else if !missing.is_empty() {
             problems.push(format!(
                 "no hook for {}; run `agent-leds install`",
                 missing.join(", ")
+            ));
+        }
+        if !leftover.is_empty() {
+            problems.push(format!(
+                "a hook this version does not use is registered for {}; run `agent-leds install`",
+                leftover.join(", ")
             ));
         }
         let command = self.command(exe);
@@ -227,6 +241,7 @@ impl Harness {
     /// What `agent-leds doctor` says of a harness whose hooks are right.
     pub fn registered(self) -> &'static str {
         match self {
+            Harness::Claude => "read from its own files, with no hooks",
             Harness::OpenCode | Harness::Pi => "plugin installed",
             _ => "hooks registered",
         }
@@ -237,8 +252,8 @@ impl Harness {
         match self {
             Harness::Claude => claude::SETTINGS,
             Harness::Codex => codex::CONFIG,
-            Harness::Grok => grok::HOOKS,
-            Harness::Cursor => cursor::HOOKS,
+            Harness::Grok => grok::FILE,
+            Harness::Cursor => cursor::FILE,
             Harness::Junie => junie::CONFIG,
             Harness::OpenCode => opencode::PLUGIN.path,
             Harness::Pi => pi::PLUGIN.path,
@@ -613,14 +628,17 @@ fn unregister(hooks: &mut Map<String, Value>, ours: impl Fn(&Value) -> bool) {
     hooks.retain(|_, entries| entries.as_array().is_none_or(|entries| !entries.is_empty()));
 }
 
-/// Registers `handler` for each of `events`, in the shape Claude Code gave
-/// the harnesses: each event lists groups, and each group lists handlers.
+/// Registers `handler` for each of `events` and for no other, in the shape
+/// Claude Code gave the harnesses: each event lists groups, and each group
+/// lists handlers. A hook of ours under any other event, as an older version
+/// registered, goes.
 fn register_groups(
     hooks: &mut Map<String, Value>,
     harness: Harness,
     events: &[&str],
     handler: impl Fn(&str) -> Value,
 ) -> Result<()> {
+    unregister(hooks, |group| owns_group(harness, group));
     for event in events {
         let group = json!({ "hooks": [handler(event)] });
         register(hooks, event, group, |group| owns_group(harness, group))?;
@@ -714,10 +732,10 @@ mod tests {
     fn only_harnesses_that_have_been_used_are_registered() {
         let home = Home::new();
         assert!(install(&home, Path::new("/bin/agent-leds")).is_empty());
-        fs::create_dir(home.join(".claude")).unwrap();
+        fs::create_dir(home.join(".junie")).unwrap();
         let installed = install(&home, Path::new("/bin/agent-leds"));
-        assert!(matches!(installed[..], [(Harness::Claude, Ok(()))]));
-        assert!(home.join(".claude/settings.json").exists());
+        assert!(matches!(installed[..], [(Harness::Junie, Ok(()))]));
+        assert!(home.join(junie::CONFIG).exists());
     }
 
     #[test]
@@ -739,7 +757,7 @@ mod tests {
         let home = Home::new();
         let exe = Path::new("/bin/agent-leds");
         let check = |exe: &str| {
-            Harness::Claude
+            Harness::Junie
                 .check(&home, Path::new(exe))
                 .map_err(|error| error.to_string())
         };
@@ -748,7 +766,7 @@ mod tests {
                 .unwrap_err()
                 .starts_with("not registered")
         );
-        claude::install(&home, exe).unwrap();
+        junie::install(&home, exe).unwrap();
         check("/bin/agent-leds").unwrap();
         // The binary moved, or a second one is being run.
         assert!(
@@ -756,15 +774,24 @@ mod tests {
                 .unwrap_err()
                 .starts_with("registered for /bin/agent-leds, not this binary")
         );
-        edit_hooks(&home.join(claude::SETTINGS), |hooks| {
-            hooks.remove("Stop");
+        edit_hooks(&home.join(junie::CONFIG), |hooks| {
+            let stop = hooks.remove("Stop").unwrap();
+            // 0.5.0 also registered PreToolUse.
+            hooks.insert("PreToolUse".into(), stop);
             Ok(())
         })
         .unwrap();
+        assert_eq!(
+            check("/bin/agent-leds").unwrap_err(),
+            "no hook for Stop; run `agent-leds install`; a hook this version does not use is \
+             registered for PreToolUse; run `agent-leds install`"
+        );
+        junie::install(&home, exe).unwrap();
+        check("/bin/agent-leds").unwrap();
         assert!(
-            check("/bin/agent-leds")
-                .unwrap_err()
-                .starts_with("no hook for Stop;")
+            home.json(junie::CONFIG)["hooks"]
+                .get("PreToolUse")
+                .is_none()
         );
     }
 
@@ -773,7 +800,7 @@ mod tests {
         let home = Home::new();
         let exe = Path::new("/bin/agent-leds");
         home.write(
-            cursor::HOOKS,
+            cursor::FILE,
             r#"{ "version": 1, "hooks": { "stop": [{ "command": "~/.local/share/sidepulse/venv/bin/python -m sidepulse.hook_entry --provider cursor" }] } }"#,
         );
         cursor::install(&home, exe).unwrap();

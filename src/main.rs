@@ -46,8 +46,8 @@ use state::State;
     about = "Shows a queue of agent sessions on a SidePulse Pro, the eight-light card in a \
              MacBook's SD slot: red for an error, orange for a question, blue for stopped and \
              unread, green for working",
-    after_help = "Run `agent-leds install` once to start the service and register its hooks with \
-                  Claude Code, Codex, Grok, Cursor, Junie, OpenCode and Pi."
+    after_help = "Run `agent-leds install` once to start the service. It reads Claude Code's own \
+                  files, and registers its hooks with Codex, Grok, Cursor, Junie, OpenCode and Pi."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -56,12 +56,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Start the service at login and register the hooks of every agent harness in use
+    /// Start the service at login, and register exactly the hooks each agent harness in use needs
     #[command(
         after_help = "A harness is in use when its folder is in your home directory: ~/.claude, \
                       ~/.codex, ~/.grok, ~/.cursor, ~/.junie, ~/.config/opencode or ~/.pi. Other hooks \
-                      are left as they are. \
-                      Run it again after you start using another harness, or after you move the \
+                      are left as they are, and hooks an older agent-leds registered that this one does not use \
+                      are removed. Run it again after you start using another harness, or after you move the \
                       agent-leds binary; running it twice changes nothing."
     )]
     Install,
@@ -153,7 +153,7 @@ fn main() -> Result<()> {
             launchd::install(&exe)?;
             let registered = registered(harness::install(&home(), &exe))?;
             println!(
-                "The service is running and starts at login. New sessions report to it from: {}.",
+                "The service is running and starts at login. It follows the sessions of: {}.",
                 registered.join(", ")
             );
             Ok(())

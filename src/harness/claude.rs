@@ -3,38 +3,17 @@
 use std::path::Path;
 
 use anyhow::Result;
-use serde_json::json;
 
-use super::{Harness, commands, edit_hooks, owns_group, read_hooks, register_groups, unregister};
+use super::{Harness, commands, edit_hooks, owns_group, read_hooks, unregister};
 
-/// The hook events the daemon needs, in the order a turn produces them.
-pub const EVENTS: [&str; 10] = [
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PermissionRequest",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "Elicitation",
-    "ElicitationResult",
-    "Stop",
-    "StopFailure",
-    "SessionEnd",
-];
+/// The hook events the daemon needs: none, since its files say it all.
+pub const HOOKS: [&str; 0] = [];
 
 pub const SETTINGS: &str = ".claude/settings.json";
 
-pub fn install(home: &Path, exe: &Path) -> Result<()> {
-    let command = Harness::Claude.command(exe);
-    edit_hooks(&home.join(SETTINGS), |hooks| {
-        register_groups(hooks, Harness::Claude, &EVENTS, |event| {
-            let mut handler = json!({ "type": "command", "command": command, "timeout": 5 });
-            if event == "PermissionRequest" {
-                // An async hook cannot answer the permission prompt, so observing never approves anything.
-                handler["async"] = json!(true);
-            }
-            handler
-        })
-    })
+/// Removes every hook an older version registered.
+pub fn install(home: &Path, _exe: &Path) -> Result<()> {
+    uninstall(home)
 }
 
 pub fn hooks(home: &Path) -> Result<Vec<(String, String)>> {
@@ -50,41 +29,81 @@ pub fn uninstall(home: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::super::tests::Home;
     use super::*;
 
-    #[test]
-    fn every_event_registered_is_one_the_daemon_follows() {
-        for event in EVENTS {
-            assert!(super::super::Hook::named(event).is_some(), "{event}");
+    /// The hooks 0.5.0 registered, beside one of someone else's.
+    fn registered_by_0_5_0() -> serde_json::Value {
+        let ours = |extra: serde_json::Value| {
+            let mut handler = json!({ "type": "command", "command": "/opt/homebrew/bin/agent-leds hook claude", "timeout": 5 });
+            handler
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            json!({ "hooks": [handler] })
+        };
+        let mut hooks = serde_json::Map::new();
+        for event in [
+            "UserPromptSubmit",
+            "PreToolUse",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "Elicitation",
+            "ElicitationResult",
+            "Stop",
+            "StopFailure",
+            "SessionEnd",
+        ] {
+            hooks.insert(event.into(), json!([ours(json!({}))]));
         }
+        hooks.insert(
+            "PermissionRequest".into(),
+            json!([ours(json!({ "async": true }))]),
+        );
+        hooks.get_mut("Stop").unwrap().as_array_mut().unwrap().insert(
+            0,
+            json!({ "matcher": "*", "hooks": [{ "type": "command", "command": "python hook_entry.py --provider claude" }] }),
+        );
+        json!({ "model": "opus", "hooks": hooks })
     }
 
     #[test]
-    fn installing_twice_changes_nothing_and_uninstalling_leaves_the_rest() {
+    fn installing_over_0_5_0_removes_every_hook_of_ours_and_leaves_the_rest() {
+        let home = Home::new();
+        home.write(SETTINGS, &registered_by_0_5_0().to_string());
+        let exe = Path::new("/bin/agent-leds");
+        assert!(Harness::Claude.check(&home, exe).is_err());
+
+        install(&home, exe).unwrap();
         let theirs = json!({
             "model": "opus",
             "hooks": { "Stop": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "python hook_entry.py --provider claude" }] }] }
         });
-        let home = Home::new();
-        home.write(SETTINGS, &theirs.to_string());
-
-        install(&home, Path::new("/bin/agent-leds")).unwrap();
-        let installed = home.json(SETTINGS);
-        assert_eq!(installed["model"], theirs["model"]);
-        assert_eq!(installed["hooks"]["Stop"][0], theirs["hooks"]["Stop"][0]);
-        assert_eq!(
-            installed["hooks"]["Stop"][1]["hooks"][0]["command"],
-            "/bin/agent-leds hook claude"
-        );
-        assert_eq!(
-            installed["hooks"]["PermissionRequest"][0]["hooks"][0]["async"],
-            true
-        );
-        install(&home, Path::new("/bin/agent-leds")).unwrap();
-        assert_eq!(home.json(SETTINGS), installed);
-
+        assert_eq!(home.json(SETTINGS), theirs);
+        Harness::Claude.check(&home, exe).unwrap();
+        install(&home, exe).unwrap();
+        assert_eq!(home.json(SETTINGS), theirs);
         uninstall(&home).unwrap();
         assert_eq!(home.json(SETTINGS), theirs);
+    }
+
+    #[test]
+    fn a_hook_of_ours_left_registered_fails_the_check() {
+        let home = Home::new();
+        home.write(
+            SETTINGS,
+            &json!({ "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "/bin/agent-leds hook claude" }] }] } }).to_string(),
+        );
+        let error = Harness::Claude
+            .check(&home, Path::new("/bin/agent-leds"))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("does not use is registered for Stop"),
+            "{error}"
+        );
     }
 }

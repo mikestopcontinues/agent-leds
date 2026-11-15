@@ -22,7 +22,7 @@ pub const CONFIG: &str = ".junie/config.json";
 /// Two are left out because Junie reads a hook that succeeds as an answer:
 /// on PermissionRequest it approves the request, and on PreToolUse its
 /// documentation counts a hook that says nothing as allowing the tool.
-pub const EVENTS: [&str; 5] = [
+pub const HOOKS: [&str; 5] = [
     "UserPromptSubmit",
     "PostToolUse",
     "Stop",
@@ -107,7 +107,7 @@ pub fn install(home: &Path, exe: &Path) -> Result<()> {
         register_groups(
             hooks,
             Harness::Junie,
-            &EVENTS,
+            &HOOKS,
             |_| json!({ "type": "command", "command": command, "timeout": 5 }),
         )
     })
@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn every_event_registered_is_one_the_daemon_follows() {
-        for event in EVENTS {
+        for event in HOOKS {
             assert!(super::super::Hook::named(event).is_some(), "{event}");
         }
     }

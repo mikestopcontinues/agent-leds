@@ -13,12 +13,12 @@ use crate::fsm::Signal;
 
 /// Grok reads every JSON file in the folder, so this one holds nothing but
 /// what an install wrote.
-pub const HOOKS: &str = ".grok/hooks/agent-leds.json";
+pub const FILE: &str = ".grok/hooks/agent-leds.json";
 
 /// The hook events the daemon needs, in the order a turn produces them,
 /// each with what it must match. Grok names the kind of a notification
 /// there.
-pub const EVENTS: [(&str, Option<&str>); 9] = [
+pub const HOOKS: [(&str, Option<&str>); 9] = [
     ("UserPromptSubmit", None),
     ("PreToolUse", None),
     ("Notification", Some("permission_prompt")),
@@ -151,7 +151,7 @@ pub fn event(payload: &Value) -> Option<Event> {
 
 pub fn install(home: &Path, exe: &Path) -> Result<()> {
     let mut hooks = Map::new();
-    for (event, matcher) in EVENTS {
+    for (event, matcher) in HOOKS {
         let handler =
             json!({ "type": "command", "command": Harness::Grok.command(exe), "timeout": 5 });
         let mut group = json!({ "hooks": [handler] });
@@ -162,14 +162,14 @@ pub fn install(home: &Path, exe: &Path) -> Result<()> {
     }
     let hooks = json!({ "hooks": hooks });
     files::replace(
-        &home.join(HOOKS),
+        &home.join(FILE),
         &(serde_json::to_string_pretty(&hooks)? + "\n"),
     )
 }
 
 /// The hooks in every file of the folder, since Grok runs them all.
 pub fn hooks(home: &Path) -> Result<Vec<(String, String)>> {
-    let folder = home.join(HOOKS);
+    let folder = home.join(FILE);
     let folder = folder.parent().expect("the file is in a folder");
     let Ok(entries) = std::fs::read_dir(folder) else {
         return Ok(Vec::new());
@@ -188,7 +188,7 @@ pub fn hooks(home: &Path) -> Result<Vec<(String, String)>> {
 }
 
 pub fn uninstall(home: &Path) -> Result<()> {
-    files::remove(&home.join(HOOKS))
+    files::remove(&home.join(FILE))
 }
 
 #[cfg(test)]
@@ -324,7 +324,7 @@ mod tests {
         let home = Home::new();
         home.write(".grok/hooks/sidepulse.json", "{}");
         install(&home, Path::new("/bin/agent-leds")).unwrap();
-        let installed = home.json(HOOKS);
+        let installed = home.json(FILE);
         assert_eq!(
             installed["hooks"]["Stop"][0]["hooks"][0]["command"],
             "/bin/agent-leds hook grok"
@@ -333,12 +333,12 @@ mod tests {
             installed["hooks"]["Notification"][0]["matcher"],
             "permission_prompt"
         );
-        assert_eq!(installed["hooks"].as_object().unwrap().len(), EVENTS.len());
+        assert_eq!(installed["hooks"].as_object().unwrap().len(), HOOKS.len());
         install(&home, Path::new("/bin/agent-leds")).unwrap();
-        assert_eq!(home.json(HOOKS), installed);
+        assert_eq!(home.json(FILE), installed);
 
         uninstall(&home).unwrap();
-        assert!(!home.join(HOOKS).exists());
+        assert!(!home.join(FILE).exists());
         assert!(home.join(".grok/hooks/sidepulse.json").exists());
         uninstall(&home).unwrap();
     }

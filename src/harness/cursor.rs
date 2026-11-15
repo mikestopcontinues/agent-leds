@@ -12,12 +12,12 @@ use crate::coverage::{Declared, Evidence};
 use crate::files;
 use crate::fsm::Signal;
 
-pub const HOOKS: &str = ".cursor/hooks.json";
+pub const FILE: &str = ".cursor/hooks.json";
 
 /// The hook events the daemon needs, in the order a turn produces them.
 /// Cursor expects the hooks that run before a tool to say whether it may
 /// run, and this hook must not answer that, so none of those is here.
-pub const EVENTS: [&str; 5] = [
+pub const HOOKS: [&str; 5] = [
     "beforeSubmitPrompt",
     "postToolUse",
     "postToolUseFailure",
@@ -120,13 +120,15 @@ fn is_ours(entry: &Value) -> bool {
 }
 
 pub fn install(home: &Path, exe: &Path) -> Result<()> {
-    let file = home.join(HOOKS);
+    let file = home.join(FILE);
     if !file.exists() {
         files::replace(&file, "{ \"version\": 1 }\n")?;
     }
     let entry = json!({ "command": Harness::Cursor.command(exe), "timeout": 5 });
     edit_hooks(&file, |hooks| {
-        for event in EVENTS {
+        // Only these events, whatever an older version registered.
+        unregister(hooks, is_ours);
+        for event in HOOKS {
             register(hooks, event, entry.clone(), is_ours)?;
         }
         Ok(())
@@ -134,11 +136,11 @@ pub fn install(home: &Path, exe: &Path) -> Result<()> {
 }
 
 pub fn hooks(home: &Path) -> Result<Vec<(String, String)>> {
-    Ok(commands(&read_hooks(&home.join(HOOKS))?, false))
+    Ok(commands(&read_hooks(&home.join(FILE))?, false))
 }
 
 pub fn uninstall(home: &Path) -> Result<()> {
-    edit_hooks(&home.join(HOOKS), |hooks| {
+    edit_hooks(&home.join(FILE), |hooks| {
         unregister(hooks, is_ours);
         Ok(())
     })
@@ -222,10 +224,10 @@ mod tests {
             }
         });
         let home = Home::new();
-        home.write(HOOKS, &theirs.to_string());
+        home.write(FILE, &theirs.to_string());
 
         install(&home, Path::new("/bin/agent-leds")).unwrap();
-        let installed = home.json(HOOKS);
+        let installed = home.json(FILE);
         assert_eq!(installed["version"], 1);
         assert_eq!(
             installed["hooks"]["preToolUse"],
@@ -237,10 +239,10 @@ mod tests {
             json!({ "command": "/bin/agent-leds hook cursor", "timeout": 5 })
         );
         install(&home, Path::new("/bin/agent-leds")).unwrap();
-        assert_eq!(home.json(HOOKS), installed);
+        assert_eq!(home.json(FILE), installed);
 
         uninstall(&home).unwrap();
-        assert_eq!(home.json(HOOKS), theirs);
+        assert_eq!(home.json(FILE), theirs);
     }
 
     #[test]
@@ -248,8 +250,8 @@ mod tests {
         let home = Home::new();
         fs::create_dir(home.join(".cursor")).unwrap();
         install(&home, Path::new("/bin/agent-leds")).unwrap();
-        let installed = home.json(HOOKS);
+        let installed = home.json(FILE);
         assert_eq!(installed["version"], 1);
-        assert_eq!(installed["hooks"].as_object().unwrap().len(), EVENTS.len());
+        assert_eq!(installed["hooks"].as_object().unwrap().len(), HOOKS.len());
     }
 }
