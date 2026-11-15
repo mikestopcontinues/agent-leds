@@ -1,18 +1,25 @@
 //! OpenCode, from its database and our plugin. Every OpenCode process, the
 //! terminal interface, `opencode serve`, `opencode run` and the desktop app
 //! alike, writes its sessions to one SQLite database in WAL mode,
-//! `~/.local/share/opencode/opencode.db`: a row per session, message and
-//! part, rewritten as they change, and since 1.18 an append-only log of
-//! events written in the same commit. The database says when a turn starts,
-//! when it waits on a question and how it ends.
+//! `~/.local/share/opencode/opencode.db`.
 //!
-//! It records no process, no permission request, and no error that comes
-//! before a turn's loop starts. The plugin of ours tells those: a session
-//! going busy, with the pid of the process that runs it; a permission asked
-//! and replied; and an error.
+//! OpenCode 1.x writes a row per session, message and part, rewritten as
+//! they change, and since 1.18 an append-only log of events written in the
+//! same commit. 2.x keeps its sessions in tables of its own, `session_v2`
+//! and `session_message`, and writes on each session's row when a run
+//! started and when it went idle, how, and when the user last saw it idle.
+//! Its first start copies 1.x's sessions into them and leaves 1.x's tables
+//! in place, and a 1.x process run on that database afterwards, the desktop
+//! app or Zed's agent, goes on writing 1.x's tables. Each session is read
+//! from the tables that hold its latest run.
+//!
+//! The database records no process and no permission request, and 1.x no
+//! error that comes before a turn's loop starts. The plugin of ours tells
+//! those: a session going busy, with the pid of the process that runs it; a
+//! permission asked and replied; and, from 1.x, an error.
 //!
 //! The database is undocumented. What it holds at each moment of a session
-//! was taken from OpenCode 1.19.5, and from 1.18.25's `run`.
+//! was taken from OpenCode 1.19.5, 1.18.25's `run`, and 2.3.0.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -58,82 +65,92 @@ const fn hook(signal: Signal, record: &'static str, cite: &'static str) -> Decla
 pub const SIGNALS: &[Declared] = &[
     hook(
         Signal::Started,
-        "the plugin's busy, as a session that is not a subagent's goes busy, from the OpenCode process whose pid it names",
-        "probe-opencode T3–T16 (session.status busy, in serve and the TUI)",
+        "the plugin's busy, as a session that is not a subagent's goes busy (1.x) or starts a run (2.x), from the OpenCode process whose pid it names: 2.x's background service, or the server a terminal interface runs",
+        "probe-opencode T3–T16 (session.status busy, in serve and the TUI); gaps oc8 (2.3.0 session.execution.started, in the service, in `--standalone` and in `run`), oc9 (one plugin file in 1.18.25 and 2.3.0)",
     ),
     hook(
         Signal::Prompted,
         "the plugin's busy",
-        "probe-opencode T3–T16 (session.status busy, in serve and the TUI)",
+        "probe-opencode T3–T16 (session.status busy, in serve and the TUI); gaps oc8 (2.3.0 session.execution.started)",
     ),
     file(
         Signal::Prompted,
-        "the session's latest message a user message, or an assistant message answering one, other than the turn last read",
-        "probe-opencode T2–T16",
+        "1.x: the session's latest message a user message, or an assistant message answering one, other than the turn last read; 2.x: a run started after the session last went idle, other than the run last read",
+        "probe-opencode T2–T16; gaps oc8 (2.3.0 time_busy)",
     ),
     hook(
         Signal::PermissionAsked,
-        "permission.asked, for the session or a subagent's session under it",
-        "probe-opencode T3, T4, T7, T8, T12",
+        "permission.asked, for the session or a subagent's session under it, which 2.x does not write either",
+        "probe-opencode T3, T4, T7, T8, T12; gaps oc8 (2.3.0, a subagent's included)",
     ),
     file(
         Signal::QuestionAsked,
-        "a question tool part running in the turn, in the session or a subagent's session under it",
-        "probe-opencode T5, T6, T16",
+        "a question tool part running in the turn (1.x) or in the latest assistant message (2.x), in the session or a subagent's session under it",
+        "probe-opencode T5, T6, T16; gaps oc8 (2.3.0 question tool)",
     ),
     hook(
         Signal::Answered,
         "permission.replied, for the session or a subagent's session under it",
-        "probe-opencode T3, T7, T12",
+        "probe-opencode T3, T7, T12; gaps oc8 (2.3.0)",
     ),
     file(
         Signal::Answered,
         "no question tool part running in the turn any more, while it runs",
-        "probe-opencode T5",
+        "probe-opencode T5; gaps oc8 (2.3.0 question answered)",
     ),
     file(
         Signal::TurnEnded,
-        "the turn's latest assistant message completed, unless it is a step that finished on tool-calls or unknown with no error and no tool the user refused or dismissed",
-        "probe-opencode T2–T10, T15, T16",
+        "1.x: the turn's latest assistant message completed, unless it is a step that finished on tool-calls or unknown with no error and no tool the user refused or dismissed; 2.x: the session went idle after its latest run started",
+        "probe-opencode T2–T10, T15, T16; gaps oc8 (2.3.0 time_idle)",
     ),
     file(
         Signal::TurnEndedAsking,
-        "that message's last text part, not synthetic, ending on a question mark",
-        "probe-opencode T2",
+        "the last text part, ending on a question mark, of that message, not synthetic (1.x), or of the run's last assistant message (2.x)",
+        "probe-opencode T2; gaps oc8 (2.3.0 run)",
     ),
     file(
         Signal::TurnFailed,
-        "that message carrying an error, a MessageAbortedError included",
-        "probe-opencode T7–T9",
+        "1.x: that message carrying an error, a MessageAbortedError included; 2.x: the run's outcome failed, an error before its first step included",
+        "probe-opencode T7–T9; gaps oc8 (2.3.0, an unknown model)",
     ),
     // No run of the probe caught the plugin's error for an unknown model.
     Declared {
         evidence: Evidence::Inferred,
         ..hook(
             Signal::TurnFailed,
-            "session.error, for the session itself, while it is busy, other than a ContextOverflowError",
+            "1.x's session.error, for the session itself, while it is busy, other than a ContextOverflowError",
             "OpenCode 1.19.5's SessionPrompt.run, which sets the session busy before getModel publishes session.error UnknownError; probe-opencode T11 (a user message and no reply)",
         )
     },
     file(
         Signal::Interrupted,
-        "that message's error a MessageAbortedError, or the message with neither finish nor error",
-        "probe-opencode T7, T8, T10",
+        "1.x: that message's error a MessageAbortedError, or the message with neither finish nor error; 2.x: the run's outcome interrupted",
+        "probe-opencode T7, T8, T10; gaps oc8 (2.3.0 escape during a shell)",
     ),
     hook(
         Signal::Interrupted,
-        "session.error with a MessageAbortedError",
+        "1.x's session.error with a MessageAbortedError",
         "probe-opencode T7, T8",
+    ),
+    file(
+        Signal::Backgrounded,
+        "2.x: the run ended while a job of the session's is left, a shell moved to the background or a subagent, at work or not yet reported to it",
+        "gaps oc8 (2.3.0 ctrl+b on a shell, a background shell, a task subagent)",
+    ),
+    file(
+        Signal::Looked,
+        "2.x: the session seen idle since it last went idle, as the terminal interface writes once it shows the session while its terminal has focus",
+        "gaps oc8 (2.3.0 session.viewed)",
     ),
     file(
         Signal::Ended,
         "the session's row deleted or archived",
-        "probe-opencode T13",
+        "probe-opencode T13; gaps oc8 (2.3.0 session delete)",
     ),
     hook(
         Signal::Ended,
         "the process the plugin's busy named gone",
-        "probe-opencode T14, T17",
+        "probe-opencode T14, T17; gaps oc8 (2.3.0 terminal interface quit, service stopped)",
     ),
 ];
 
@@ -153,7 +170,7 @@ struct Payload {
     error: Option<String>,
 }
 
-/// The `data` of a message row, with only the fields that carry state.
+/// The `data` of a 1.x message row, with only the fields that carry state.
 #[derive(Deserialize)]
 struct Message {
     role: String,
@@ -176,7 +193,7 @@ struct Error {
     name: Option<String>,
 }
 
-/// The `data` of a text part.
+/// The `data` of a 1.x text part.
 #[derive(Deserialize)]
 struct Text {
     #[serde(default)]
@@ -186,34 +203,42 @@ struct Text {
     synthetic: bool,
 }
 
-/// Where the database leaves a session's turn.
+/// Which of OpenCode's two sets of tables a session is read from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Schema {
+    /// `session`, `message` and `part`, as 1.x writes them.
+    V1,
+    /// `session_v2` and `session_message`, as 2.x writes them.
+    V2,
+}
+
+/// Where the database leaves a session's turn: in 1.x, the turn of one user
+/// message; in 2.x, one run.
 #[derive(Clone, Debug, PartialEq)]
 enum Level {
-    /// No message yet.
+    /// No turn yet.
     None,
-    /// A turn runs for the user message `user`, held up by a question when
-    /// a question tool waits on the user in it.
-    Open { user: String, question: bool },
-    /// The turn for the user message `user` ended in the assistant message
-    /// `assistant`, which tells `end`.
+    /// The turn `turn` runs, held up by a question when a question tool
+    /// waits on the user in it.
+    Open { turn: String, question: bool },
+    /// The turn `turn` ended, as `end` names the ending, which tells
+    /// `signals`. A subagent the turn left at work may still wait on a
+    /// question, and 2.x writes when the user saw the session idle.
     Ended {
-        user: String,
-        assistant: String,
-        end: BTreeSet<Signal>,
+        turn: String,
+        end: String,
+        signals: BTreeSet<Signal>,
+        question: bool,
+        viewed: bool,
     },
 }
 
 impl Level {
-    /// The user message that started the turn.
-    fn user(&self) -> Option<&str> {
+    fn turn(&self) -> Option<TurnKey> {
         match self {
             Level::None => None,
-            Level::Open { user, .. } | Level::Ended { user, .. } => Some(user),
+            Level::Open { turn, .. } | Level::Ended { turn, .. } => Some(TurnKey(turn.clone())),
         }
-    }
-
-    fn turn(&self) -> Option<TurnKey> {
-        self.user().map(|user| TurnKey(user.to_owned()))
     }
 
     /// What the level says, told all at once.
@@ -227,8 +252,20 @@ impl Level {
                 }
                 signals
             }
-            Level::Ended { end, .. } => end.clone(),
+            Level::Ended { signals, .. } => signals.clone(),
         }
+    }
+
+    /// Whether a question holds the turn up, in it or after it.
+    fn question(&self) -> bool {
+        match self {
+            Level::None => false,
+            Level::Open { question, .. } | Level::Ended { question, .. } => *question,
+        }
+    }
+
+    fn viewed(&self) -> bool {
+        matches!(self, Level::Ended { viewed: true, .. })
     }
 }
 
@@ -251,12 +288,22 @@ struct Row {
     archived: bool,
 }
 
+/// The sets of tables a database holds.
+#[derive(Clone, Copy)]
+struct Tables {
+    v1: bool,
+    v2: bool,
+}
+
 /// The database, opened read-only.
 struct Database {
     connection: Connection,
-    /// The file it was opened as: a database replaced in its place is
-    /// opened again.
+    /// The file it was opened as, and its schema's version then: a database
+    /// replaced in its place, or given other tables, as 2.x's first start
+    /// gives 1.x's, is opened again.
     ino: u64,
+    schema: i64,
+    tables: Tables,
     /// `PRAGMA data_version` at the last read: it changes with every commit
     /// another connection makes.
     version: Option<i64>,
@@ -264,7 +311,10 @@ struct Database {
 
 /// The statements the source runs, each checked against the schema when the
 /// database is opened, so a schema without the columns read fails at once.
+/// First 1.x's.
 const ROW: &str = "select parent_id, directory, time_archived from session where id = ?1";
+/// When the session's latest message was written, if it has a row.
+const LAST: &str = "select (select max(time_created) from message where session_id = ?1) from session where id = ?1";
 const STAMP: &str = "with recursive tree(id) as \
      (select ?1 union select session.id from session join tree on session.parent_id = tree.id) \
      select tree.id, (select max(seq) from event where aggregate_id = tree.id) from tree order by tree.id";
@@ -284,6 +334,41 @@ const QUESTION: &str = "with recursive tree(id) as \
      select exists(select 1 from part where session_id in (select id from tree) and time_created >= ?2 \
      and json_extract(data, '$.type') = 'tool' and json_extract(data, '$.tool') = 'question' \
      and json_extract(data, '$.state.status') = 'running')";
+const V1: [&str; 7] = [ROW, LAST, STAMP, LATEST, REFUSED, TEXTS, QUESTION];
+
+/// Then 2.x's. An assistant message's parts are in its row's `content`, or
+/// in `session_part` with the experimental `part_rows`.
+const ROW2: &str = "select parent_id, directory, time_archived from session_v2 where id = ?1";
+/// When the session's latest run started, if it has a row.
+const BUSY2: &str = "select time_busy from session_v2 where id = ?1";
+/// Each session of the tree with its latest event's seq, which 2.x keeps
+/// only in `event_sequence`, and each job the session left: a job's row
+/// changes and goes with no event of its own.
+const STAMP2: &str = "with recursive tree(id) as \
+     (select ?1 union select session_v2.id from session_v2 join tree on session_v2.parent_id = tree.id) \
+     select tree.id, (select seq from event_sequence where aggregate_id = tree.id) from tree \
+     union all select 'job ' || notification_id, time_updated from job where session_id = ?1 order by 1";
+const RUN2: &str = "select time_busy, time_idle, idle_outcome, time_viewed, \
+     exists(select 1 from job where session_id = ?1) from session_v2 where id = ?1";
+/// The text parts of the last assistant message written since `?2`.
+const TEXTS2: &str = "with last as (select id, data from session_message where session_id = ?1 \
+     and type = 'assistant' and time_created >= ?2 order by seq desc limit 1) \
+     select key, json_extract(value, '$.text') from last, json_each(last.data, '$.content') \
+     where json_extract(value, '$.type') = 'text' \
+     union all select ordinal, json_extract(session_part.data, '$.text') from last \
+     join session_part on session_part.message_id = last.id where session_part.type = 'text' order by 1";
+/// A question tool running in the latest assistant message of the session
+/// or of a subagent's session under it.
+const QUESTION2: &str = "with recursive tree(id) as \
+     (select ?1 union select session_v2.id from session_v2 join tree on session_v2.parent_id = tree.id), \
+     latest(id, data) as (select id, data from session_message where type = 'assistant' \
+     and seq = (select max(seq) from session_message as m where m.session_id = session_message.session_id \
+     and m.type = 'assistant') and session_id in (select id from tree)), \
+     tools(data) as (select value from latest, json_each(latest.data, '$.content') \
+     union all select session_part.data from latest join session_part on session_part.message_id = latest.id) \
+     select exists(select 1 from tools where json_extract(data, '$.type') = 'tool' \
+     and json_extract(data, '$.name') = 'question' and json_extract(data, '$.state.status') = 'running')";
+const V2: [&str; 6] = [ROW2, BUSY2, STAMP2, RUN2, TEXTS2, QUESTION2];
 
 impl Database {
     fn open(path: &Path, ino: u64) -> Result<Database> {
@@ -291,26 +376,76 @@ impl Database {
         let connection = Connection::open_with_flags(path, flags)
             .with_context(|| format!("opening {}", path.display()))?;
         connection.busy_timeout(Duration::from_millis(250))?;
-        for statement in [ROW, STAMP, LATEST, REFUSED, TEXTS, QUESTION] {
-            connection.prepare_cached(statement).with_context(|| {
-                format!(
-                    "{} is not a database this version reads (OpenCode 1.18 or later)",
-                    path.display()
-                )
-            })?;
+        let schema = schema_version(&connection)?;
+        let has = |table: &str| -> Result<bool> {
+            Ok(connection.query_row(
+                "select exists(select 1 from sqlite_master where type = 'table' and name = ?1)",
+                [table],
+                |row| row.get(0),
+            )?)
+        };
+        let tables = Tables {
+            v1: has("session")?,
+            v2: has("session_v2")?,
+        };
+        let unread = || {
+            format!(
+                "{} is not a database this version reads (OpenCode 1.18 to 2.3)",
+                path.display()
+            )
+        };
+        if !tables.v1 && !tables.v2 {
+            anyhow::bail!(unread());
+        }
+        let v1 = V1.iter().filter(|_| tables.v1);
+        let v2 = V2.iter().filter(|_| tables.v2);
+        for statement in v1.chain(v2) {
+            connection.prepare_cached(statement).with_context(unread)?;
         }
         Ok(Database {
             connection,
             ino,
+            schema,
+            tables,
             version: None,
         })
     }
 }
 
+fn schema_version(db: &Connection) -> Result<i64> {
+    Ok(db.query_row("pragma schema_version", [], |row| row.get(0))?)
+}
+
+/// The tables that hold the session's latest run, or None if it is in
+/// neither: 2.x's once it has a run later than 1.x's latest message.
+fn schema(db: &Connection, tables: Tables, id: &str) -> Result<Option<Schema>> {
+    let query = |statement: &str| -> Result<Option<Option<i64>>> {
+        Ok(db
+            .prepare_cached(statement)?
+            .query_row([id], |row| row.get(0))
+            .optional()?)
+    };
+    let v1 = if tables.v1 { query(LAST)? } else { None };
+    let v2 = if tables.v2 { query(BUSY2)? } else { None };
+    Ok(match (v1, v2) {
+        (None, None) => None,
+        (Some(_), None) => Some(Schema::V1),
+        (None, Some(_)) => Some(Schema::V2),
+        (Some(last), Some(busy)) => {
+            let later = busy.is_some_and(|busy| last.is_none_or(|last| busy > last));
+            Some(if later { Schema::V2 } else { Schema::V1 })
+        }
+    })
+}
+
 /// The session's row, or None if it is not in the database.
-fn row(db: &Connection, id: &str) -> Result<Option<Row>> {
-    let mut statement = db.prepare_cached(ROW)?;
-    let row = statement
+fn row(db: &Connection, schema: Schema, id: &str) -> Result<Option<Row>> {
+    let statement = match schema {
+        Schema::V1 => ROW,
+        Schema::V2 => ROW2,
+    };
+    let row = db
+        .prepare_cached(statement)?
         .query_row([id], |row| {
             Ok(Row {
                 parent: row.get(0)?,
@@ -322,17 +457,29 @@ fn row(db: &Connection, id: &str) -> Result<Option<Row>> {
     Ok(row)
 }
 
-/// A session and its subagents' sessions, each with its last event's seq.
+/// A session and its subagents' sessions, each with its last event's seq,
+/// and in 2.x the jobs it left with when each last changed.
 type Stamp = Vec<(String, Option<i64>)>;
 
-fn stamp(db: &Connection, id: &str) -> Result<Stamp> {
-    let mut statement = db.prepare_cached(STAMP)?;
+fn stamp(db: &Connection, schema: Schema, id: &str) -> Result<Stamp> {
+    let statement = match schema {
+        Schema::V1 => STAMP,
+        Schema::V2 => STAMP2,
+    };
+    let mut statement = db.prepare_cached(statement)?;
     let rows = statement.query_map([id], |row| Ok((row.get(0)?, row.get(1)?)))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Where the session's messages leave its turn.
-fn level(db: &Connection, id: &str) -> Result<Level> {
+fn level(db: &Connection, schema: Schema, id: &str) -> Result<Level> {
+    match schema {
+        Schema::V1 => level1(db, id),
+        Schema::V2 => level2(db, id),
+    }
+}
+
+/// Where the session's 1.x messages leave its turn.
+fn level1(db: &Connection, id: &str) -> Result<Level> {
     let latest = db
         .prepare_cached(LATEST)?
         .query_row([id], |row| {
@@ -350,11 +497,11 @@ fn level(db: &Connection, id: &str) -> Result<Level> {
         serde_json::from_str(&data).with_context(|| format!("reading message {message}"))?;
     if data.role == "user" {
         return Ok(Level::Open {
-            user: message,
+            turn: message,
             question: false,
         });
     }
-    let user = data
+    let turn = data
         .parent
         .ok_or_else(|| anyhow!("message {message} answers no user message"))?;
     let completed = data.time.completed.is_some_and(|time| !time.is_null());
@@ -375,33 +522,35 @@ fn level(db: &Connection, id: &str) -> Result<Level> {
         let question = db
             .prepare_cached(QUESTION)?
             .query_row(rusqlite::params![id, created], |row| row.get(0))?;
-        return Ok(Level::Open { user, question });
+        return Ok(Level::Open { turn, question });
     }
-    let mut end = BTreeSet::from([Signal::TurnEnded]);
-    if ends_on_question(&text(db, &message)?) {
-        end.insert(Signal::TurnEndedAsking);
+    let mut signals = BTreeSet::from([Signal::TurnEnded]);
+    if ends_on_question(&text1(db, &message)?) {
+        signals.insert(Signal::TurnEndedAsking);
     }
     if let Some(error) = &data.error {
-        end.insert(Signal::TurnFailed);
+        signals.insert(Signal::TurnFailed);
         if error.name.as_deref() == Some("MessageAbortedError") {
-            end.insert(Signal::Interrupted);
+            signals.insert(Signal::Interrupted);
         }
     }
     // Stopped while a request was retried: no finish, and no error. A step
     // that overflowed the context and is compacted automatically looks the
     // same until the compaction's message is written just after.
     if data.finish.is_none() && data.error.is_none() {
-        end.insert(Signal::Interrupted);
+        signals.insert(Signal::Interrupted);
     }
     Ok(Level::Ended {
-        user,
-        assistant: message,
-        end,
+        turn,
+        end: message,
+        signals,
+        question: false,
+        viewed: false,
     })
 }
 
-/// The message's last text part that OpenCode did not write itself.
-fn text(db: &Connection, message: &str) -> Result<String> {
+/// The 1.x message's last text part that OpenCode did not write itself.
+fn text1(db: &Connection, message: &str) -> Result<String> {
     let mut statement = db.prepare_cached(TEXTS)?;
     let texts = statement.query_map([message], |row| row.get::<_, String>(0))?;
     let mut last = String::new();
@@ -414,14 +563,76 @@ fn text(db: &Connection, message: &str) -> Result<String> {
     Ok(last)
 }
 
+/// Where the session's 2.x row leaves its latest run. A run starts by
+/// writing `time_busy` and ends by writing `time_idle`, never earlier, and
+/// how it ended; a run cut short by OpenCode shutting down writes no end,
+/// and is resumed when it starts again.
+fn level2(db: &Connection, id: &str) -> Result<Level> {
+    let (busy, idle, outcome, viewed, jobs) = db.prepare_cached(RUN2)?.query_row([id], |row| {
+        Ok((
+            row.get::<_, Option<i64>>(0)?,
+            row.get::<_, Option<i64>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<i64>>(3)?,
+            row.get::<_, bool>(4)?,
+        ))
+    })?;
+    let Some(busy) = busy else {
+        return Ok(Level::None);
+    };
+    let turn = busy.to_string();
+    let question = db
+        .prepare_cached(QUESTION2)?
+        .query_row([id], |row| row.get(0))?;
+    let Some(idle) = idle.filter(|&idle| idle >= busy) else {
+        return Ok(Level::Open { turn, question });
+    };
+    let mut signals = BTreeSet::from([Signal::TurnEnded]);
+    match outcome.as_deref() {
+        Some("failed") => signals.insert(Signal::TurnFailed),
+        Some("interrupted") => signals.insert(Signal::Interrupted),
+        _ => false,
+    };
+    if jobs {
+        signals.insert(Signal::Backgrounded);
+    }
+    if ends_on_question(&text2(db, id, busy)?) {
+        signals.insert(Signal::TurnEndedAsking);
+    }
+    Ok(Level::Ended {
+        turn,
+        end: idle.to_string(),
+        signals,
+        question,
+        viewed: viewed.is_some_and(|viewed| viewed >= idle),
+    })
+}
+
+/// The last text part of the last assistant message the run since `busy`
+/// wrote.
+fn text2(db: &Connection, id: &str, busy: i64) -> Result<String> {
+    let mut statement = db.prepare_cached(TEXTS2)?;
+    let texts = statement.query_map(rusqlite::params![id, busy], |row| {
+        row.get::<_, Option<String>>(1)
+    })?;
+    let mut last = String::new();
+    for text in texts {
+        last = text?.unwrap_or_default();
+    }
+    Ok(last)
+}
+
 /// The session a subagent's session works for, followed up to the session
 /// no other started; the session itself when it is not a subagent's, or its
 /// row is not there.
-fn root(db: &Connection, id: &str) -> Result<String> {
+fn root(db: &Connection, tables: Tables, id: &str) -> Result<String> {
     let mut id = id.to_owned();
     // Subagents start subagents, though never this deep.
     for _ in 0..16 {
-        match row(db, &id)?.and_then(|row| row.parent) {
+        let Some(schema) = schema(db, tables, &id)? else {
+            break;
+        };
+        match row(db, schema, &id)?.and_then(|row| row.parent) {
             Some(parent) => id = parent,
             None => break,
         }
@@ -459,7 +670,7 @@ impl OpenCode {
     }
 
     /// The database, opened if it is there and was not opened as it is.
-    fn open(&mut self) -> Result<Option<&Connection>> {
+    fn open(&mut self) -> Result<Option<&Database>> {
         let ino = match fs::metadata(&self.path) {
             Ok(metadata) => metadata.ino(),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -468,10 +679,14 @@ impl OpenCode {
             }
             Err(error) => return Err(error.into()),
         };
-        if self.db.as_ref().is_none_or(|db| db.ino != ino) {
+        let stale = match &self.db {
+            None => true,
+            Some(db) => db.ino != ino || schema_version(&db.connection)? != db.schema,
+        };
+        if stale {
             self.db = Some(Database::open(&self.path, ino)?);
         }
-        Ok(self.db.as_ref().map(|db| &db.connection))
+        Ok(self.db.as_ref())
     }
 
     /// What the database says of every session followed, if another process
@@ -501,7 +716,7 @@ impl OpenCode {
         let mut ended = Vec::new();
         let mut read = true;
         for (id, session) in &mut self.sessions {
-            match read_session(&tx, id, session, out) {
+            match read_session(&tx, db.tables, id, session, out) {
                 Ok(true) => {}
                 Ok(false) => ended.push(id.clone()),
                 // The others are read all the same, and this one is read
@@ -532,9 +747,15 @@ impl OpenCode {
     /// The session a subagent's session works for, as the database says.
     fn root(&mut self, id: &str) -> String {
         match self.open() {
-            Ok(Some(db)) => root(db, id).unwrap_or_else(|_| id.to_owned()),
+            Ok(Some(db)) => root(&db.connection, db.tables, id).unwrap_or_else(|_| id.to_owned()),
             _ => id.to_owned(),
         }
+    }
+
+    /// The tables that hold the session's latest run, as the database says.
+    fn schema(&mut self, id: &str) -> Option<Schema> {
+        let db = self.open().ok().flatten()?;
+        schema(&db.connection, db.tables, id).ok().flatten()
     }
 
     /// Where the database leaves a session now, if it has the session.
@@ -542,9 +763,12 @@ impl OpenCode {
         let Some(db) = self.open()? else {
             return Ok(None);
         };
-        let tx = db.unchecked_transaction()?;
-        let read = match row(&tx, id)? {
-            Some(row) => Some((row, stamp(&tx, id)?, level(&tx, id)?)),
+        let tx = db.connection.unchecked_transaction()?;
+        let read = match schema(&tx, db.tables, id)? {
+            Some(schema) => match row(&tx, schema, id)? {
+                Some(row) => Some((row, stamp(&tx, schema, id)?, level(&tx, schema, id)?)),
+                None => None,
+            },
             None => None,
         };
         tx.commit()?;
@@ -607,21 +831,28 @@ impl OpenCode {
 /// gone from the database or archived.
 fn read_session(
     db: &Connection,
+    tables: Tables,
     id: &str,
     session: &mut Session,
     out: &mut Vec<Observation>,
 ) -> Result<bool> {
-    match row(db, id)? {
+    let schema = schema(db, tables, id)?;
+    match schema
+        .map(|schema| row(db, schema, id))
+        .transpose()?
+        .flatten()
+    {
         None if !session.known => return Ok(true),
         None => return Ok(false),
         Some(row) if row.archived => return Ok(false),
         Some(_) => session.known = true,
     }
-    let stamp = stamp(db, id)?;
+    let schema = schema.expect("a row");
+    let stamp = stamp(db, schema, id)?;
     if stamp == session.stamp {
         return Ok(true);
     }
-    let level = level(db, id)?;
+    let level = level(db, schema, id)?;
     moved(id, &session.level, &level, out);
     session.stamp = stamp;
     session.level = level;
@@ -640,31 +871,47 @@ fn moved(id: &str, from: &Level, to: &Level, out: &mut Vec<Observation>) {
             turn.clone(),
         ));
     };
-    let new = to.user().is_some() && to.user() != from.user();
+    let one = |signal: Signal, out: &mut Vec<Observation>| tell(BTreeSet::from([signal]), out);
+    let held = |before: bool, now: bool, out: &mut Vec<Observation>| match (before, now) {
+        (false, true) => one(Signal::QuestionAsked, out),
+        (true, false) => one(Signal::Answered, out),
+        _ => {}
+    };
+    let new = to.turn().is_some() && to.turn() != from.turn();
     match (from, to) {
         (_, Level::None) => {}
         // A turn starts, or one that looked ended goes on.
         (_, Level::Open { .. }) if new || matches!(from, Level::Ended { .. }) => {
             tell(to.signals(), out)
         }
+        (_, Level::Open { .. }) => held(from.question(), to.question(), out),
+        // The same end, written again, tells only what changed since.
         (
-            Level::Open {
-                question: before, ..
+            Level::Ended {
+                end: before,
+                signals: told,
+                ..
             },
-            Level::Open { question, .. },
-        ) => match (before, question) {
-            (false, true) => tell(BTreeSet::from([Signal::QuestionAsked]), out),
-            (true, false) => tell(BTreeSet::from([Signal::Answered]), out),
-            _ => {}
-        },
-        (_, Level::Open { .. }) => {}
-        // Each end is told once, however often its rows are written again.
-        (_, Level::Ended { end, .. }) => {
-            if new {
-                tell(BTreeSet::from([Signal::Prompted]), out);
+            Level::Ended { end, signals, .. },
+        ) if !new && before == end && told == signals => {
+            held(from.question(), to.question(), out);
+            if !from.viewed() && to.viewed() {
+                one(Signal::Looked, out);
             }
-            if from != to {
-                tell(end.clone(), out);
+        }
+        // Each end is told once, however often its rows are written again.
+        (_, Level::Ended { .. }) => {
+            if new {
+                one(Signal::Prompted, out);
+            }
+            tell(to.signals(), out);
+            // The end lets go of any question, and one a subagent still
+            // asks holds the session up again.
+            if to.question() {
+                one(Signal::QuestionAsked, out);
+            }
+            if to.viewed() {
+                one(Signal::Looked, out);
             }
         }
     }
@@ -693,8 +940,14 @@ impl Source for OpenCode {
             }
             // Gone from the database, or archived; a row that cannot be read
             // is followed all the same.
+            let gone = |db: &Database| -> Result<bool> {
+                Ok(match schema(&db.connection, db.tables, id)? {
+                    None => true,
+                    Some(schema) => row(&db.connection, schema, id)?.is_none_or(|row| row.archived),
+                })
+            };
             if let Some(db) = self.open()?
-                && row(db, id).is_ok_and(|row| row.is_none_or(|row| row.archived))
+                && gone(db).unwrap_or(false)
             {
                 continue;
             }
@@ -713,9 +966,17 @@ impl Source for OpenCode {
             ));
             // What only the plugin told, a permission or an error before the
             // turn's loop, is not in the database.
+            let level = &self.sessions[id].level;
             let mut told = Told::default();
-            told.tell(&self.sessions[id].level.signals());
-            for signal in told.current() {
+            told.tell(&level.signals());
+            if matches!(level, Level::Ended { .. }) && level.question() {
+                told.tell(&BTreeSet::from([Signal::QuestionAsked]));
+            }
+            let mut signals = told.current();
+            if level.viewed() {
+                signals.push(Signal::Looked);
+            }
+            for signal in signals {
                 seeded.push(Observation::new(
                     Harness::OpenCode,
                     id,
@@ -774,6 +1035,10 @@ impl Source for OpenCode {
                     return out;
                 };
                 let directory = payload.directory.unwrap_or_default();
+                let followed = self
+                    .sessions
+                    .get(&id)
+                    .is_some_and(|session| session.liveness == liveness);
                 let (cwd, unread) = self.follow(&id, liveness.clone(), directory);
                 if let Some(unread) = unread {
                     eprintln!(
@@ -789,6 +1054,30 @@ impl Source for OpenCode {
                     Event::Started(Start { cwd, liveness }),
                     self.turn(&id),
                 ));
+                // 2.x writes a run's start before the plugin hears of it, so
+                // a run that failed at once may have ended by now: as read
+                // already, or, for a session not followed yet, told here.
+                // 1.x's busy can come before the turn's prompt is written.
+                let level = self.sessions[&id].level.clone();
+                if let Level::Ended { turn, .. } = &level
+                    && self.schema(&id) == Some(Schema::V2)
+                {
+                    if !followed {
+                        out.push(Observation::new(
+                            Harness::OpenCode,
+                            &id,
+                            Channel::Hook,
+                            Event::one(Signal::Prompted),
+                            level.turn(),
+                        ));
+                        let open = Level::Open {
+                            turn: turn.clone(),
+                            question: false,
+                        };
+                        moved(&id, &open, &level, &mut out);
+                    }
+                    return out;
+                }
                 BTreeSet::from([Signal::Prompted])
             }
             "permission.asked" => BTreeSet::from([Signal::PermissionAsked]),
@@ -845,8 +1134,14 @@ mod tests {
         let seeded = fixture::printed(opencode.seed(&liveness::System, &[]).unwrap());
         assert!(seeded.is_empty(), "no session is bound to a process");
         let db = opencode.open().unwrap().expect("a database");
+        let table = if db.tables.v2 {
+            "session_v2"
+        } else {
+            "session"
+        };
         let mut roots = db
-            .prepare("select id, title from session where parent_id is null and time_archived is null order by time_updated desc")
+            .connection
+            .prepare(&format!("select id, coalesce(title, '') from {table} where parent_id is null and time_archived is null order by time_updated desc"))
             .unwrap();
         let roots: Vec<(String, String)> = roots
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
@@ -855,8 +1150,9 @@ mod tests {
             .unwrap();
         println!("{} sessions", roots.len());
         for (id, title) in roots {
-            let level = level(db, &id).unwrap();
-            println!("{id}  {title:<40.40}  {level:?}");
+            let schema = schema(&db.connection, db.tables, &id).unwrap().unwrap();
+            let level = level(&db.connection, schema, &id).unwrap();
+            println!("{id}  {title:<40.40}  {schema:?} {level:?}");
         }
     }
 
@@ -965,6 +1261,48 @@ mod tests {
         assert_eq!(phase(&replay("interrupted.hook")), Phase::Idle);
     }
 
+    /// 2.x writes when the user saw a run's end, after a question and after
+    /// a wake for a background shell alike.
+    #[test]
+    fn a_2x_run_s_end_the_user_saw_is_read() {
+        for name in [
+            "a_2x_question_holds_the_run_until_answered",
+            "backgrounded.file",
+        ] {
+            assert_eq!(phase(&replay(name)), Phase::StoppedRead, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_2x_run_that_failed_before_the_plugin_heard_of_it_fails() {
+        let replay = replay("a_2x_run_that_failed_before_the_plugin_heard_of_it_fails");
+        assert_eq!(phase(&replay), Phase::Failed);
+    }
+
+    #[test]
+    fn a_2x_run_the_user_interrupts_ends_interrupted() {
+        let replay = replay("a_2x_run_the_user_interrupts_ends_interrupted");
+        assert_eq!(phase(&replay), Phase::Idle);
+    }
+
+    #[test]
+    fn a_deleted_2x_session_ends() {
+        assert!(replay("a_deleted_2x_session_ends").phases().is_empty());
+    }
+
+    /// Each version's run ends once, read from the tables it wrote.
+    #[test]
+    fn a_migrated_session_is_read_from_the_tables_of_its_latest_run() {
+        let replay = replay("a_migrated_session_is_read_from_the_tables_of_its_latest_run");
+        let ends = replay
+            .yielded
+            .iter()
+            .filter(|(o, _)| o.event.signals().contains(&Signal::TurnEnded))
+            .count();
+        assert_eq!(ends, 2);
+        assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
     #[test]
     fn a_busy_from_a_process_not_among_the_hook_s_ancestors_starts_nothing() {
         let replay = replay("started.hook");
@@ -989,8 +1327,37 @@ mod tests {
             .seed(&liveness::System, &[])
             .unwrap_err();
         assert!(
-            format!("{error:#}").contains("OpenCode 1.18 or later"),
+            format!("{error:#}")
+                .contains("is not a database this version reads (OpenCode 1.18 to 2.3)"),
             "{error:#}"
         );
+    }
+
+    /// 2.x's own database has none of 1.x's tables, and a database 2.x
+    /// migrated has both.
+    #[test]
+    fn a_database_of_either_version_or_both_is_read() {
+        let schemas = |names: &[&str]| {
+            let home = tempfile::tempdir().unwrap();
+            let folder = home.path().join(".local/share/opencode");
+            fs::create_dir_all(&folder).unwrap();
+            let db = Connection::open(folder.join("opencode.db")).unwrap();
+            for name in names {
+                let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/opencode")
+                    .join(name);
+                db.execute_batch(&fs::read_to_string(path).unwrap())
+                    .unwrap();
+            }
+            let seeded = OpenCode::new(home.path()).seed(&liveness::System, &[]);
+            seeded
+                .map(|seed| seed.observations.len())
+                .map_err(|error| format!("{error:#}"))
+        };
+        assert_eq!(schemas(&["schema.sql"]), Ok(0));
+        assert_eq!(schemas(&["schema-2.sql"]), Ok(0));
+        assert_eq!(schemas(&["schema.sql", "schema-2.sql"]), Ok(0));
+        let empty = schemas(&[]).unwrap_err();
+        assert!(empty.ends_with("(OpenCode 1.18 to 2.3)"), "{empty}");
     }
 }
