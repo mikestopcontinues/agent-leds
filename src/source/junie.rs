@@ -169,6 +169,9 @@ struct Record {
     state: Option<String>,
     /// What a SessionA2uxEvent wraps.
     event: Option<Envelope>,
+    /// When it was written, in Unix milliseconds. A block's goes backwards,
+    /// but a prompt's or a task start's is the time of its writing.
+    timestamp_ms: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -225,6 +228,11 @@ impl Record {
 
     fn starts_turn(&self) -> bool {
         matches!(self.kind.as_str(), "UserPromptEvent" | "TaskStartedEvent")
+    }
+
+    /// Whether the record was written before `start`, in Unix milliseconds.
+    fn before(&self, start: u64) -> bool {
+        self.timestamp_ms.is_some_and(|written| written < start)
     }
 
     /// The session state and block of a SessionA2uxEvent.
@@ -410,10 +418,12 @@ impl Junie {
         }
     }
 
-    /// Starts following a session its process took, from its log if one is
-    /// there: as a seed reads it, quietly, when the log began before the
-    /// process took the session, as for a resume, or when `seeding`; from its
-    /// first line, as it is read next, when the process began it.
+    /// Starts following a session its process took. When `seeding`, its log
+    /// is read back to where its last task began, and where that leaves the
+    /// session is told after its start. Otherwise the session begins idle: of
+    /// a log begun before the process took the session, as for a resume, only
+    /// what the process wrote counts; a log the process began is read from
+    /// its first line.
     fn start(
         &mut self,
         id: &str,
@@ -437,8 +447,11 @@ impl Junie {
             },
         );
         let log = self.log(id);
-        let resumed = created_ms(&log).is_ok_and(|created| seeding || created < sidecar.started_at);
-        if resumed && let Err(error) = self.seed_log(id, &log) {
+        let created = created_ms(&log);
+        if seeding
+            && created.is_ok()
+            && let Err(error) = self.seed_log(id, &log)
+        {
             // The session is still followed, from what it writes next.
             eprintln!("agent-leds: reading {}: {error}", log.display());
             let session = self.sessions.get_mut(id).expect("just started");
@@ -453,14 +466,43 @@ impl Junie {
             }),
             session.turn.clone(),
         ));
-        if resumed {
-            // Where the log leaves it, which is not news.
+        if seeding {
             for (signal, turn) in self.current(id) {
-                let mut o = observation(id, Event::one(signal), turn);
-                o.quiet = true;
-                out.push(o);
+                out.push(observation(id, Event::one(signal), turn));
             }
+        } else if created.is_ok_and(|created| created < sidecar.started_at)
+            && let Err(error) = self.resume_log(id, &log, sidecar.started_at, out)
+        {
+            eprintln!("agent-leds: reading {}: {error}", log.display());
+            let session = self.sessions.get_mut(id).expect("just started");
+            session.log = Tail::at_end(&log).ok();
         }
+    }
+
+    /// Opens the log of a session a process resumed, at its end, and tells
+    /// what the process wrote to it already: from the first task it began,
+    /// which was written after the process took the session at `start`.
+    fn resume_log(
+        &mut self,
+        id: &str,
+        path: &Path,
+        start: u64,
+        out: &mut Vec<Observation>,
+    ) -> io::Result<()> {
+        let (lines, tail) = tail::tail_back(path, |lines| {
+            let mut records = lines.iter().filter_map(|line| Record::read(line));
+            records.any(|record| record.before(start))
+        })?;
+        self.sessions.get_mut(id).expect("started").log = Some(tail);
+        let records: Vec<Record> = lines
+            .iter()
+            .filter_map(|line| Record::read(line))
+            .skip_while(|record| !record.starts_turn() || record.before(start))
+            .collect();
+        for record in &records {
+            self.record(id, record, out);
+        }
+        Ok(())
     }
 
     /// Where the tail of a session's log leaves it: read back to where its
@@ -911,34 +953,28 @@ mod tests {
     }
 
     #[test]
-    fn a_resumed_session_shows_where_its_log_left_it_without_announcing() {
-        let replay = replay("turn_ended.file");
-        let home = replay.home.path();
-        let mut source = replay.source();
-        source.seed(&replay.kernel, &[]).unwrap();
-        // The same process takes the session again, as from its history,
-        // with a sidecar of its own written after the log was begun.
-        let resumed = serde_json::json!({
-            "pid": 64871,
-            "sessionId": "session-260824-174155-sm5c",
-            "projectPath": "/Users/me/Code/app",
-            "startedAt": 4_102_444_800_000u64
-        });
-        let sidecar =
-            home.join(".junie/processes/64871-session-260824-174155-sm5c-0b3c5d7e9f1a.json");
-        fs::write(&sidecar, resumed.to_string()).unwrap();
-        let observations = source.changed(&replay.kernel, Some(&[sidecar]));
-        let told: Vec<(BTreeSet<Signal>, bool)> = observations
+    fn a_resumed_session_starts_idle_whatever_its_log_left() {
+        let replay = replay("a_resumed_session_starts_idle_whatever_its_log_left");
+        let signals: Vec<BTreeSet<Signal>> = replay
+            .yielded
             .iter()
-            .map(|o| (o.event.signals(), o.quiet))
+            .map(|(o, _)| o.event.signals())
             .collect();
+        // The killed process's wait is not told again for the one resuming.
         assert_eq!(
-            told,
+            signals,
             [
-                (BTreeSet::from([Signal::Started]), false),
-                (BTreeSet::from([Signal::TurnEnded]), true)
+                Signal::Started,
+                Signal::Prompted,
+                Signal::Prompted,
+                Signal::PermissionAsked,
+                Signal::Ended,
+                Signal::Started,
+                Signal::Prompted
             ]
+            .map(|signal| BTreeSet::from([signal]))
         );
+        assert_eq!(phase(&replay), Phase::Working);
     }
 
     #[test]
