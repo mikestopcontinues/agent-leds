@@ -3,13 +3,12 @@
 //! led, and the hook process's ancestors say which process runs the session,
 //! so a session whose process ends leaves even when no hook says so.
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use super::{Event, Hook, Observation, Source, Start, Told};
+use super::{Event, Hook, Observation, Source, Start};
 use crate::fsm::{Channel, Signal};
 use crate::harness::{self, Harness};
 use crate::liveness::{self, Kernel, Liveness, Proc, StartCheck};
@@ -21,8 +20,6 @@ pub struct Interim {
     home: PathBuf,
     /// Where Junie's hook keeps the session its last prompt named.
     state: PathBuf,
-    /// What the hooks have told of each session, and the process running it.
-    told: HashMap<String, (Told, Option<Liveness>)>,
 }
 
 impl Interim {
@@ -31,7 +28,6 @@ impl Interim {
             harness,
             home: home.to_owned(),
             state: state.to_owned(),
-            told: HashMap::new(),
         }
     }
 }
@@ -115,7 +111,7 @@ impl Source for Interim {
         Vec::new()
     }
 
-    fn hook(&mut self, k: &dyn Kernel, hook: &Hook) -> Vec<Observation> {
+    fn hook(&mut self, _k: &dyn Kernel, hook: &Hook) -> Vec<Observation> {
         let Some((id, cwd, signal)) = harness::interim(self.harness, &hook.payload, &self.state)
         else {
             return Vec::new();
@@ -135,38 +131,15 @@ impl Source for Interim {
         if signal != Signal::Ended
             && let Some(liveness) = process(self.harness, &self.home, &hook.ancestry)
         {
-            let (told, running) = self
-                .told
-                .entry(id.clone())
-                .or_insert((Told::default(), None));
-            // A session whose process ended starts again from Idle.
-            if running
-                .as_ref()
-                .is_some_and(|running| !liveness::alive(k, running))
-            {
-                *told = Told::default();
-            }
-            *running = Some(liveness.clone());
             out.push(observation(Event::Started(Start { cwd, liveness })));
-        }
-        if let Some((told, _)) = self.told.get_mut(&id) {
-            told.tell(signal);
-        }
-        if signal == Signal::Ended {
-            self.told.remove(&id);
         }
         out.push(observation(Event::Signal(signal)));
         out
     }
 
-    fn current(&self, id: &str) -> Vec<(Signal, Option<TurnKey>)> {
-        let Some((told, _)) = self.told.get(id) else {
-            return Vec::new();
-        };
-        told.current()
-            .into_iter()
-            .map(|signal| (signal, None))
-            .collect()
+    /// Nothing: where a hook-bound session stands is the saved queue's to say.
+    fn current(&self, _id: &str) -> Vec<(Signal, Option<TurnKey>)> {
+        Vec::new()
     }
 
     fn behind(&self) -> bool {
