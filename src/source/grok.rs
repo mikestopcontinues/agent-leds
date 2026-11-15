@@ -14,12 +14,13 @@
 //! approval wait is not told and shows as working.
 //!
 //! The files are undocumented. What they say at each moment of a session
-//! was taken from Grok 1.0.77.
+//! was taken from Grok [`VERSION`], and [`drift`] says when Grok has moved on.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -32,6 +33,12 @@ use crate::fsm::{Channel, Signal};
 use crate::harness::{Harness, ends_on_question};
 use crate::liveness::{self, Kernel, Liveness, StartCheck};
 use crate::queue::TurnKey;
+
+/// The Grok release the fixtures were recorded from.
+pub const VERSION: &str = "1.0.77";
+
+/// The `schema_version` that release writes on each `turn_started`.
+const SCHEMA: &str = "1.0";
 
 const fn file(
     signal: Signal,
@@ -152,6 +159,7 @@ struct Record {
     #[serde(rename = "type")]
     kind: String,
     turn_number: Option<u64>,
+    schema_version: Option<String>,
     tool_name: Option<String>,
     outcome: Option<String>,
     cancellation_category: Option<String>,
@@ -693,6 +701,52 @@ fn tell(
     ));
 }
 
+/// What says Grok may write its files otherwise than the fixtures pin:
+/// `version`, what `grok --version` printed, names another release, or the
+/// newest session's last turn names another schema. Grok updates itself by
+/// default, so a new release arrives unannounced.
+pub fn drift(home: &Path, version: Option<&str>) -> Option<String> {
+    let mut problems = Vec::new();
+    // "grok 1.0.77 (50ca579fa996) [stable]"
+    let release = version.and_then(|printed| printed.split_whitespace().nth(1));
+    if let Some(release) = release
+        && release != VERSION
+    {
+        problems.push(format!(
+            "grok is {release}, and its files were read as {VERSION} writes them"
+        ));
+    }
+    if let Some(schema) = newest_schema(&home.join(".grok/sessions"))
+        && schema != SCHEMA
+    {
+        problems.push(format!(
+            "the newest session's turn_started has schema_version {schema}, and {VERSION} writes {SCHEMA}"
+        ));
+    }
+    (!problems.is_empty())
+        .then(|| format!("{}; its format may have changed", problems.join(", and ")))
+}
+
+/// The `schema_version` of the last turn started in the events log written
+/// last, or `none` when that turn names none.
+fn newest_schema(sessions: &Path) -> Option<String> {
+    let modified = |path: &Path| fs::metadata(path).and_then(|m| m.modified()).ok();
+    let newest: (SystemTime, PathBuf) = fs::read_dir(sessions)
+        .ok()?
+        .flatten()
+        .filter_map(|cwd| fs::read_dir(cwd.path()).ok())
+        .flatten()
+        .flatten()
+        .map(|session| session.path().join(Log::Events.name()))
+        .filter_map(|log| Some((modified(&log)?, log)))
+        .max()?;
+    let (lines, _) = tail::tail_back(&newest.1, Record::starts_turn).ok()?;
+    let started = lines
+        .iter()
+        .find_map(|line| Record::read(line).filter(|record| record.kind == "turn_started"))?;
+    Some(started.schema_version.unwrap_or_else(|| "none".to_owned()))
+}
+
 impl Source for Grok {
     fn harness(&self) -> Harness {
         Harness::Grok
@@ -970,6 +1024,38 @@ mod tests {
         fixture::a_read_that_fails_leaves_nothing_behind(
             &replay("turn_ended.file"),
             ".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dc0d-63f4-7eb0-95d3-175af42f88aa/events.jsonl",
+        );
+    }
+
+    #[test]
+    fn a_release_or_schema_other_than_the_fixtures_pin_is_drift() {
+        let replay = replay("turn_ended.file");
+        let home = replay.home.path();
+        let pinned = format!("grok {VERSION} (50ca579fa996) [stable]\n");
+        assert_eq!(drift(home, Some(&pinned)), None);
+        assert_eq!(drift(home, None), None);
+        assert_eq!(
+            drift(home, Some("grok 1.0.80 (0123456789ab) [stable]")).unwrap(),
+            format!(
+                "grok is 1.0.80, and its files were read as {VERSION} writes them; its format may \
+                 have changed"
+            )
+        );
+        let log = home.join(
+            ".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dc0d-63f4-7eb0-95d3-175af42f88aa/events.jsonl",
+        );
+        let text = fs::read_to_string(&log).unwrap();
+        fs::write(
+            &log,
+            text.replace("\"schema_version\":\"1.0\"", "\"schema_version\":\"2.0\""),
+        )
+        .unwrap();
+        assert_eq!(
+            drift(home, Some(&pinned)).unwrap(),
+            format!(
+                "the newest session's turn_started has schema_version 2.0, and {VERSION} writes \
+                 {SCHEMA}; its format may have changed"
+            )
         );
     }
 }

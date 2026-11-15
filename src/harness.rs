@@ -217,6 +217,11 @@ impl Harness {
         {
             problems.push(format!("{error:#}"));
         }
+        if self == Harness::Grok
+            && let Err(error) = grok::claude_hooks(home)
+        {
+            problems.push(format!("{error:#}"));
+        }
         if !problems.is_empty() {
             bail!("{}", problems.join("; "));
         }
