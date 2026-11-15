@@ -25,7 +25,7 @@ use crate::harness::Harness;
 use crate::ipc::{self, Overlap, Request, Status, View};
 use crate::liveness::{self, Liveness};
 use crate::player::Player;
-use crate::queue::{Change, Expiry, Problem, Queue};
+use crate::queue::{Change, Expiry, Key, Problem, Queue};
 use crate::render::{self, Step};
 use crate::source::{self, Observation, Read, Sources};
 use crate::state::State;
@@ -457,9 +457,12 @@ impl<W: World> Daemon<W> {
     }
 
     /// Applies a batch of observations, then saves and shows the result
-    /// once: the most urgent state any of them announces, or else the wave.
+    /// once: the most urgent state announced that its session still holds
+    /// after the whole batch, or else the wave. A later signal in the batch
+    /// can move a session on from what it announced, as when a turn ends and
+    /// a prompt the user queued starts the next.
     fn observe(&mut self, observations: Vec<Observation>) {
-        let mut wants: Option<State> = None;
+        let mut announced: Vec<(Key, State)> = Vec::new();
         let (mut save, mut settle) = (false, false);
         for o in observations {
             match self.apply(&o) {
@@ -471,10 +474,16 @@ impl<W: World> Daemon<W> {
                 }
                 Change::Announce(state) => {
                     save = true;
-                    wants = Some(wants.map_or(state, |wanted| wanted.min(state)));
+                    settle = true;
+                    announced.push((o.key, state));
                 }
             }
         }
+        let wants = announced
+            .into_iter()
+            .filter(|(key, state)| self.queue.phase(key).state() == Some(*state))
+            .map(|(_, state)| state)
+            .min();
         if let Some(state) = wants {
             if matches!(state, State::Stopped | State::Question) {
                 // A session whose turn ends while the user is looking at it is read already.
@@ -629,7 +638,6 @@ mod tests {
     use super::*;
     use crate::fsm::Phase;
     use crate::liveness::StartCheck;
-    use crate::queue::Key;
     use crate::source::{Event, Hook, Start};
 
     /// A world the test controls: a card that records what is written to
@@ -843,6 +851,35 @@ mod tests {
         let snake = render::change(Some(State::Stopped), &[], &[State::Stopped], &daemon.config);
         assert_eq!(daemon.world.written, [snake[0].program.clone()]);
         assert_eq!(daemon.world.saved_queues, 1);
+    }
+
+    #[test]
+    fn a_stop_that_a_later_signal_in_the_batch_moves_on_from_is_not_announced() {
+        let mut daemon = daemon();
+        tell(&mut daemon, "s1", &[Signal::Prompted]);
+        tell(&mut daemon, "s2", &[Signal::Prompted]);
+        play_out(&mut daemon);
+        let written = daemon.world.written.len();
+        // s1's turn ends and the prompt the user queued starts the next one
+        // in the same read: s1 works on, so nothing is announced.
+        tell(&mut daemon, "s1", &[Signal::TurnEnded, Signal::Prompted]);
+        assert_eq!(daemon.world.written.len(), written);
+        assert_eq!(states(&daemon), [State::Working, State::Working]);
+        // An announce another session still holds after the batch plays.
+        let batch = vec![
+            observation("s1", Event::one(Signal::TurnEnded)),
+            observation("s2", Event::one(Signal::QuestionAsked)),
+            observation("s1", Event::one(Signal::Prompted)),
+        ];
+        daemon.world.reads.push_back(batch);
+        daemon.take(vec![Input::Files(vec!["/Users/me/.claude".into()])]);
+        let snake = render::change(
+            Some(State::Question),
+            &[State::Working, State::Working],
+            &daemon.slots(),
+            &daemon.config,
+        );
+        assert_eq!(daemon.world.written.last(), Some(&snake[0].program));
     }
 
     #[test]
