@@ -3,9 +3,10 @@
 //! started, rewritten whole on every change. Each session keeps a folder,
 //! `~/.grok/sessions/<cwd folder>/<session>/`, with two logs appended a
 //! record at a time: `events.jsonl` says when a turn starts, waits and ends,
-//! and `updates.jsonl` holds what the agent wrote and the subagents it left
-//! running. The events own every boundary; the updates are read to their end
-//! when a turn ends, for its final text. Beside them `plan_mode.json`,
+//! and `updates.jsonl` holds what the agent wrote, the subagents it left
+//! running, and the whole list of its background commands at each change.
+//! The events own every boundary; the updates are read to their end when a
+//! turn ends, for its final text. Beside them `plan_mode.json`,
 //! replaced whole at each change, says whether a plan waits on the user's
 //! approval. No hook is needed.
 //!
@@ -108,7 +109,7 @@ pub const SIGNALS: &[Declared] = &[
     file(
         Signal::Backgrounded,
         Evidence::Observed,
-        "a turn_ended while updates.jsonl has a subagent_spawned with no subagent_finished, or a task_backgrounded (a background command) with no task_completed",
+        "a turn_ended while updates.jsonl has a subagent_spawned with no subagent_finished, or its last background_tasks lists a command running that no task_completed has ended since; a command that never exits, such as a dev server, keeps every later turn end in the background, unannounced, since nothing says at its start whether it will wake the session",
         "probe-grok subagent, run e; gaps grok-x a",
     ),
     file(
@@ -218,10 +219,11 @@ struct Change {
     kind: String,
     content: Option<Value>,
     child_session_id: Option<String>,
-    /// The background task a `task_backgrounded` started.
-    task_id: Option<String>,
     /// The background task a `task_completed` ended.
     task_snapshot: Option<Task>,
+    /// Every background task of the session, as `background_tasks` lists
+    /// them at each change.
+    tasks: Option<Vec<Task>>,
     #[serde(default)]
     will_wake: bool,
 }
@@ -229,6 +231,8 @@ struct Change {
 #[derive(Deserialize)]
 struct Task {
     task_id: String,
+    /// `running`, `completed` or `failed`, in a `background_tasks` list.
+    status: Option<String>,
 }
 
 impl Update {
@@ -240,8 +244,21 @@ impl Update {
         self.timestamp.is_some_and(|written| written < start)
     }
 
+    /// A message the user sent the agent. A `!` shell command is written as
+    /// one too, with the command in its `_meta`, but it is no turn.
     fn is_prompt(&self) -> bool {
-        self.params.update.kind == "user_message_chunk"
+        let change = &self.params.update;
+        let shell = change
+            .content
+            .as_ref()
+            .and_then(|content| content.get("_meta"))
+            .and_then(|meta| meta.get("bash_command"))
+            .is_some();
+        change.kind == "user_message_chunk" && !shell
+    }
+
+    fn lists_tasks(&self) -> bool {
+        self.params.update.kind == "background_tasks"
     }
 }
 
@@ -313,14 +330,21 @@ struct Session {
     question: bool,
     /// Whether a plan waits on the user's approval.
     plan: bool,
-    /// The subagents and background tasks started and not finished.
-    children: HashSet<String>,
+    /// The subagents started and not finished.
+    subagents: HashSet<String>,
+    /// The background tasks running, as Grok last listed them.
+    tasks: HashSet<String>,
     /// The last thing the agent wrote since the latest prompt.
     text: String,
     told: Told,
 }
 
 impl Session {
+    /// Whether work the session started still runs.
+    fn running(&self) -> bool {
+        !self.subagents.is_empty() || !self.tasks.is_empty()
+    }
+
     fn reader(&mut self, log: Log) -> &mut Reader {
         match log {
             Log::Events => &mut self.events,
@@ -441,7 +465,8 @@ impl Grok {
                 turn: None,
                 question: false,
                 plan: false,
-                children: HashSet::new(),
+                subagents: HashSet::new(),
+                tasks: HashSet::new(),
                 text: String::new(),
                 told: Told::default(),
             },
@@ -486,7 +511,9 @@ impl Grok {
 
     /// Reads what was appended to one of a session's logs. A log read for
     /// the first time is read back to where the session's last turn began,
-    /// counting only what its own process wrote.
+    /// and the updates on back to Grok's last list of background tasks, which
+    /// a command started turns before may still be in; either way only as
+    /// far as its own process wrote.
     fn tail(&mut self, id: &str, log: Log, out: &mut Vec<Observation>) -> Result<(), Unread> {
         let Some(session) = self.sessions.get_mut(id) else {
             return Ok(());
@@ -499,13 +526,17 @@ impl Grok {
         let reader = session.reader(log);
         let lines = match &mut reader.tail {
             None => {
+                let (mut prompt, mut tasks) = (false, false);
                 let anchors = |line: &[u8]| match log {
                     Log::Events => {
                         Record::starts_turn(line)
                             || Record::read(line).is_some_and(|record| record.before(start))
                     }
-                    Log::Updates => Update::read(line)
-                        .is_some_and(|update| update.is_prompt() || update.before(start)),
+                    Log::Updates => Update::read(line).is_some_and(|update| {
+                        prompt |= update.is_prompt();
+                        tasks |= update.lists_tasks();
+                        (prompt && tasks) || update.before(start)
+                    }),
                 };
                 let (lines, tail) = match tail::tail_back(&path, anchors) {
                     Ok(read) => read,
@@ -642,7 +673,7 @@ impl Grok {
             }
             _ => {}
         }
-        if !session.children.is_empty() {
+        if session.running() {
             end.insert(Signal::Backgrounded);
         }
         tell(id, session, end, out);
@@ -657,9 +688,11 @@ impl Grok {
         if update.before(session.start) {
             return;
         }
+        if update.is_prompt() {
+            session.text.clear();
+        }
         let change = update.params.update;
         match change.kind.as_str() {
-            "user_message_chunk" => session.text.clear(),
             "agent_message_chunk" => {
                 let text = change
                     .content
@@ -667,16 +700,23 @@ impl Grok {
                     .and_then(|content| content.get("text"));
                 session.text = text.and_then(Value::as_str).unwrap_or_default().to_owned();
             }
-            "subagent_spawned" => session.children.extend(change.child_session_id),
-            "task_backgrounded" => session.children.extend(change.task_id),
+            "subagent_spawned" => session.subagents.extend(change.child_session_id),
+            "background_tasks" => {
+                let tasks = change.tasks.into_iter().flatten();
+                session.tasks = tasks
+                    .filter(|task| task.status.as_deref() == Some("running"))
+                    .map(|task| task.task_id)
+                    .collect();
+            }
             "subagent_finished" | "task_completed" => {
-                let child = change.child_session_id;
-                let task = change.task_snapshot.map(|task| task.task_id);
-                for child in child.iter().chain(&task) {
-                    session.children.remove(child);
+                if let Some(child) = change.child_session_id {
+                    session.subagents.remove(&child);
+                }
+                if let Some(task) = change.task_snapshot {
+                    session.tasks.remove(&task.task_id);
                 }
                 // Work that wakes its parent starts a turn instead.
-                if session.children.is_empty() && !change.will_wake {
+                if !session.running() && !change.will_wake {
                     tell(id, session, [Signal::BackgroundDone], out);
                 }
             }
@@ -978,6 +1018,22 @@ mod tests {
         }
         assert_eq!(queue.phase(&finished.key), Phase::Working);
         assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn a_background_command_from_an_earlier_turn_outlives_a_restart() {
+        let replay = replay("a_background_command_from_an_earlier_turn_outlives_a_restart");
+        assert_eq!(phase(&replay), Phase::Background);
+        let seeded = fixture::seed(&replay);
+        assert_eq!(seeded.sessions()[0].phase, Phase::Background);
+    }
+
+    #[test]
+    fn a_shell_command_after_a_question_leaves_it_asking() {
+        let replay = replay("a_shell_command_after_a_question_leaves_it_asking");
+        assert_eq!(phase(&replay), Phase::Asked);
+        let seeded = fixture::seed(&replay);
+        assert_eq!(seeded.sessions()[0].phase, Phase::Asked);
     }
 
     #[test]

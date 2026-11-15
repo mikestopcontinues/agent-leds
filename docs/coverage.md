@@ -148,7 +148,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 - Claude Code, file, observed: an end_turn record while the session file is busy with delegated work, or waiting to busy after the turn closed (probe-claude cc3, cc4, cc5)
 - Codex, file, observed: task_complete while a subagent the turn started, or gave a followup_task, has not completed (probe-codex runA PROMPT5; desktop rollout 2026-10-13)
-- Grok, file, observed: a turn_ended while updates.jsonl has a subagent_spawned with no subagent_finished, or a task_backgrounded (a background command) with no task_completed (probe-grok subagent, run e; gaps grok-x a)
+- Grok, file, observed: a turn_ended while updates.jsonl has a subagent_spawned with no subagent_finished, or its last background_tasks lists a command running that no task_completed has ended since; a command that never exits, such as a dev server, keeps every later turn end in the background, unannounced, since nothing says at its start whether it will wake the session (probe-grok subagent, run e; gaps grok-x a)
 
 ### BackgroundDone
 
