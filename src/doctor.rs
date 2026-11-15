@@ -477,6 +477,32 @@ mod tests {
     }
 
     #[test]
+    fn records_a_running_junie_session_holds_of_unknown_kinds_need_attention() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        write(
+            home,
+            ".junie/processes/90859-session-261114-215557-ab12-c95cdd197f46.json",
+            r#"{"pid": 90859, "sessionId": "session-261114-215557-ab12", "projectPath": "/Users/me/Code/app", "startedAt": 1794693357300}"#,
+        );
+        write(
+            home,
+            ".junie/sessions/session-261114-215557-ab12/events.jsonl",
+            "{\"kind\": \"UserPromptEvent\", \"timestampMs\": 1794693360000}\n\
+             {\"kind\": \"TaskPausedEvent\", \"timestampMs\": 1794693360100}\n",
+        );
+        let mut junie = source_of(Harness::Junie, home);
+        let problem = files(junie.as_mut(), &Running(90859), &Queue::default(), home);
+        assert_eq!(
+            problem.unwrap_err().to_string(),
+            "1 session running (working), read from ~/.junie/processes, ~/.junie/sessions; \
+             but could not read ~/.junie/sessions/session-261114-215557-ab12/events.jsonl: \
+             records of kinds Junie was not seen to write: TaskPausedEvent (1); the \
+             harness's format may have changed"
+        );
+    }
+
+    #[test]
     fn files_that_start_no_session_count_what_the_hooks_reported() {
         let home = tempfile::tempdir().unwrap();
         let home = home.path();
