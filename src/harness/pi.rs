@@ -90,12 +90,7 @@ pub fn event(payload: &Value) -> Option<Event> {
         // A dialog that holds up the run, such as an extension's confirmation.
         "ui_prompt_start" => Hook::Elicitation,
         "ui_prompt_end" => Hook::ElicitationResult,
-        // Pi will not go on by itself after this. Before 1.0 it said that
-        // the user stopped the run only by how the last message ended.
-        "agent_settled" if payload.aborted || payload.stop_reason.as_deref() == Some("aborted") => {
-            Hook::Interrupt
-        }
-        "agent_settled" if payload.stop_reason.as_deref() == Some("error") => Hook::StopFailure,
+        // Pi will not go on by itself after this.
         "agent_settled" => Hook::Stop,
         "session_shutdown" => Hook::SessionEnd,
         _ => return None,
@@ -103,6 +98,11 @@ pub fn event(payload: &Value) -> Option<Event> {
     Some(Event {
         hook,
         asks: hook == Hook::Stop && ends_on_question(&payload.message),
+        // Before 1.0 Pi said that the user stopped the run only by how the
+        // last message ended.
+        interrupted: hook == Hook::Stop
+            && (payload.aborted || payload.stop_reason.as_deref() == Some("aborted")),
+        failed: hook == Hook::Stop && payload.stop_reason.as_deref() == Some("error"),
         session: payload.session,
         cwd: payload.cwd,
         subagent: false,
@@ -114,52 +114,61 @@ mod tests {
     use serde_json::json;
 
     use super::super::Harness;
-    use super::super::tests::signal;
+    use super::super::tests::signals;
     use super::*;
     use crate::fsm::Signal;
 
-    fn event(name: &str, extra: Value) -> Option<Signal> {
+    fn event(name: &str, extra: Value) -> Option<Vec<Signal>> {
         let mut event = json!({ "event": name, "session": "019a-pi", "cwd": "/Users/me/Code/app" });
         event
             .as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
-        signal(Harness::Pi, event)
+        signals(Harness::Pi, event)
     }
 
     #[test]
     fn maps_a_run() {
         let none = json!({});
-        assert_eq!(event("agent_start", none.clone()), Some(Signal::Prompted));
+        assert_eq!(
+            event("agent_start", none.clone()),
+            Some(vec![Signal::Prompted])
+        );
         assert_eq!(
             event("ui_prompt_start", none.clone()),
-            Some(Signal::QuestionAsked)
+            Some(vec![Signal::QuestionAsked])
         );
-        assert_eq!(event("ui_prompt_end", none.clone()), Some(Signal::Prompted));
+        assert_eq!(
+            event("ui_prompt_end", none.clone()),
+            Some(vec![Signal::Prompted])
+        );
         let settled = |fields: Value| event("agent_settled", fields);
         assert_eq!(
             settled(json!({ "aborted": false, "stop_reason": "stop", "message": "Done." })),
-            Some(Signal::TurnEnded)
+            Some(vec![Signal::TurnEnded])
         );
         assert_eq!(
             settled(
                 json!({ "aborted": false, "stop_reason": "stop", "message": "Shall I push it?" })
             ),
-            Some(Signal::TurnEndedAsking)
+            Some(vec![Signal::TurnEnded, Signal::TurnEndedAsking])
         );
         assert_eq!(
             settled(json!({ "aborted": false, "stop_reason": "error", "message": "" })),
-            Some(Signal::TurnFailed)
+            Some(vec![Signal::TurnEnded, Signal::TurnFailed])
         );
         assert_eq!(
             settled(json!({ "aborted": true, "stop_reason": "aborted", "message": "" })),
-            Some(Signal::Interrupted)
+            Some(vec![Signal::TurnEnded, Signal::Interrupted])
         );
         assert_eq!(
             settled(json!({ "stop_reason": "aborted", "message": "Lighthouses stand." })),
-            Some(Signal::Interrupted)
+            Some(vec![Signal::TurnEnded, Signal::Interrupted])
         );
-        assert_eq!(event("session_shutdown", none.clone()), Some(Signal::Ended));
+        assert_eq!(
+            event("session_shutdown", none.clone()),
+            Some(vec![Signal::Ended])
+        );
         assert_eq!(event("turn_end", none), None);
     }
 }

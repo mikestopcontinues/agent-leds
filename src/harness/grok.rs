@@ -59,7 +59,7 @@ pub const SIGNALS: &[Declared] = &[
     hooked(
         Signal::TurnEnded,
         Evidence::Observed,
-        "stop with reason end_turn, or stop_cancelled that Grok gave up on itself",
+        "stop with reason end_turn, or stop_cancelled",
         "0.5.0 hooks, probe-grok runs a–l",
     ),
     hooked(
@@ -130,9 +130,8 @@ pub fn event(payload: &Value) -> Option<Event> {
         // Stop fires again when the session closes, which says nothing about a turn.
         "stop" if is(&payload.reason, "end_turn") => Hook::Stop,
         "stop_failure" => Hook::StopFailure,
-        // The user was there to cancel the turn. One that Grok gave up on by
-        // itself is left for them to find.
-        "stop_cancelled" if is(&payload.cancelled_by, "user") => Hook::Interrupt,
+        // The turn ended cancelled. One that Grok gave up on by itself is
+        // left for the user to find; the user was there to cancel the rest.
         "stop_cancelled" => Hook::Stop,
         "session_end" => Hook::SessionEnd,
         _ => return None,
@@ -143,6 +142,9 @@ pub fn event(payload: &Value) -> Option<Event> {
             Hook::PreToolUse => is(&payload.tool_name, "ask_user_question"),
             _ => ends_on_question(&payload.last_assistant_message),
         },
+        interrupted: payload.hook_event_name == "stop_cancelled"
+            && is(&payload.cancelled_by, "user"),
+        failed: false,
         session: payload.session_id,
         cwd: payload.cwd,
         subagent: false,
@@ -193,12 +195,12 @@ pub fn uninstall(home: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{Home, signal};
+    use super::super::tests::{Home, signals};
     use super::*;
     use crate::fsm::Signal;
 
     /// A payload with the fields Grok sends on every event.
-    fn event(name: &str, extra: Value) -> Option<Signal> {
+    fn event(name: &str, extra: Value) -> Option<Vec<Signal>> {
         let mut event = json!({
             "hookEventName": name,
             "sessionId": "019f0a3c-6f0e-7a51-8d2b-5d2f4c0e9a11",
@@ -212,12 +214,12 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
-        signal(Harness::Grok, event)
+        signals(Harness::Grok, event)
     }
 
     #[test]
     fn maps_a_turn() {
-        let working = Some(Signal::Prompted);
+        let working = Some(vec![Signal::Prompted]);
         assert_eq!(
             event("user_prompt_submit", json!({ "prompt": "fix it" })),
             working
@@ -231,7 +233,7 @@ mod tests {
         );
         assert_eq!(
             event("pre_tool_use", json!({ "toolName": "ask_user_question" })),
-            Some(Signal::QuestionAsked)
+            Some(vec![Signal::Prompted, Signal::QuestionAsked])
         );
         assert_eq!(
             event("post_tool_use", json!({ "toolName": "read_file" })),
@@ -243,11 +245,11 @@ mod tests {
         );
         assert_eq!(
             event("stop_failure", json!({ "error": "rate_limit" })),
-            Some(Signal::TurnFailed)
+            Some(vec![Signal::TurnFailed])
         );
         assert_eq!(
             event("session_end", json!({ "reason": "exit" })),
-            Some(Signal::Ended)
+            Some(vec![Signal::Ended])
         );
         assert_eq!(event("session_start", json!({ "source": "startup" })), None);
     }
@@ -260,10 +262,10 @@ mod tests {
                 json!({ "reason": reason, "lastAssistantMessage": message }),
             )
         };
-        assert_eq!(stop("end_turn", "Done."), Some(Signal::TurnEnded));
+        assert_eq!(stop("end_turn", "Done."), Some(vec![Signal::TurnEnded]));
         assert_eq!(
             stop("end_turn", "Shall I push it?"),
-            Some(Signal::TurnEndedAsking)
+            Some(vec![Signal::TurnEnded, Signal::TurnEndedAsking])
         );
         assert_eq!(stop("channel_closed", "Done."), None);
         assert_eq!(stop("shutdown", "Done."), None);
@@ -274,7 +276,7 @@ mod tests {
         let notification = |kind: &str| event("notification", json!({ "notificationType": kind }));
         assert_eq!(
             notification("permission_prompt"),
-            Some(Signal::PermissionAsked)
+            Some(vec![Signal::PermissionAsked])
         );
         assert_eq!(notification("idle_prompt"), None);
     }
@@ -289,13 +291,16 @@ mod tests {
         };
         assert_eq!(
             cancelled("user_interrupt", "user"),
-            Some(Signal::Interrupted)
+            Some(vec![Signal::TurnEnded, Signal::Interrupted])
         );
         assert_eq!(
             cancelled("permission_rejected", "user"),
-            Some(Signal::Interrupted)
+            Some(vec![Signal::TurnEnded, Signal::Interrupted])
         );
-        assert_eq!(cancelled("max_turns", "runtime"), Some(Signal::TurnEnded));
+        assert_eq!(
+            cancelled("max_turns", "runtime"),
+            Some(vec![Signal::TurnEnded])
+        );
     }
 
     #[test]
@@ -316,7 +321,7 @@ mod tests {
             "sessionId": "s1", "session_id": "s1",
             "reason": "end_turn", "lastAssistantMessage": "ok", "backgroundTasks": [],
         });
-        assert_eq!(signal(Harness::Codex, stop), None);
+        assert_eq!(signals(Harness::Codex, stop), None);
     }
 
     #[test]

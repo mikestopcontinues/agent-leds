@@ -455,12 +455,12 @@ fn list_hooks(codex: &mut Child, home: &Path) -> Result<Value> {
 mod tests {
     use std::fs;
 
-    use super::super::tests::{Home, signal};
+    use super::super::tests::{Home, signals};
     use super::*;
     use crate::fsm::Signal;
 
     /// A payload with the fields Codex sends on every event of a turn.
-    fn event(name: &str, extra: Value) -> Option<Signal> {
+    fn event(name: &str, extra: Value) -> Option<Vec<Signal>> {
         let mut event = json!({
             "session_id": "019f0a3c-6f0e-7a51-8d2b-5d2f4c0e9a11",
             "turn_id": "019f0a3c-7b1d-7c03-9d1e-0f6c1c2b3a44",
@@ -474,12 +474,12 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
-        signal(Harness::Codex, event)
+        signals(Harness::Codex, event)
     }
 
     #[test]
     fn maps_a_turn() {
-        let working = Some(Signal::Prompted);
+        let working = Some(vec![Signal::Prompted]);
         assert_eq!(
             event("UserPromptSubmit", json!({ "prompt": "fix it" })),
             working
@@ -487,7 +487,7 @@ mod tests {
         assert_eq!(event("PreToolUse", json!({ "tool_name": "Bash" })), working);
         assert_eq!(
             event("PermissionRequest", json!({ "tool_name": "Bash" })),
-            Some(Signal::PermissionAsked)
+            Some(vec![Signal::PermissionAsked])
         );
         // A tool that fails still reports PostToolUse: Codex deals with it.
         assert_eq!(
@@ -502,23 +502,26 @@ mod tests {
                 "Stop",
                 json!({ "last_assistant_message": "Done.", "stop_hook_active": false })
             ),
-            Some(Signal::TurnEnded)
+            Some(vec![Signal::TurnEnded])
         );
         assert_eq!(
             event(
                 "Stop",
                 json!({ "last_assistant_message": "Shall I push it?" })
             ),
-            Some(Signal::TurnEndedAsking)
+            Some(vec![Signal::TurnEnded, Signal::TurnEndedAsking])
         );
         assert_eq!(
             event("Stop", json!({ "last_assistant_message": null })),
-            Some(Signal::TurnEnded)
+            Some(vec![Signal::TurnEnded])
         );
-        assert_eq!(event("Interrupt", json!({})), Some(Signal::Interrupted));
+        assert_eq!(
+            event("Interrupt", json!({})),
+            Some(vec![Signal::Interrupted])
+        );
         assert_eq!(
             event("SessionEnd", json!({ "reason": "other" })),
-            Some(Signal::Ended)
+            Some(vec![Signal::Ended])
         );
         assert_eq!(event("SessionStart", json!({ "source": "startup" })), None);
         assert_eq!(
@@ -526,7 +529,7 @@ mod tests {
                 "PreToolUse",
                 json!({ "agent_id": "a1", "agent_type": "worker", "tool_name": "Bash" })
             ),
-            Some(Signal::Backgrounded)
+            Some(vec![Signal::Backgrounded])
         );
     }
 
@@ -539,7 +542,7 @@ mod tests {
 
     #[test]
     fn a_tool_that_asks_the_user_is_a_question() {
-        let question = Some(Signal::QuestionAsked);
+        let question = Some(vec![Signal::Prompted, Signal::QuestionAsked]);
         for tool in ["request_user_input", "functions.request_user_input_async"] {
             assert_eq!(event("PreToolUse", json!({ "tool_name": tool })), question);
         }
@@ -549,7 +552,7 @@ mod tests {
                 "PostToolUse",
                 json!({ "tool_name": "request_user_input", "tool_response": { "answers": {} } })
             ),
-            Some(Signal::Prompted)
+            Some(vec![Signal::Prompted])
         );
         // The async tool only says the question was put.
         assert_eq!(
@@ -566,14 +569,14 @@ mod tests {
         let plan = "<proposed_plan>\n### Test plan\n\n1. Run `sleep 5`.\n</proposed_plan>";
         assert_eq!(
             event("Stop", json!({ "last_assistant_message": plan })),
-            Some(Signal::TurnEndedAsking)
+            Some(vec![Signal::TurnEnded, Signal::TurnEndedAsking])
         );
         assert_eq!(
             event(
                 "Stop",
                 json!({ "last_assistant_message": "Plans go in a `<proposed_plan>` block." })
             ),
-            Some(Signal::TurnEnded)
+            Some(vec![Signal::TurnEnded])
         );
     }
 

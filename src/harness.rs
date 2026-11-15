@@ -15,6 +15,7 @@ mod opencode;
 mod pi;
 
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -371,6 +372,10 @@ struct Event {
     /// Whether the event puts a question to the user: it runs a tool that
     /// asks, or it ends the turn on a message that does.
     asks: bool,
+    /// Whether the event ends the turn and says the user cut it short.
+    interrupted: bool,
+    /// Whether the event ends the turn and says it ended on an error.
+    failed: bool,
     /// Whether something other than the main agent sent the event.
     subagent: bool,
 }
@@ -422,34 +427,52 @@ impl Event {
             session: payload.session_id.clone()?,
             cwd: payload.cwd.clone(),
             asks: ends_on_question(&payload.last_assistant_message),
+            interrupted: false,
+            failed: false,
             subagent: payload.agent_id.is_some(),
         })
     }
 
-    /// What the event means for its session, as a signal of the table.
-    fn signal(&self) -> Signal {
+    /// What the event says of its session, each fact a signal of the table,
+    /// whose order decides what they come to.
+    fn signals(&self) -> BTreeSet<Signal> {
         if self.subagent {
             // Only the main agent's events say what the session needs. A
             // subagent's say that work is going on, which matters once the
             // main agent has stopped and left a subagent running in the
             // background.
-            return Signal::Backgrounded;
+            return BTreeSet::from([Signal::Backgrounded]);
         }
-        match self.hook {
+        let mut signals = BTreeSet::from([match self.hook {
             Hook::UserPromptSubmit
+            | Hook::PreToolUse
             | Hook::PostToolUse
             | Hook::PostToolUseFailure
             | Hook::ElicitationResult => Signal::Prompted,
-            Hook::PreToolUse if self.asks => Signal::QuestionAsked,
-            Hook::PreToolUse => Signal::Prompted,
             Hook::PermissionRequest => Signal::PermissionAsked,
             Hook::Elicitation => Signal::QuestionAsked,
-            Hook::Stop if self.asks => Signal::TurnEndedAsking,
             Hook::Stop => Signal::TurnEnded,
             Hook::StopFailure => Signal::TurnFailed,
             Hook::Interrupt => Signal::Interrupted,
             Hook::SessionEnd => Signal::Ended,
+        }]);
+        // A tool that asks the user runs, or the turn ends on a message that asks.
+        match self.hook {
+            Hook::PreToolUse if self.asks => {
+                signals.insert(Signal::QuestionAsked);
+            }
+            Hook::Stop if self.asks => {
+                signals.insert(Signal::TurnEndedAsking);
+            }
+            _ => {}
         }
+        if self.interrupted {
+            signals.insert(Signal::Interrupted);
+        }
+        if self.failed {
+            signals.insert(Signal::TurnFailed);
+        }
+        signals
     }
 }
 
@@ -461,14 +484,14 @@ pub fn interim(
     harness: Harness,
     payload: &Value,
     state: &Path,
-) -> Option<(String, String, Signal)> {
+) -> Option<(String, String, BTreeSet<Signal>)> {
     let payload = match harness {
         Harness::Junie => junie::with_session(payload, state)?,
         _ => Cow::Borrowed(payload),
     };
     let event = harness.event(&payload)?;
-    let signal = event.signal();
-    Some((event.session, event.cwd, signal))
+    let signals = event.signals();
+    Some((event.session, event.cwd, signals))
 }
 
 /// A signal one of the harnesses whose files are not read yet tells through
@@ -689,9 +712,9 @@ mod tests {
         }
     }
 
-    /// What a payload means, as the daemon reads it.
-    pub fn signal(harness: Harness, payload: Value) -> Option<Signal> {
-        Some(harness.event(&payload)?.signal())
+    /// What a payload says, as the daemon reads it.
+    pub fn signals(harness: Harness, payload: Value) -> Option<Vec<Signal>> {
+        Some(harness.event(&payload)?.signals().into_iter().collect())
     }
 
     #[test]

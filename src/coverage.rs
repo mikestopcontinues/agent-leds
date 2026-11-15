@@ -443,7 +443,7 @@ Each cell is the phase the signal moves to; `·` means no rule, so the signal ch
 
 Columns: Start (Started), Prompt (Prompted), Perm (PermissionAsked), Quest (QuestionAsked), Answ (Answered), End (TurnEnded), End? (TurnEndedAsking), Fail (TurnFailed), Intr (Interrupted), Bg (Backgrounded), BgDone (BackgroundDone), Ended (Ended), Look (Looked), RdExp (ReadExpired), Aband (Abandoned), Dism (Dismissed).
 
-One record can tell several signals, each a fact of its own. The first of them in this order with a rule from the session's phase is the move: Ended, TurnFailed, Interrupted, PermissionAsked, QuestionAsked, Answered, TurnEndedAsking, Backgrounded, BackgroundDone, TurnEnded, Prompted, Started, Dismissed, Abandoned, ReadExpired, Looked.
+One record can tell several signals, each a fact of its own. The first of them in this order with a rule from the session's phase is the move: Ended, Interrupted, TurnFailed, PermissionAsked, QuestionAsked, Answered, TurnEndedAsking, Backgrounded, BackgroundDone, TurnEnded, Prompted, Started, Dismissed, Abandoned, ReadExpired, Looked.
 
 Signals of one family are told together by sound sessions:
 

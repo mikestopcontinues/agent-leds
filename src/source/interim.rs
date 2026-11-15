@@ -112,7 +112,7 @@ impl Source for Interim {
     }
 
     fn hook(&mut self, _k: &dyn Kernel, hook: &Hook) -> Vec<Observation> {
-        let Some((id, cwd, signal)) = harness::interim(self.harness, &hook.payload, &self.state)
+        let Some((id, cwd, signals)) = harness::interim(self.harness, &hook.payload, &self.state)
         else {
             return Vec::new();
         };
@@ -128,12 +128,13 @@ impl Source for Interim {
             quiet: false,
         };
         let mut out = Vec::new();
-        if signal != Signal::Ended
+        // Every event but the session's end says its process runs it.
+        if !signals.contains(&Signal::Ended)
             && let Some(liveness) = process(self.harness, &self.home, &hook.ancestry)
         {
             out.push(observation(Event::Started(Start { cwd, liveness })));
         }
-        out.push(observation(Event::one(signal)));
+        out.push(observation(Event::Signals(signals)));
         out
     }
 

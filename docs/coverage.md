@@ -21,7 +21,7 @@ Each cell is the phase the signal moves to; `·` means no rule, so the signal ch
 
 Columns: Start (Started), Prompt (Prompted), Perm (PermissionAsked), Quest (QuestionAsked), Answ (Answered), End (TurnEnded), End? (TurnEndedAsking), Fail (TurnFailed), Intr (Interrupted), Bg (Backgrounded), BgDone (BackgroundDone), Ended (Ended), Look (Looked), RdExp (ReadExpired), Aband (Abandoned), Dism (Dismissed).
 
-One record can tell several signals, each a fact of its own. The first of them in this order with a rule from the session's phase is the move: Ended, TurnFailed, Interrupted, PermissionAsked, QuestionAsked, Answered, TurnEndedAsking, Backgrounded, BackgroundDone, TurnEnded, Prompted, Started, Dismissed, Abandoned, ReadExpired, Looked.
+One record can tell several signals, each a fact of its own. The first of them in this order with a rule from the session's phase is the move: Ended, Interrupted, TurnFailed, PermissionAsked, QuestionAsked, Answered, TurnEndedAsking, Backgrounded, BackgroundDone, TurnEnded, Prompted, Started, Dismissed, Abandoned, ReadExpired, Looked.
 
 Signals of one family are told together by sound sessions:
 
@@ -92,10 +92,10 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 - Claude Code, file, observed: an end_turn record with text, or a tool result marked claude/endTurn; or waiting to idle after the turn closed while waiting (probe-claude cc1, cc4; desktop transcripts 2.1.299–2.1.321)
 - Codex, hook, observed: Stop (0.5.0 hooks, probe-codex runA)
-- Grok, hook, observed: stop with reason end_turn, or stop_cancelled that Grok gave up on itself (0.5.0 hooks, probe-grok runs a–l)
-- Cursor, hook, observed: stop with status completed (0.5.0 hooks, probe-cursor runs A–I)
+- Grok, hook, observed: stop with reason end_turn, or stop_cancelled (0.5.0 hooks, probe-grok runs a–l)
+- Cursor, hook, observed: stop, whatever its status (0.5.0 hooks, probe-cursor runs A–I)
 - Junie, hook, inferred: Stop (0.5.0 hooks; Junie was not installed for the probe)
-- OpenCode, hook, observed: session.idle with no error (0.5.0 plugin, probe-opencode T2–T17)
+- OpenCode, hook, observed: session.idle, however the run ended (0.5.0 plugin, probe-opencode T2–T17)
 - Pi, hook, observed: agent_settled (0.5.0 extension, probe-pi rpc1, tui1)
 
 ### TurnEndedAsking
@@ -113,7 +113,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 - Grok, hook, inferred: stop_failure; no terminal API error was produced in the probe (0.5.0 hooks, probe-grok runs a–l)
 - Cursor, hook, inferred: stop with status error; not reproduced in the probe (0.5.0 hooks, probe-cursor runs A–I)
 - Junie, hook, inferred: StopFailure (0.5.0 hooks; Junie was not installed for the probe)
-- OpenCode, hook, observed: session.idle after an error other than MessageAbortedError (0.5.0 plugin, probe-opencode T2–T17)
+- OpenCode, hook, observed: session.idle after an error (0.5.0 plugin, probe-opencode T2–T17)
 - Pi, hook, inferred: agent_settled with stop_reason error (0.5.0 extension, probe-pi rpc1, tui1)
 
 ### Interrupted

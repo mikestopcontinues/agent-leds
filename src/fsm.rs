@@ -281,16 +281,18 @@ pub const TABLE: &[Rule] = &[
         on: Ended,
         to: Gone,
     },
+    // A turn the user stopped is no failure, though OpenCode tells the stop
+    // as an error, MessageAbortedError.
+    Rule {
+        from: TRACKED,
+        on: Interrupted,
+        to: Idle,
+    },
     // A second failure is not news: Failed holds, and is not announced again.
     Rule {
         from: TRACKED,
         on: TurnFailed,
         to: Failed,
-    },
-    Rule {
-        from: TRACKED,
-        on: Interrupted,
-        to: Idle,
     },
     Rule {
         from: TRACKED,
@@ -553,8 +555,8 @@ mod tests {
             priority(),
             [
                 Ended,
-                TurnFailed,
                 Interrupted,
+                TurnFailed,
                 PermissionAsked,
                 QuestionAsked,
                 Answered,
@@ -582,6 +584,11 @@ mod tests {
         );
         assert_eq!(to(Working, &[TurnEnded, TurnFailed]), Some(Failed));
         assert_eq!(to(Working, &[TurnEnded, Interrupted]), Some(Idle));
+        // A stop told as an error too is a stop.
+        assert_eq!(
+            to(Working, &[TurnEnded, TurnFailed, Interrupted]),
+            Some(Idle)
+        );
         // A wait already shown holds against a turn end told with work.
         assert_eq!(to(Blocked, &[TurnEnded, Backgrounded]), Some(Blocked));
         assert_eq!(to(Asked, &[TurnEnded, Backgrounded]), Some(Asked));

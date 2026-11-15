@@ -4,4 +4,4 @@
 {"hook": {"event": "session.busy", "session": "ses_1", "directory": "/Users/me/Code/app", "subagent": false}, "ancestry": [{"pid": 71001, "started_us": 1794693357000000, "name": "opencode"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
 {"expect": [["started", "hook"], ["prompted", "hook"]]}
 {"hook": {"event": "session.idle", "session": "ses_1", "directory": "/Users/me/Code/app", "subagent": false, "error": "MessageAbortedError", "message": ""}, "ancestry": [{"pid": 71001, "started_us": 1794693357000000, "name": "opencode"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
-{"expect": [["started", "hook"], ["interrupted", "hook"]]}
+{"expect": [["started", "hook"], [["interrupted", "turn_ended", "turn_failed"], "hook"]]}

@@ -317,6 +317,8 @@ fn changed(source: &mut dyn Source, k: &dyn Kernel, paths: &[PathBuf]) -> Vec<Ob
 /// Replays a fixture, checking its expectations and the three properties.
 pub fn replay(harness: Harness, name: &str) -> Replay {
     let fixture = load(harness, name);
+    // Harnesses name their fixtures alike, so every message says whose.
+    let name = &format!("{}/{name}", harness.name());
     let mut replay = Replay::new(harness, name);
     let mut source = replay.source();
     let seeded = source.seed(&replay.kernel, &[]).unwrap();

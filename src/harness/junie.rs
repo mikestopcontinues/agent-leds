@@ -138,9 +138,9 @@ mod tests {
     }
 
     /// The session and what the event means for it, as the daemon reads it.
-    fn update(payload: Value, state: &Path) -> Option<(String, Signal)> {
-        let (session, _, signal) = super::super::interim(Harness::Junie, &payload, state)?;
-        Some((session, signal))
+    fn update(payload: Value, state: &Path) -> Option<(String, Vec<Signal>)> {
+        let (session, _, signals) = super::super::interim(Harness::Junie, &payload, state)?;
+        Some((session, signals.into_iter().collect()))
     }
 
     #[test]
@@ -157,22 +157,31 @@ mod tests {
                 "cwd": "/Users/me/Code/app", "project_path": "/Users/me/Code/app", "prompt": "fix it"
             })
         };
-        assert_eq!(update(prompt("j1"), &state), of("j1", Signal::Prompted));
+        assert_eq!(
+            update(prompt("j1"), &state),
+            of("j1", vec![Signal::Prompted])
+        );
         let tool = json!({
             "hook_event_name": "PostToolUse", "tool_name": "Bash",
             "tool_input": { "command": "pytest" }, "tool_response": "ok", "duration_ms": 12
         });
-        assert_eq!(update(tool, &state), of("j1", Signal::Prompted));
-        assert_eq!(update(stop.clone(), &state), of("j1", Signal::TurnEnded));
+        assert_eq!(update(tool, &state), of("j1", vec![Signal::Prompted]));
+        assert_eq!(
+            update(stop.clone(), &state),
+            of("j1", vec![Signal::TurnEnded])
+        );
         let asks =
             json!({ "hook_event_name": "Stop", "last_assistant_message": "Shall I push it?" });
-        assert_eq!(update(asks, &state), of("j1", Signal::TurnEndedAsking));
+        assert_eq!(
+            update(asks, &state),
+            of("j1", vec![Signal::TurnEnded, Signal::TurnEndedAsking])
+        );
         let failed = json!({ "hook_event_name": "StopFailure", "error": "rate_limit", "error_details": "429 Too Many Requests" });
-        assert_eq!(update(failed, &state), of("j1", Signal::TurnFailed));
+        assert_eq!(update(failed, &state), of("j1", vec![Signal::TurnFailed]));
 
         update(prompt("j2"), &state);
         let ended = json!({ "hook_event_name": "SessionEnd", "reason": "prompt_input_exit" });
-        assert_eq!(update(ended, &state), of("j2", Signal::Ended));
+        assert_eq!(update(ended, &state), of("j2", vec![Signal::Ended]));
     }
 
     #[test]

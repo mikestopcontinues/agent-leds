@@ -4,4 +4,4 @@
 {"hook": {"event": "agent_start", "session": "019a-pi", "cwd": "/Users/me/Code/app"}, "ancestry": [{"pid": 71001, "started_us": 1794693357000000, "name": "node"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
 {"expect": [["started", "hook"], ["prompted", "hook"]]}
 {"hook": {"event": "agent_settled", "session": "019a-pi", "cwd": "/Users/me/Code/app", "aborted": false, "stop_reason": "stop", "message": "Shall I push it?"}, "ancestry": [{"pid": 71001, "started_us": 1794693357000000, "name": "node"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
-{"expect": [["started", "hook"], ["turn_ended_asking", "hook"]]}
+{"expect": [["started", "hook"], [["turn_ended", "turn_ended_asking"], "hook"]]}

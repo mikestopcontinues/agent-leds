@@ -42,7 +42,7 @@ pub const SIGNALS: &[Declared] = &[
     hooked(
         Signal::TurnEnded,
         Evidence::Observed,
-        "stop with status completed",
+        "stop, whatever its status",
         "0.5.0 hooks, probe-cursor runs A–I",
     ),
     hooked(
@@ -90,12 +90,14 @@ pub fn event(payload: &Value) -> Option<Event> {
         "postToolUseFailure" if payload.is_interrupt => Hook::Interrupt,
         "postToolUseFailure" => Hook::PostToolUseFailure,
         // Cursor has one event for the end of a turn and says how it ended.
-        "stop" => match payload.status.as_deref()? {
-            "completed" => Hook::Stop,
-            "aborted" => Hook::Interrupt,
-            "error" => Hook::StopFailure,
-            _ => return None,
-        },
+        "stop"
+            if matches!(
+                payload.status.as_deref(),
+                Some("completed" | "aborted" | "error")
+            ) =>
+        {
+            Hook::Stop
+        }
         "sessionEnd" => Hook::SessionEnd,
         _ => return None,
     };
@@ -109,6 +111,8 @@ pub fn event(payload: &Value) -> Option<Event> {
             .unwrap_or_default(),
         // Cursor does not pass the agent's last message to a hook.
         asks: false,
+        interrupted: hook == Hook::Stop && payload.status.as_deref() == Some("aborted"),
+        failed: hook == Hook::Stop && payload.status.as_deref() == Some("error"),
         subagent: false,
     })
 }
@@ -150,12 +154,12 @@ pub fn uninstall(home: &Path) -> Result<()> {
 mod tests {
     use std::fs;
 
-    use super::super::tests::{Home, signal};
+    use super::super::tests::{Home, signals};
     use super::*;
     use crate::fsm::Signal;
 
     /// A payload with the fields Cursor sends on every event of a turn.
-    fn event(name: &str, extra: Value) -> Option<Signal> {
+    fn event(name: &str, extra: Value) -> Option<Vec<Signal>> {
         let mut event = json!({
             "conversation_id": "5b1f3c1e-7d0a-4a55-9a34-0c7f5f1f2b10",
             "session_id": "5b1f3c1e-7d0a-4a55-9a34-0c7f5f1f2b10",
@@ -171,12 +175,12 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
-        signal(Harness::Cursor, event)
+        signals(Harness::Cursor, event)
     }
 
     #[test]
     fn maps_a_turn() {
-        let working = Some(Signal::Prompted);
+        let working = Some(vec![Signal::Prompted]);
         assert_eq!(
             event("beforeSubmitPrompt", json!({ "prompt": "fix it" })),
             working
@@ -197,11 +201,11 @@ mod tests {
                 "postToolUseFailure",
                 json!({ "tool_name": "Shell", "failure_type": "error", "is_interrupt": true })
             ),
-            Some(Signal::Interrupted)
+            Some(vec![Signal::Interrupted])
         );
         assert_eq!(
             event("sessionEnd", json!({ "reason": "user_close" })),
-            Some(Signal::Ended)
+            Some(vec![Signal::Ended])
         );
         assert_eq!(event("preToolUse", json!({ "tool_name": "Shell" })), None);
     }
@@ -209,9 +213,15 @@ mod tests {
     #[test]
     fn a_stop_says_how_the_turn_ended() {
         let stop = |status: &str| event("stop", json!({ "status": status, "loop_count": 0 }));
-        assert_eq!(stop("completed"), Some(Signal::TurnEnded));
-        assert_eq!(stop("aborted"), Some(Signal::Interrupted));
-        assert_eq!(stop("error"), Some(Signal::TurnFailed));
+        assert_eq!(stop("completed"), Some(vec![Signal::TurnEnded]));
+        assert_eq!(
+            stop("aborted"),
+            Some(vec![Signal::TurnEnded, Signal::Interrupted])
+        );
+        assert_eq!(
+            stop("error"),
+            Some(vec![Signal::TurnEnded, Signal::TurnFailed])
+        );
     }
 
     #[test]

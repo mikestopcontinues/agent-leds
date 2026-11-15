@@ -42,7 +42,7 @@ pub const SIGNALS: &[Declared] = &[
     hooked(
         Signal::TurnEnded,
         Evidence::Observed,
-        "session.idle with no error",
+        "session.idle, however the run ended",
         "0.5.0 plugin, probe-opencode T2–T17",
     ),
     hooked(
@@ -54,7 +54,7 @@ pub const SIGNALS: &[Declared] = &[
     hooked(
         Signal::TurnFailed,
         Evidence::Observed,
-        "session.idle after an error other than MessageAbortedError",
+        "session.idle after an error",
         "0.5.0 plugin, probe-opencode T2–T17",
     ),
     hooked(
@@ -104,18 +104,16 @@ pub fn event(payload: &Value) -> Option<Event> {
         "question.asked" => Hook::Elicitation,
         "permission.replied" | "question.replied" | "question.rejected" => Hook::ElicitationResult,
         // A run ends idle however it ended; the error says how.
-        "session.idle" => match payload.error.as_deref() {
-            None => Hook::Stop,
-            // The user stopped the run.
-            Some("MessageAbortedError") => Hook::Interrupt,
-            Some(_) => Hook::StopFailure,
-        },
+        "session.idle" => Hook::Stop,
         "session.deleted" => Hook::SessionEnd,
         _ => return None,
     };
     Some(Event {
         hook,
         asks: hook == Hook::Stop && ends_on_question(&payload.message),
+        // The user stopped the run, which OpenCode tells as an error too.
+        interrupted: hook == Hook::Stop && payload.error.as_deref() == Some("MessageAbortedError"),
+        failed: hook == Hook::Stop && payload.error.is_some(),
         session: payload.session,
         cwd: payload.directory,
         subagent: payload.subagent,
@@ -124,31 +122,33 @@ pub fn event(payload: &Value) -> Option<Event> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use serde_json::json;
 
-    use super::super::tests::signal;
+    use super::super::tests::signals;
     use super::super::{Harness, interim};
     use super::*;
     use crate::fsm::Signal;
 
-    fn event(name: &str, extra: Value) -> Option<Signal> {
+    fn event(name: &str, extra: Value) -> Option<Vec<Signal>> {
         let mut event = json!({ "event": name, "session": "ses_1", "directory": "/Users/me/Code/app", "subagent": false });
         event
             .as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
-        signal(Harness::OpenCode, event)
+        signals(Harness::OpenCode, event)
     }
 
     #[test]
     fn maps_a_run() {
         let none = json!({});
-        let working = Some(Signal::Prompted);
-        let question = Some(Signal::QuestionAsked);
+        let working = Some(vec![Signal::Prompted]);
+        let question = Some(vec![Signal::QuestionAsked]);
         assert_eq!(event("session.busy", none.clone()), working);
         assert_eq!(
             event("permission.asked", none.clone()),
-            Some(Signal::PermissionAsked)
+            Some(vec![Signal::PermissionAsked])
         );
         assert_eq!(event("permission.replied", none.clone()), working);
         assert_eq!(event("question.asked", none.clone()), question);
@@ -159,20 +159,27 @@ mod tests {
                 json!({ "error": error, "message": message }),
             )
         };
-        assert_eq!(idle(Value::Null, "done"), Some(Signal::TurnEnded));
+        assert_eq!(idle(Value::Null, "done"), Some(vec![Signal::TurnEnded]));
         assert_eq!(
             idle(Value::Null, "Red or blue?"),
-            Some(Signal::TurnEndedAsking)
+            Some(vec![Signal::TurnEnded, Signal::TurnEndedAsking])
         );
         assert_eq!(
             idle(json!("MessageAbortedError"), ""),
-            Some(Signal::Interrupted)
+            Some(vec![
+                Signal::TurnEnded,
+                Signal::TurnFailed,
+                Signal::Interrupted
+            ])
         );
         assert_eq!(
             idle(json!("ProviderAuthError"), ""),
-            Some(Signal::TurnFailed)
+            Some(vec![Signal::TurnEnded, Signal::TurnFailed])
         );
-        assert_eq!(event("session.deleted", none.clone()), Some(Signal::Ended));
+        assert_eq!(
+            event("session.deleted", none.clone()),
+            Some(vec![Signal::Ended])
+        );
         assert_eq!(event("session.compacted", none), None);
     }
 
@@ -188,7 +195,7 @@ mod tests {
             Some((
                 "ses_parent".into(),
                 "/Users/me/Code/app".into(),
-                Signal::Backgrounded
+                BTreeSet::from([Signal::Backgrounded])
             ))
         );
     }
