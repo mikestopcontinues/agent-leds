@@ -341,6 +341,26 @@ mod tests {
     use Evidence::*;
     use Signal::*;
 
+    /// `docs/coverage.md` is what the declarations render to. Run with
+    /// `UPDATE_COVERAGE=1` to write it after changing a declaration.
+    #[test]
+    fn coverage_doc_is_current() {
+        let harnesses: Vec<(Harness, &[Declared])> = Harness::ALL
+            .into_iter()
+            .map(|harness| (harness, crate::harness::signals(harness)))
+            .collect();
+        let rendered = render(&harnesses);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/coverage.md");
+        if std::env::var_os("UPDATE_COVERAGE").is_some() {
+            std::fs::write(&path, &rendered).unwrap();
+        }
+        let written = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            written == rendered,
+            "docs/coverage.md is out of date; run `UPDATE_COVERAGE=1 cargo test`"
+        );
+    }
+
     const fn declared(
         signal: Signal,
         channel: Channel,

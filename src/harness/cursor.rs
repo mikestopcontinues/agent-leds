@@ -30,7 +30,7 @@ pub const SIGNALS: &[Declared] = &[
     hooked(
         Signal::Started,
         Evidence::Observed,
-        "any hook, run under the cursor-agent process its .running marker names",
+        "any hook, run under the process that Cursor's .running marker names",
         "0.5.0 hooks, probe-cursor runs A–I",
     ),
     hooked(
@@ -60,7 +60,7 @@ pub const SIGNALS: &[Declared] = &[
     hooked(
         Signal::Ended,
         Evidence::Observed,
-        "sessionEnd, or the cursor-agent process gone",
+        "sessionEnd, or the marked Cursor process gone",
         "0.5.0 hooks, probe-cursor runs A–I",
     ),
 ];
