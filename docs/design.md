@@ -62,9 +62,9 @@ Each module owns one concern; the ones that touch the system are thin.
 - `fsm.rs`: the session table, every phase a session can be in and the signal that moves it to each other. No I/O.
 - `queue.rs`: the sessions followed, changed only by applying observations through the table, and the order their lights show in. No I/O. `state.rs` is what the daemon saves.
 - `coverage.rs`: renders `docs/coverage.md` from what each harness declares.
-- `source.rs` and `source/`: reading the harnesses. `claude.rs` reads Claude Code's session files and transcripts; `interim.rs` reads the other harnesses' hooks; `tail.rs` reads files as they grow; `fixture.rs` replays recorded sessions in the tests.
+- `source.rs` and `source/`: reading the harnesses. one file per harness reads its files and translates the hooks it keeps, with `claude.rs` the model the others follow; `tail.rs` reads files as they grow; `fixture.rs` replays recorded sessions in the tests.
 - `liveness.rs`: whether the process running a session is still the one that started it, and the hook process's own ancestors.
-- `harness.rs` and `harness/`: what each harness declares it tells, its hook payloads until its files are read, and the plugins OpenCode and Pi load; installing, checking and removing hooks.
+- `harness.rs` and `harness/`: what each harness declares it tells, the plugins OpenCode and Pi load, and installing, checking and removing hooks.
 - `ipc.rs`: the socket protocol between the command line, the hooks and the service.
 - `config.rs`, `settings.rs`: the settings, and reading and changing them by name.
 - `desktop.rs`: which sessions the user has looked at in the Claude desktop app.

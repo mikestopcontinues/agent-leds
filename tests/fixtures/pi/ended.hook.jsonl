@@ -1,13 +1,13 @@
 {"cite":"probe-pi ext152: /new ends one session and starts another, then quit","evidence":"observed"}
 {"alive":90105,"started_us":1794745313575000}
 {"expect":[]}
-{"hook":{"event":"session_shutdown","session":"01a1df28-29ba-77e8-a5bb-bf74d1739c21"},"ancestry":[{"pid":90105,"started_us":1794745313575000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
+{"hook":{"event":"session_shutdown","session":"01a1df28-29ba-77e8-a5bb-bf74d1739c21"},"ancestry":[{"pid":90105,"started_us":1794745313575000},{"pid":500,"started_us":1794692357000000}]}
 {"expect":[["ended","hook"]]}
-{"hook":{"event":"session_start","session":"01a1df28-7230-77e8-a5bb-bf768b443257","pid":90105,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-22-12-272Z_01a1df28-7230-77e8-a5bb-bf768b443257.jsonl"},"ancestry":[{"pid":90105,"started_us":1794745313575000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
+{"hook":{"event":"session_start","session":"01a1df28-7230-77e8-a5bb-bf768b443257","pid":90105,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-22-12-272Z_01a1df28-7230-77e8-a5bb-bf768b443257.jsonl"},"ancestry":[{"pid":90105,"started_us":1794745313575000},{"pid":500,"started_us":1794692357000000}]}
 {"expect":[["started","hook"]]}
-{"hook":{"event":"session_start","session":"01a1df28-7230-77e8-a5bb-bf768b443257","pid":90105,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-22-12-272Z_01a1df28-7230-77e8-a5bb-bf768b443257.jsonl"},"ancestry":[{"pid":90105,"started_us":1794745313575000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
+{"hook":{"event":"session_start","session":"01a1df28-7230-77e8-a5bb-bf768b443257","pid":90105,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-22-12-272Z_01a1df28-7230-77e8-a5bb-bf768b443257.jsonl"},"ancestry":[{"pid":90105,"started_us":1794745313575000},{"pid":500,"started_us":1794692357000000}]}
 {"expect":[["started","hook"]]}
-{"hook":{"event":"agent_start","session":"01a1df28-7230-77e8-a5bb-bf768b443257","pid":90105,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-22-12-272Z_01a1df28-7230-77e8-a5bb-bf768b443257.jsonl"},"ancestry":[{"pid":90105,"started_us":1794745313575000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
+{"hook":{"event":"agent_start","session":"01a1df28-7230-77e8-a5bb-bf768b443257","pid":90105,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-22-12-272Z_01a1df28-7230-77e8-a5bb-bf768b443257.jsonl"},"ancestry":[{"pid":90105,"started_us":1794745313575000},{"pid":500,"started_us":1794692357000000}]}
 {"expect":[["started","hook"],["prompted","hook"]]}
 {"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-22-12-272Z_01a1df28-7230-77e8-a5bb-bf768b443257.jsonl","line":{"type":"session","version":3,"id":"01a1df28-7230-77e8-a5bb-bf768b443257","timestamp":"2026-11-15T12:22:12.272Z","cwd":"/Users/me/Code/app"}}
 {"expect":[]}
@@ -21,7 +21,7 @@
 {"expect":[["prompted","file"]]}
 {"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-22-12-272Z_01a1df28-7230-77e8-a5bb-bf768b443257.jsonl","line":{"type":"message","id":"1f378f82","parentId":"ecf93f36","timestamp":"2026-11-15T12:22:13.188Z","message":{"role":"assistant","content":[{"type":"text","text":"ready"}],"api":"openai-completions","provider":"fake","model":"fake","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1794745333186,"responseId":"c1","rawStopReason":"stop","durationMs":1,"thinkingLevel":"off"}}}
 {"expect":[["turn_ended","file"]]}
-{"hook":{"event":"agent_settled","session":"01a1df28-7230-77e8-a5bb-bf768b443257","aborted":false,"stop_reason":"stop"},"ancestry":[{"pid":90105,"started_us":1794745313575000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
+{"hook":{"event":"agent_settled","session":"01a1df28-7230-77e8-a5bb-bf768b443257","aborted":false,"stop_reason":"stop"},"ancestry":[{"pid":90105,"started_us":1794745313575000},{"pid":500,"started_us":1794692357000000}]}
 {"expect":[]}
-{"hook":{"event":"session_shutdown","session":"01a1df28-7230-77e8-a5bb-bf768b443257"},"ancestry":[{"pid":90105,"started_us":1794745313575000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
+{"hook":{"event":"session_shutdown","session":"01a1df28-7230-77e8-a5bb-bf768b443257"},"ancestry":[{"pid":90105,"started_us":1794745313575000},{"pid":500,"started_us":1794692357000000}]}
 {"expect":[["ended","hook"]]}

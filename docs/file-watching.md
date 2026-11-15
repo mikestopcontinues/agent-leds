@@ -25,7 +25,7 @@ What each harness's files record was established with real sessions on 2026-11-1
 | Claude Code | none | The session file and transcript record every moment. |
 | Codex | `PermissionRequest` | Nothing is written while an approval waits. |
 | Grok | `StopFailure` | A terminal API error has not been seen in its files. |
-| Cursor | `beforeSubmitPrompt` | Prompts given as arguments and text-only turns write nothing until the turn ends. It also binds the session to its process. |
+| Cursor | `beforeSubmitPrompt`, `stop` | Prompts given as arguments and text-only turns write nothing until the turn ends, and some interrupts write nothing at all. The prompt hook also binds the session to its process. |
 | Junie | none | Its event log records waits, ends, failures and cancels. |
 | OpenCode | plugin: busy with pid, `permission.asked`, `permission.replied`, `session.error` | A pending permission looks like a running tool; errors before a turn starts and the process are not recorded. |
 | Pi | extension: `session_start`, `agent_start`, dialogs, `agent_settled`, `session_shutdown` | No liveness or dialog state is written, and 0.84 writes no file before the first reply. |

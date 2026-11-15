@@ -1029,7 +1029,6 @@ mod tests {
             ancestry: vec![Proc {
                 pid: 79128,
                 started_us: 1_794_744_583_000_000,
-                name: "node".into(),
             }],
         }
     }

@@ -150,8 +150,6 @@ pub struct Proc {
     pub pid: i32,
     /// When it started, in Unix microseconds.
     pub started_us: u64,
-    /// Its command name, cut to 16 bytes by the kernel.
-    pub name: String,
 }
 
 /// The calling process's ancestors, nearest first, at most `depth` of them.
@@ -168,16 +166,9 @@ pub fn ancestry(depth: usize) -> Vec<Proc> {
         let Some(parent) = bsd_info(pid) else {
             break;
         };
-        // The name fills all 16 bytes, with no NUL, when it is that long.
-        let comm = parent.pbi_comm.map(|byte| byte as u8);
-        let name = match CStr::from_bytes_until_nul(&comm) {
-            Ok(name) => name.to_string_lossy().into_owned(),
-            Err(_) => String::from_utf8_lossy(&comm).into_owned(),
-        };
         ancestors.push(Proc {
             pid,
             started_us: start_us(&parent),
-            name,
         });
         info = parent;
     }
@@ -371,7 +362,6 @@ mod tests {
         let parent = unsafe { libc::getppid() };
         assert_eq!(ancestors[0].pid, parent);
         assert_eq!(Some(ancestors[0].started_us), System.started_us(parent));
-        assert!(!ancestors[0].name.is_empty());
         assert!(ancestry(0).is_empty());
     }
 }

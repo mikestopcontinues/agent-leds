@@ -12,7 +12,6 @@ pub mod cursor;
 #[cfg(test)]
 pub mod fixture;
 pub mod grok;
-pub mod interim;
 pub mod junie;
 pub mod opencode;
 pub mod pi;
@@ -156,7 +155,7 @@ impl Told {
 /// Every harness's source, reading the harnesses' files in `home`, and
 /// Junie's in its own folder, `junie`, which need not be in `home`.
 pub fn all(home: &Path, junie: &Path) -> Vec<Box<dyn Source>> {
-    let mut sources: Vec<Box<dyn Source>> = vec![
+    vec![
         Box::new(claude::Claude::new(home)),
         Box::new(codex::Codex::new(home)),
         Box::new(grok::Grok::new(home)),
@@ -164,13 +163,7 @@ pub fn all(home: &Path, junie: &Path) -> Vec<Box<dyn Source>> {
         Box::new(junie::Junie::new(junie)),
         Box::new(opencode::OpenCode::new(home)),
         Box::new(pi::Pi::new(home)),
-    ];
-    for harness in Harness::ALL {
-        if sources.iter().all(|source| source.harness() != harness) {
-            sources.push(Box::new(interim::Interim::new(harness)));
-        }
-    }
-    sources
+    ]
 }
 
 /// What the daemon asks the sources to read.

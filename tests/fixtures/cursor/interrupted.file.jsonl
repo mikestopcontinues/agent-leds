@@ -4,7 +4,7 @@
 {"alive":22354,"started_us":1794694340052000}
 {"write":".local/share/cursor-agent/versions/2026.11.13-eacade1/.running/22354","text":"node|Sat Nov 14 22:12:20 2026"}
 {"expect":[]}
-{"hook":{"conversation_id":"fc3690c1-d535-43df-87ce-a842ecb351ee","generation_id":"0f6c1c2b-3a44-4e21-8d2b-5d2f4c0e9a11","model":"default","prompt":"the user's prompt","attachments":[],"session_id":"fc3690c1-d535-43df-87ce-a842ecb351ee","hook_event_name":"beforeSubmitPrompt","cursor_version":"2026.11.13-eacade1","workspace_roots":["/Users/me/Code/app"],"user_email":null,"transcript_path":null},"ancestry":[{"pid":22726,"started_us":1794694369417000,"name":"sh"},{"pid":22326,"started_us":1794694339417000,"name":"node"},{"pid":755,"started_us":1794680000000000,"name":"zsh"}]}
+{"hook":{"conversation_id":"fc3690c1-d535-43df-87ce-a842ecb351ee","generation_id":"0f6c1c2b-3a44-4e21-8d2b-5d2f4c0e9a11","model":"default","prompt":"the user's prompt","attachments":[],"session_id":"fc3690c1-d535-43df-87ce-a842ecb351ee","hook_event_name":"beforeSubmitPrompt","cursor_version":"2026.11.13-eacade1","workspace_roots":["/Users/me/Code/app"],"user_email":null,"transcript_path":null},"ancestry":[{"pid":22726,"started_us":1794694369417000},{"pid":22326,"started_us":1794694339417000},{"pid":755,"started_us":1794680000000000}]}
 {"expect":[["started","hook"],["prompted","hook"]]}
 {"append":".cursor/projects/Users-me-Code-app/agent-transcripts/fc3690c1-d535-43df-87ce-a842ecb351ee/fc3690c1-d535-43df-87ce-a842ecb351ee.jsonl","line":{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Saturday, Nov 14, 2026, 4:12 PM (UTC-6)</timestamp>\n<user_query>\nRun a long shell command, then reply.\n</user_query>"}]}}}
 {"expect":[["prompted","file"]]}

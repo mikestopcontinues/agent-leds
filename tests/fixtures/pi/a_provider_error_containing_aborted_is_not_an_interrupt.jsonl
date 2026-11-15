@@ -1,7 +1,7 @@
 {"cite": "probe-pi ext084's 400 turn, with an Envoy 502's text in place of the 400's; no probe saw a provider error that mentions an abort", "evidence": "inferred"}
 {"alive": 89653, "started_us": 1794745289327000}
 {"expect":[]}
-{"hook": {"event": "session_start", "session": "01a1df27-cb1f-7a4a-a17c-e6183f04fd77", "pid": 89653, "cwd": "/Users/me/Code/app", "file": "~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl"}, "ancestry": [{"pid": 89653, "started_us": 1794745289327000, "name": "node"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
+{"hook": {"event": "session_start", "session": "01a1df27-cb1f-7a4a-a17c-e6183f04fd77", "pid": 89653, "cwd": "/Users/me/Code/app", "file": "~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl"}, "ancestry": [{"pid": 89653, "started_us": 1794745289327000}, {"pid": 500, "started_us": 1794692357000000}]}
 {"expect":[["started","hook"]]}
 {"append": ".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl", "line": {"type": "session", "version": 3, "id": "01a1df27-cb1f-7a4a-a17c-e6183f04fd77", "timestamp": "2026-11-15T12:21:29.503Z", "cwd": "/Users/me/Code/app"}}
 {"expect":[]}
@@ -9,11 +9,11 @@
 {"expect":[]}
 {"append": ".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl", "line": {"type": "thinking_level_change", "id": "e6ae1748", "parentId": "8fdfe4f7", "timestamp": "2026-11-15T12:21:29.540Z", "thinkingLevel": "off"}}
 {"expect":[]}
-{"hook": {"event": "agent_start", "session": "01a1df27-cb1f-7a4a-a17c-e6183f04fd77", "pid": 89653, "cwd": "/Users/me/Code/app", "file": "~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl"}, "ancestry": [{"pid": 89653, "started_us": 1794745289327000, "name": "node"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
+{"hook": {"event": "agent_start", "session": "01a1df27-cb1f-7a4a-a17c-e6183f04fd77", "pid": 89653, "cwd": "/Users/me/Code/app", "file": "~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl"}, "ancestry": [{"pid": 89653, "started_us": 1794745289327000}, {"pid": 500, "started_us": 1794692357000000}]}
 {"expect":[["started","hook"],["prompted","hook"]]}
 {"append": ".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl", "line": {"type": "message", "id": "6f3009ae", "parentId": "4d2ae8d9", "timestamp": "2026-11-15T12:21:37.454Z", "message": {"role": "user", "content": [{"type": "text", "text": "fail400 please"}], "timestamp": 1794745297419}}}
 {"expect":[["prompted","file"]]}
 {"append": ".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl", "line": {"type": "message", "id": "0d1d8e44", "parentId": "6f3009ae", "timestamp": "2026-11-15T12:21:37.457Z", "message": {"role": "assistant", "content": [], "api": "openai-completions", "provider": "fake", "model": "fake", "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}}, "stopReason": "error", "timestamp": 1794745297454, "errorMessage": "502: upstream connect error or disconnect/reset before headers. reset reason: connection aborted"}}}
 {"expect":[]}
-{"hook": {"event": "agent_settled", "session": "01a1df27-cb1f-7a4a-a17c-e6183f04fd77", "aborted": false, "stop_reason": "error"}, "ancestry": [{"pid": 89653, "started_us": 1794745289327000, "name": "node"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
+{"hook": {"event": "agent_settled", "session": "01a1df27-cb1f-7a4a-a17c-e6183f04fd77", "aborted": false, "stop_reason": "error"}, "ancestry": [{"pid": 89653, "started_us": 1794745289327000}, {"pid": 500, "started_us": 1794692357000000}]}
 {"expect":[["turn_failed","hook"]]}

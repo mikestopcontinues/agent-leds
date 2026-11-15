@@ -2,9 +2,9 @@
 
 What each agent harness reports to the service and where it falls short. [design.md](design.md) covers what the service does with the reports.
 
-The service reads Claude Code's and Junie's own files, and registers no hooks with them. It reads Codex's, Grok's and Cursor's files too, and keeps a hook or two with each for what they do not record, and reads OpenCode's database beside the plugin of ours that tells what the database leaves out. With each other harness, `agent-leds install` registers `agent-leds hook <harness>` for the events listed below; Pi loads a plugin of ours that runs it. The hook passes the event to the daemon with the processes it runs under, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked. Whatever the hooks say, a session leaves when the process running it ends.
+The service reads every harness's own files as they change. Claude Code's and Junie's files say all it needs, so it registers no hooks with them. With Codex, Grok and Cursor, `agent-leds install` registers `agent-leds hook <harness>` for the one or two events listed below that their files do not record; OpenCode and Pi load a plugin of ours that runs it for what their files leave out. The hook passes the event to the daemon with the processes it runs under, prints nothing and always succeeds. So it never holds up a turn and never answers a permission request. Where a harness takes a hook's silence for an answer, that event is not hooked. Whatever the hooks say, a session leaves when the process running it ends.
 
-The harnesses took their hook events from Claude Code, so most of the names agree. Each harness reads only its own spelling. [coverage.md](coverage.md) lists every signal each harness gives, how each is known, and the moves each cannot make.
+[coverage.md](coverage.md) lists every signal each harness gives, how each is known, and the moves each cannot make.
 
 ## Claude Code
 

@@ -1,10 +1,6 @@
 //! The agent harnesses the daemon follows: registering our hooks with each,
-//! what each declares it tells, and, until a harness's own files are read,
-//! what its hook events mean.
-//!
-//! The harnesses took their hook vocabulary from Claude Code, so one mapping
-//! serves them all. Each harness module turns its own payloads into that
-//! vocabulary and knows where the harness keeps its hooks.
+//! and what each declares it tells. Each harness module knows where the
+//! harness keeps its hooks.
 
 mod claude;
 mod codex;
@@ -14,7 +10,6 @@ mod junie;
 mod opencode;
 mod pi;
 
-use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -120,10 +115,6 @@ impl Harness {
             }
             _ => false,
         }
-    }
-
-    fn event(self, _payload: &Value) -> Option<Event> {
-        None
     }
 
     /// The events an install registers the hook for, and the only ones. For
@@ -328,95 +319,6 @@ pub fn uninstall(home: &Path) -> Vec<(Harness, Result<()>)> {
     let all = Harness::ALL.into_iter();
     all.map(|harness| (harness, harness.uninstall(home)))
         .collect()
-}
-
-/// A hook event as Claude Code names it, which is the vocabulary the
-/// harnesses share.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-enum Hook {
-    UserPromptSubmit,
-    PreToolUse,
-    PermissionRequest,
-    PostToolUse,
-    PostToolUseFailure,
-    Elicitation,
-    ElicitationResult,
-    Stop,
-    StopFailure,
-    SessionEnd,
-    /// The user cut the turn short, as Cursor says of a tool an interrupt
-    /// aborted.
-    Interrupt,
-}
-
-/// One hook event in the vocabulary the harnesses share.
-struct Event {
-    hook: Hook,
-    session: String,
-    /// The folder the session works in.
-    cwd: String,
-    /// Whether the event puts a question to the user: it runs a tool that
-    /// asks, or it ends the turn on a message that does.
-    asks: bool,
-    /// Whether the event ends the turn and says the user cut it short.
-    interrupted: bool,
-    /// Whether the event ends the turn and says it ended on an error.
-    failed: bool,
-    /// Whether something other than the main agent sent the event.
-    subagent: bool,
-}
-
-impl Event {
-    /// What the event says of its session, each fact a signal of the table,
-    /// whose order decides what they come to.
-    fn signals(&self) -> BTreeSet<Signal> {
-        if self.subagent {
-            // Only the main agent's events say what the session needs. A
-            // subagent's say that work is going on, which matters once the
-            // main agent has stopped and left a subagent running in the
-            // background.
-            return BTreeSet::from([Signal::Backgrounded]);
-        }
-        let mut signals = BTreeSet::from([match self.hook {
-            Hook::UserPromptSubmit
-            | Hook::PreToolUse
-            | Hook::PostToolUse
-            | Hook::PostToolUseFailure
-            | Hook::ElicitationResult => Signal::Prompted,
-            Hook::PermissionRequest => Signal::PermissionAsked,
-            Hook::Elicitation => Signal::QuestionAsked,
-            Hook::Stop => Signal::TurnEnded,
-            Hook::StopFailure => Signal::TurnFailed,
-            Hook::Interrupt => Signal::Interrupted,
-            Hook::SessionEnd => Signal::Ended,
-        }]);
-        // A tool that asks the user runs, or the turn ends on a message that asks.
-        match self.hook {
-            Hook::PreToolUse if self.asks => {
-                signals.insert(Signal::QuestionAsked);
-            }
-            Hook::Stop if self.asks => {
-                signals.insert(Signal::TurnEndedAsking);
-            }
-            _ => {}
-        }
-        if self.interrupted {
-            signals.insert(Signal::Interrupted);
-        }
-        if self.failed {
-            signals.insert(Signal::TurnFailed);
-        }
-        signals
-    }
-}
-
-/// Translates one hook payload while the harness's own files are not read:
-/// the session it names, the folder that session works in, and what the
-/// event means.
-pub fn interim(harness: Harness, payload: &Value) -> Option<(String, String, BTreeSet<Signal>)> {
-    let event = harness.event(payload)?;
-    let signals = event.signals();
-    Some((event.session, event.cwd, signals))
 }
 
 /// Whether a final message ends by asking the user something.

@@ -181,13 +181,12 @@ mod tests {
             ancestry: vec![Proc {
                 pid: 501,
                 started_us: 1_794_693_357_250_000,
-                name: "codex".into(),
             }],
         });
         let line = serde_json::to_value(&hook).unwrap();
         assert_eq!(line["type"], "hook");
         assert_eq!(line["harness"], "codex");
-        assert_eq!(line["ancestry"][0]["name"], "codex");
+        assert_eq!(line["ancestry"][0]["pid"], 501);
         let back: Request = serde_json::from_value(line).unwrap();
         assert!(matches!(
             back,
