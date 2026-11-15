@@ -103,6 +103,18 @@ impl Tail {
         })
     }
 
+    /// Follows a copy of the file at `path`, written on there, from where
+    /// this tail stopped. False, and nothing changes, when `path` holds less
+    /// than was read, so it cannot be such a copy.
+    pub fn moved(&mut self, path: &Path) -> io::Result<bool> {
+        let metadata = fs::metadata(path)?;
+        if metadata.len() < self.offset {
+            return Ok(false);
+        }
+        (self.dev, self.ino) = (metadata.dev(), metadata.ino());
+        Ok(true)
+    }
+
     /// How many lines over MAX_LINE this tail has skipped.
     #[allow(dead_code)]
     pub fn skipped(&self) -> u64 {
@@ -272,6 +284,26 @@ mod tests {
         fs::write(&staged, b"one\ntwo\n").unwrap();
         fs::rename(&staged, &path).unwrap();
         assert_eq!(tail.read(&path).unwrap(), Lines::Replaced);
+    }
+
+    #[test]
+    fn a_moved_tail_reads_the_copy_on_from_where_it_stopped() {
+        let (folder, path) = log();
+        append(&path, b"one\ntw");
+        let mut tail = Tail::at_start(&path).unwrap();
+        assert_eq!(lines(tail.read(&path).unwrap()), [b"one".to_vec()]);
+        let copy = folder.path().join("moved.jsonl");
+        fs::copy(&path, &copy).unwrap();
+        append(&copy, b"o\nthree\n");
+        assert!(tail.moved(&copy).unwrap());
+        assert_eq!(
+            lines(tail.read(&copy).unwrap()),
+            [b"two".to_vec(), b"three".to_vec()]
+        );
+        // The file it left holds less than has been read.
+        assert!(!tail.moved(&path).unwrap());
+        append(&copy, b"four\n");
+        assert_eq!(lines(tail.read(&copy).unwrap()), [b"four".to_vec()]);
     }
 
     #[test]

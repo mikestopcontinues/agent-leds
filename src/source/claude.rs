@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -350,14 +351,23 @@ impl Claude {
     }
 
     /// The session's transcript, found by its name in any project folder:
-    /// the folder's name is the cwd cut short, and is never computed.
+    /// the folder's name is the cwd cut short, and is never computed. A
+    /// session moved to another folder leaves a copy in the old one, which
+    /// is written no more, so the one written last is the transcript.
     fn find(&self, session: &str) -> Option<PathBuf> {
         let name = format!("{session}.jsonl");
         fs::read_dir(&self.projects_dir)
             .ok()?
             .flatten()
             .map(|entry| entry.path().join(&name))
-            .find(|path| path.is_file())
+            .filter_map(|path| {
+                let metadata = fs::metadata(&path).ok()?;
+                metadata
+                    .is_file()
+                    .then_some((metadata.modified().ok()?, path))
+            })
+            .max_by_key(|(modified, _)| *modified)
+            .map(|(_, path)| path)
     }
 
     fn session_files(&self) -> Vec<PathBuf> {
@@ -463,10 +473,9 @@ impl Claude {
             }),
             None,
         ));
-        // Its transcript so far is history.
         let transcript = self
             .find(&id)
-            .and_then(|path| Some((path.clone(), Tail::at_end(&path).ok()?)));
+            .and_then(|path| Some((path.clone(), open(&path, start).ok()?)));
         self.sessions.insert(
             id.clone(),
             Session {
@@ -533,17 +542,19 @@ impl Claude {
         let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
-        // Another file of the same name; the first one found is followed.
-        if session
-            .transcript
-            .as_ref()
-            .is_some_and(|(known, _)| known != path)
+        if let Some((known, tail)) = &mut session.transcript
+            && known != path
         {
-            return;
+            // The session moved to another folder: its transcript was copied
+            // there and is written on there. Another file of the same name
+            // that holds less than was read is not that copy.
+            if !tail.moved(path).unwrap_or(false) {
+                return;
+            }
+            *known = path.to_owned();
         }
         if session.transcript.is_none() {
-            // Created after the session started, so all of it is new.
-            let Ok(tail) = Tail::at_start(path) else {
+            let Ok(tail) = open(path, session.start) else {
                 return;
             };
             session.transcript = Some((path.to_owned(), tail));
@@ -709,6 +720,22 @@ impl Claude {
     }
 }
 
+/// A session's transcript, opened at its start if the session's process,
+/// which started at `start`, created it, as for a new session or after
+/// /clear; at its end if not, as for a resumed one, whose transcript so far is
+/// history.
+fn open(path: &Path, start: i64) -> io::Result<Tail> {
+    let created = fs::metadata(path)?.created()?;
+    let created = created
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    if created as i64 >= start {
+        Tail::at_start(path)
+    } else {
+        Tail::at_end(path)
+    }
+}
+
 fn observation(id: &str, event: Event, turn: Option<TurnKey>) -> Observation {
     Observation {
         key: Key {
@@ -793,7 +820,7 @@ impl Source for Claude {
         }
         // The transcripts are read against the session files as they are
         // now, and the status changes told after them.
-        let transcripts: Vec<(String, PathBuf)> = match paths {
+        let mut transcripts: Vec<(String, PathBuf)> = match paths {
             Some(paths) => paths
                 .iter()
                 .filter_map(|path| Some((self.transcript_of(path)?, path.clone())))
@@ -810,6 +837,15 @@ impl Source for Claude {
                 })
                 .collect(),
         };
+        // A session started just now reads what its transcript holds of it.
+        for o in &out {
+            if let Event::Started(_) = o.event
+                && let Some((path, _)) = &self.sessions[&o.key.id].transcript
+                && !transcripts.iter().any(|(_, known)| known == path)
+            {
+                transcripts.push((o.key.id.clone(), path.clone()));
+            }
+        }
         for (id, path) in transcripts {
             self.transcript(&id, &path, &mut out);
         }
@@ -1067,6 +1103,30 @@ mod tests {
         assert!(source.behind());
         source.changed(&replay.kernel, None);
         assert!(!source.behind());
+    }
+
+    /// The phase and turn the replay left its only session in.
+    fn turn(replay: &Replay) -> (Phase, Option<String>) {
+        let session = &replay.queue.sessions()[0];
+        (session.phase, session.turn.clone().map(|turn| turn.0))
+    }
+
+    #[test]
+    fn a_session_moved_to_another_folder_is_followed_there() {
+        let replay = replay("a_session_moved_to_another_folder_is_followed_there");
+        let moved = Some("546cf2fb-5ed6-4413-82c3-4a52553b6beb".to_owned());
+        assert_eq!(turn(&replay), (Phase::Stopped, moved.clone()));
+        let seeded = fixture::seed(&replay);
+        let session = &seeded.sessions()[0];
+        assert_eq!(session.turn.clone().map(|turn| turn.0), moved);
+    }
+
+    #[test]
+    fn a_prompt_written_before_its_session_file_is_read_still_starts_the_turn() {
+        let replay =
+            replay("a_prompt_written_before_its_session_file_is_read_still_starts_the_turn");
+        let prompted = Some("7258eeab-0b1e-4b0e-8a51-6f1f2f3e4d5c".to_owned());
+        assert_eq!(turn(&replay), (Phase::Stopped, prompted));
     }
 
     #[test]
