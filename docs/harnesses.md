@@ -157,7 +157,7 @@ The gaps:
 - A turn waiting out a provider's retries shows as working, since nothing is written while it waits.
 - A step that overflowed the context and is compacted automatically is written as a step stopped with neither finish nor error, as an abort while retrying is, and its compaction is written just after. A read between the two shows the session idle for that moment.
 - With `experimental.continue_loop_on_deny` set, a rejected permission lets the turn go on; the session shows stopped until its next step is written.
-- A session whose OpenCode process started before the plugin was installed is not shown until that process is restarted.
+- A session whose OpenCode process started before the plugin was installed, or before an upgrade changed it, is not shown until that process is restarted.
 - A database from OpenCode before 1.18, which has no event log, is not read; the daemon says so in its log.
 - Checked against OpenCode 1.19.5 through `opencode serve` and the terminal interface, with permissions, questions, aborts, a subagent, errors, an archive, a deletion and a kill, and 1.18.25 through `opencode run`. The desktop app, background subagents and compaction were not tried.
 
@@ -182,6 +182,7 @@ What it cannot see:
 
 - A dialog answered while the daemon was down still shows as a question when it starts, until the run writes its next entry, since nothing is written while a dialog is open.
 - A daemon started while a session writes to its own `sessionDir` cannot find the file, so the session shows nothing until its next prompt names the file again.
+- A Pi process started before the extension was installed, or before an upgrade changed it, runs the extension it loaded then, and its sessions are not shown until it is restarted or runs `/reload`.
 - The hook does not wait for the daemon, which reads the file before each hook it handles. A reply written before the daemon handles that run's `agent_start` would leave the session working until its next event; no real provider answers that fast.
 - Pi has no permission prompts of its own; extensions that add them ask through dialogs, which show as a question. A session Pi keeps no file of, as with `--no-session`, is not shown.
 
