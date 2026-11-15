@@ -35,6 +35,7 @@ const fn file(signal: Signal, record: &'static str, cite: &'static str) -> Decla
         evidence: Evidence::Observed,
         record,
         cite,
+        untold: None,
     }
 }
 
@@ -102,6 +103,7 @@ pub const SIGNALS: &[Declared] = &[
         evidence: Evidence::Observed,
         record: "PermissionRequest naming the turn the rollout has open",
         cite: "0.5.0 hooks during probe-codex runA PROMPT4 and codex2",
+        untold: None,
     },
 ];
 

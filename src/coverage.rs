@@ -32,6 +32,9 @@ pub struct Declared {
     pub record: &'static str,
     /// The probe run that shows it, such as "probe-codex runC".
     pub cite: &'static str,
+    /// A case of the signal the harness does not tell, which shows as the
+    /// signal's gap does, such as "a tool's approval card".
+    pub untold: Option<&'static str>,
 }
 
 impl Declared {
@@ -48,6 +51,15 @@ impl Declared {
             evidence,
             record,
             cite,
+            untold: None,
+        }
+    }
+
+    /// The declaration, but for `case`, which the harness does not tell.
+    pub const fn untold(self, case: &'static str) -> Declared {
+        Declared {
+            untold: Some(case),
+            ..self
         }
     }
 }
@@ -167,12 +179,14 @@ fn matrix(harnesses: &[(Harness, &[Declared])]) -> Vec<String> {
                     .iter()
                     .filter(move |d| d.signal == signal)
                     .map(move |d| {
+                        let untold = d.untold.map(|case| format!("; not for {case}"));
                         format!(
-                            "- {}, {}, {}: {} ({})",
+                            "- {}, {}, {}: {}{} ({})",
                             harness.title(),
                             channel(d.channel),
                             evidence(d.evidence),
                             d.record,
+                            untold.unwrap_or_default(),
                             d.cite
                         )
                     })
@@ -187,7 +201,8 @@ fn matrix(harnesses: &[(Harness, &[Declared])]) -> Vec<String> {
 }
 
 /// Part 3: the moves of the table a harness never makes, because it does not
-/// produce their signal, from the phases it does reach.
+/// produce their signal, from the phases it does reach; and the cases of a
+/// signal it produces that it does not tell.
 fn missing(harnesses: &[(Harness, &[Declared])]) -> Vec<String> {
     let mut out = vec![
         String::new(),
@@ -198,6 +213,10 @@ fn missing(harnesses: &[(Harness, &[Declared])]) -> Vec<String> {
         let mut lines = Vec::new();
         for (harness, declared) in harnesses {
             if declared.iter().any(|d| d.signal == signal) {
+                let untold = declared.iter().filter(|d| d.signal == signal);
+                for case in untold.filter_map(|d| d.untold) {
+                    lines.push(format!("- {}, for {case}", harness.title()));
+                }
                 continue;
             }
             let reached = reached(declared);
@@ -420,13 +439,15 @@ mod tests {
             evidence,
             record,
             cite: "probe-toy run1",
+            untold: None,
         }
     }
 
     const FILES: &[Declared] = &[
         declared(Started, File, Observed, "pid file written"),
         declared(Prompted, File, Observed, "user line"),
-        declared(PermissionAsked, File, Inferred, "tool_use with no result"),
+        declared(PermissionAsked, File, Inferred, "tool_use with no result")
+            .untold("a hook's approval"),
         declared(TurnEnded, File, Observed, "end_turn"),
         declared(Ended, File, Observed, "pid file deleted"),
     ];
@@ -502,7 +523,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### PermissionAsked
 
-- Claude Code, file, inferred: tool_use with no result (probe-toy run1)
+- Claude Code, file, inferred: tool_use with no result; not for a hook's approval (probe-toy run1)
 
 ### TurnEnded
 
@@ -517,6 +538,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 **PermissionAsked**: an approval wait shows as the light it interrupts.
 
+- Claude Code, for a hook's approval
 - Codex: Idle, Working → Blocked
 
 **QuestionAsked**: a question the agent waits on shows as the light it interrupts.

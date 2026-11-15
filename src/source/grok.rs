@@ -53,6 +53,7 @@ const fn file(
         evidence,
         record,
         cite,
+        untold: None,
     }
 }
 
@@ -73,9 +74,10 @@ pub const SIGNALS: &[Declared] = &[
     file(
         Signal::PermissionAsked,
         Evidence::Observed,
-        "plan_mode.json awaiting_plan_approval true while a turn is open, as exit_plan_mode's plan card waits on the user; a tool's approval card is not told",
+        "plan_mode.json awaiting_plan_approval true while a turn is open, as exit_plan_mode's plan card waits on the user",
         "gaps p3",
-    ),
+    )
+    .untold("a tool's approval card"),
     file(
         Signal::QuestionAsked,
         Evidence::Observed,

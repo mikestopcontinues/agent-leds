@@ -76,7 +76,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 - Claude Code, file, observed: the session file going to status waiting, for anything but input needed; or a prompt read while the session file says so (probe-claude cc1, cc4, cc10)
 - Codex, hook, observed: PermissionRequest naming the turn the rollout has open (0.5.0 hooks during probe-codex runA PROMPT4 and codex2)
-- Grok, file, observed: plan_mode.json awaiting_plan_approval true while a turn is open, as exit_plan_mode's plan card waits on the user; a tool's approval card is not told (gaps p3)
+- Grok, file, observed: plan_mode.json awaiting_plan_approval true while a turn is open, as exit_plan_mode's plan card waits on the user; not for a tool's approval card (gaps p3)
 - Junie, file, inferred: a SessionA2uxEvent in state INPUT_REQUIRED whose block carries an approvalRequest and is not COMPLETED, once per stepId (probe-junie permission_pending; Irrlicht real-terminal-approval)
 - OpenCode, hook, observed: permission.asked, for the session or a subagent's session under it (probe-opencode T3, T4, T7, T8, T12)
 
@@ -172,6 +172,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 **PermissionAsked**: an approval wait shows as the light it interrupts.
 
+- Grok, for a tool's approval card
 - Cursor: Idle, Working, Asked, AskedRead, Stopped, StoppedRead, Failed → Blocked
 - Pi: Idle, Working, Asked, AskedRead, Stopped, StoppedRead, Failed → Blocked
 

@@ -46,6 +46,7 @@ const fn file(signal: Signal, record: &'static str, cite: &'static str) -> Decla
         evidence: Evidence::Inferred,
         record,
         cite,
+        untold: None,
     }
 }
 
