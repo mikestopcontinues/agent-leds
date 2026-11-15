@@ -51,6 +51,11 @@ pub trait Kernel {
     /// Whether another process holds a lock on the file. Err(NotFound) if
     /// the file is gone.
     fn locked(&self, path: &Path) -> io::Result<bool>;
+    /// The Unix second of a local time such as "2026-11-15 10:43:43", as the
+    /// Claude desktop app stamps its log, in the zone the Mac is set to.
+    fn local_second(&self, text: &str) -> Option<i64> {
+        local(text, None)
+    }
 }
 
 /// The operating system itself.
@@ -109,9 +114,33 @@ pub fn iso_second(text: &str) -> Option<i64> {
     utc(text, c"%Y-%m-%dT%H:%M:%S", true)
 }
 
+/// The Unix second of a local time such as "2026-11-15 10:43:43",
+/// `offset` seconds ahead of UTC, or in the local time zone if None. An
+/// hour the clocks go back over reads as one of its two times.
+pub fn local(text: &str, offset: Option<i64>) -> Option<i64> {
+    let mut tm = parse(text, c"%Y-%m-%d %H:%M:%S", false)?;
+    let Some(offset) = offset else {
+        // Whether daylight saving time is on, mktime works out.
+        tm.tm_isdst = -1;
+        // SAFETY: tm was filled by strptime; mktime reads the local zone.
+        let second = unsafe { libc::mktime(&mut tm) };
+        return (second != -1).then_some(second);
+    };
+    // SAFETY: tm was filled by strptime; timegm reads no time zone.
+    Some(unsafe { libc::timegm(&mut tm) } - offset)
+}
+
 /// The Unix second `text` gives in `format`, read as UTC, with whatever
 /// follows the format left unread only if `rest` allows it.
 fn utc(text: &str, format: &CStr, rest: bool) -> Option<i64> {
+    let mut tm = parse(text, format, rest)?;
+    // SAFETY: tm was filled by strptime; timegm reads no time zone.
+    Some(unsafe { libc::timegm(&mut tm) })
+}
+
+/// The fields `text` gives in `format`, with whatever follows the format
+/// left unread only if `rest` allows it.
+fn parse(text: &str, format: &CStr, rest: bool) -> Option<libc::tm> {
     let text = CString::new(text).ok()?;
     // SAFETY: tm is plain data, for which all zeroes is a valid value.
     let mut tm: libc::tm = unsafe { mem::zeroed() };
@@ -122,8 +151,7 @@ fn utc(text: &str, format: &CStr, rest: bool) -> Option<i64> {
     if unread.is_null() || (!rest && unsafe { *unread } != 0) {
         return None;
     }
-    // SAFETY: tm was filled by strptime; timegm reads no time zone.
-    Some(unsafe { libc::timegm(&mut tm) })
+    Some(tm)
 }
 
 /// A process found by walking up from our own.
@@ -287,6 +315,43 @@ mod tests {
             .args([
                 "--exact",
                 "liveness::tests::lstart_reads_the_probe_strings_as_utc",
+            ])
+            .env("TZ", "America/Chicago")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&child.stdout);
+        assert!(child.status.success(), "{stdout}");
+        assert!(stdout.contains("1 passed"), "{stdout}");
+    }
+
+    /// Run by the test after it in Chicago's zone, which it assumes.
+    #[test]
+    #[ignore = "assumes TZ=America/Chicago"]
+    fn a_log_time_reads_in_the_local_zone() {
+        // Standard time, six hours behind UTC, and daylight saving time, five.
+        assert_eq!(
+            System.local_second("2026-11-15 10:43:43"),
+            iso_second("2026-11-15T16:43:43Z")
+        );
+        assert_eq!(
+            System.local_second("2026-07-01 10:00:00"),
+            iso_second("2026-07-01T15:00:00Z")
+        );
+        assert_eq!(System.local_second("2026-11-15 10:43:43 [info]"), None);
+        assert_eq!(System.local_second("10:43:43"), None);
+    }
+
+    #[test]
+    fn a_log_time_reads_in_the_zone_set() {
+        assert_eq!(
+            local("2026-11-15 10:43:43", Some(-6 * 3600)),
+            iso_second("2026-11-15T16:43:43Z")
+        );
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "--ignored",
+                "liveness::tests::a_log_time_reads_in_the_local_zone",
             ])
             .env("TZ", "America/Chicago")
             .output()

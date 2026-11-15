@@ -354,7 +354,7 @@ impl Told {
 /// which need not be in `home`.
 pub fn all(home: &Path, claude: &Path, junie: &Path) -> Vec<Box<dyn Source>> {
     vec![
-        Box::new(claude::Claude::new(claude)),
+        Box::new(claude::Claude::new(home, claude)),
         Box::new(codex::Codex::new(home)),
         Box::new(grok::Grok::new(home)),
         Box::new(cursor::Cursor::new(home)),

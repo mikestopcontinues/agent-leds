@@ -56,7 +56,7 @@ use crate::harness::{self, Harness};
 use crate::liveness::{self, Kernel, Liveness, Proc};
 use crate::queue::{Key, Queue};
 
-/// Processes and locks as a test says they are.
+/// Processes, locks and the time zone as a test says they are.
 #[derive(Default)]
 pub struct FakeKernel {
     starts: HashMap<i32, u64>,
@@ -71,6 +71,12 @@ impl Kernel for FakeKernel {
     fn locked(&self, path: &Path) -> io::Result<bool> {
         fs::metadata(path)?;
         Ok(self.locks.contains(path))
+    }
+
+    /// The fixtures' local times are those of the Mac they were recorded
+    /// on, in Chicago's standard time, six hours behind UTC.
+    fn local_second(&self, text: &str) -> Option<i64> {
+        liveness::local(text, Some(-6 * 3600))
     }
 }
 

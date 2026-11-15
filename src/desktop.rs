@@ -1,4 +1,5 @@
-//! The Claude desktop app: which sessions the user has looked at.
+//! The Claude desktop app: which sessions the user has looked at, and which
+//! Claude Code session each of its sessions runs.
 //!
 //! Claude Code has no hook for a session being read. The desktop app does
 //! keep a file per session that records when the session was last opened.
@@ -42,7 +43,7 @@ impl Desktop {
     /// is using the app. Being in front is not enough for that: the user may
     /// be away from the screen.
     pub fn looked_at(&mut self, since: u64, now: u64) -> HashMap<String, u64> {
-        let sessions = home().join("Library/Application Support/Claude/claude-code-sessions");
+        let sessions = sessions(&home());
         let mut looked = self.opened(&sessions, since);
         if idle() < ACTIVE
             && app_in_front()
@@ -107,6 +108,27 @@ impl Desktop {
             .insert(file.to_owned(), (written, session.clone()));
         Some(session)
     }
+}
+
+/// The app's session files for the account at `home`.
+pub fn sessions(home: &Path) -> PathBuf {
+    home.join("Library/Application Support/Claude/claude-code-sessions")
+}
+
+/// The Claude Code session the app's session `local`, as its log names it
+/// (`local_<id>`), runs: the `cliSessionId` its file in `sessions` records.
+pub fn cli_session(sessions: &Path, local: &str) -> Option<String> {
+    if !local.starts_with("local_") || local.contains('/') {
+        return None;
+    }
+    let name = format!("{local}.json");
+    let inside = |folder: &Path| fs::read_dir(folder).into_iter().flatten().flatten();
+    let file = inside(sessions)
+        .flat_map(|account| inside(&account.path()))
+        .map(|organization| organization.path().join(&name))
+        .find(|file| file.is_file())?;
+    let session: Session = serde_json::from_slice(&fs::read(file).ok()?).ok()?;
+    session.cli_session_id
 }
 
 fn ms(time: SystemTime) -> u64 {
@@ -224,6 +246,20 @@ mod tests {
         );
         assert!(desktop.opened(&sessions, 1794760894469).is_empty());
         assert_eq!(desktop.open(&sessions).as_deref(), Some(id));
+    }
+
+    #[test]
+    fn the_app_s_session_names_the_claude_code_session_it_runs() {
+        let sessions = Sessions::new();
+        sessions.session("0b62", 100);
+        assert_eq!(
+            cli_session(&sessions, "local_0b62").as_deref(),
+            Some("0b62")
+        );
+        assert_eq!(cli_session(&sessions, "local_none"), None);
+        assert_eq!(cli_session(&sessions, "local_../x"), None);
+        sessions.write("local_chat.json", r#"{"title":"no Claude Code session"}"#);
+        assert_eq!(cli_session(&sessions, "local_chat"), None);
     }
 
     #[test]

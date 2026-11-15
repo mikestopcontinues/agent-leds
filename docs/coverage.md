@@ -78,7 +78,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### PermissionAsked
 
-- Claude Code, file, observed: the session file going to status waiting, for anything but input needed or dialog open; or a prompt read while the session file waits (probe-claude cc1, cc4, cc10)
+- Claude Code, file, observed: the session file going to status waiting, for anything but input needed or dialog open; or the desktop app's log emitting a tool permission request for the session, for any tool but AskUserQuestion, such as computer:request_access or browser:open_site, while the session file does not wait; or a prompt read while either waits (probe-claude cc1, cc4, cc10; the desktop app's main.log, 2026-09-30 to 2026-11-15 (a_desktop_dialog_the_session_file_does_not_show_blocks_until_it_closes))
 - Codex, hook, observed: PermissionRequest naming the turn the rollout has open (0.5.0 hooks during probe-codex runA PROMPT4 and codex2)
 - Grok, file, observed: plan_mode.json awaiting_plan_approval true while a turn is open, as exit_plan_mode's plan card waits on the user (gaps p3)
 - Grok, hook, observed: Notification permission_prompt while the open turn has a permission_requested in events.jsonl with no permission_resolved after it, ask_user_question's own pair aside; the prompt of a plan card comes once exit_plan_mode's request is resolved, so plan_mode.json alone tells it (ap-grok runs 1, 2)
@@ -88,6 +88,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 ### QuestionAsked
 
 - Claude Code, file, observed: the session file going to status waiting for input needed; or a prompt read while the session file says so (probe-claude cc2, cc9)
+- Claude Code, file, inferred: the desktop app's log emitting a tool permission request for AskUserQuestion while the session file does not wait; or a prompt read while the log holds it (the desktop app's main.log, 2026-11-14 (AskUserQuestion's requests); which of it and the session file tells the wait first was not seen)
 - Codex, file, observed: a function_call to request_user_input, which blocks; not request_user_input_async, which does not (probe-codex runA PROMPT2; desktop rollouts 0.162)
 - Grok, file, observed: events.jsonl tool_started for ask_user_question (probe-grok question_pending, grok5)
 - Junie, file, observed: a SessionA2uxEvent in state INPUT_REQUIRED whose block is an AskAsyncRequestUpdatedEvent and is not COMPLETED, once per stepId (probe-junie 4020.10 s1 turns 5, 6)
@@ -97,7 +98,8 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### Answered
 
-- Claude Code, file, observed: the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt (probe-claude cc1, cc2)
+- Claude Code, file, observed: the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt; or the desktop app's log closing a request it holds while the session file does not wait, with a permission response or an abort (probe-claude cc1, cc2; the desktop app's main.log, 2026-09-30 to 2026-11-15 (a_desktop_dialog_the_session_file_does_not_show_blocks_until_it_closes))
+- Claude Code, file, inferred: the last of the session file and the desktop app's log to let go of a wait both hold; or the app starting again, which closes every request its log holds, while the session runs on (the desktop app's main.log, 2026-11-10 to 2026-11-14 (its starts, and AskUserQuestion's requests); which of the log and the session file lets go first, and a session running on across the app's start, were not seen)
 - Codex, file, observed: the output for the pending question's call_id; or, after the approval hook or a daemon start inside a turn, the next call output, completed item that is not a subagent's, or task_complete (probe-codex runA PROMPT2, DENY-ESC; codex2 (approved))
 - Grok, file, observed: events.jsonl tool_completed for ask_user_question, plan_mode.json awaiting_plan_approval false again while the turn goes on, or, once the hook told an approval card or a daemon started inside a turn, the permission_resolved that leaves no request waiting, or a tool_completed or loop_started while none waits (probe-grok question_pending, grok5; gaps p3; ap-grok runs 1, 2)
 - Junie, file, observed: the last waiting step written again as COMPLETED or in a state other than INPUT_REQUIRED, as an approval, a denial and an Esc on an approval do, or a UserAsyncResponseEvent or CancelAgentEvent while a step waits (probe-junie 4020.10 s1 turns 5, 6, s5)
@@ -160,7 +162,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 ### Backgrounded
 
-- Claude Code, file, observed: an end_turn record while the session file is busy with delegated work, not while it says a dialog is open; or waiting to busy after the turn closed (probe-claude cc3, cc4, cc5)
+- Claude Code, file, observed: an end_turn record while the session file is busy with delegated work, not while it says a dialog is open; or waiting to busy after the turn ended, not after an interrupt or a failure (probe-claude cc3, cc4, cc5)
 - Codex, file, observed: task_complete while a subagent the turn started, or gave a followup_task, has not completed, or while the thread's goal in goals_1.sqlite is active with no continuation deferral, which Codex goes on with by itself (probe-codex runA PROMPT5; desktop rollouts 2026-10-13 and 2026-10-15)
 - Grok, file, observed: a turn_ended while updates.jsonl has a subagent_spawned with no subagent_finished; not for a background command left running, which wakes the session with a turn of its own when it finishes; nothing at its start says whether it ever will, as a dev server never does (probe-grok subagent, run e)
 - OpenCode, file, observed: 2.x: the run ended while a subagent's job of the session's is left, at work or not yet reported to it; not for a shell moved to the background, which wakes the session with a run of its own when it finishes; nothing says whether it ever will, as a dev server never does (gaps oc8 (2.3.0 a task subagent run in the background))
