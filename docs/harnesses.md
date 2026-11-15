@@ -8,7 +8,7 @@ The service reads every harness's own files as they change. Claude Code's and Ju
 
 ## Claude Code
 
-Each running Claude Code process, in a terminal or the desktop app, keeps a file in `~/.claude/sessions/` with its session and whether it is busy, idle or waiting on the user, and each session writes its transcript to `~/.claude/projects/`. The daemon reads both as they change.
+Each running Claude Code process, in a terminal or the desktop app, keeps a file in `~/.claude/sessions/` with its session and whether it is busy, idle or waiting on the user, and each session writes its transcript to `~/.claude/projects/`. The daemon reads both as they change. Claude Code keeps that folder at `$CLAUDE_CONFIG_DIR` when it is set, and the daemon finds it the same way, from the environment launchd starts it with, which a `CLAUDE_CONFIG_DIR` exported in a shell's profile never reaches: set it there too with `launchctl setenv CLAUDE_CONFIG_DIR <folder>`, then run `agent-leds install` to restart the service. `agent-leds doctor` reads the folder the service reads and says when the shell's `CLAUDE_CONFIG_DIR` names another; it has a Claude Code line only once `~/.claude` exists.
 
 | What Claude Code writes | Session becomes |
 | --- | --- |

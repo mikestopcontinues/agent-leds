@@ -228,10 +228,11 @@ impl Told {
 }
 
 /// Every harness's source, reading the harnesses' files in `home`, and
-/// Junie's in its own folder, `junie`, which need not be in `home`.
-pub fn all(home: &Path, junie: &Path) -> Vec<Box<dyn Source>> {
+/// Claude Code's and Junie's in their own folders, `claude` and `junie`,
+/// which need not be in `home`.
+pub fn all(home: &Path, claude: &Path, junie: &Path) -> Vec<Box<dyn Source>> {
     vec![
-        Box::new(claude::Claude::new(home)),
+        Box::new(claude::Claude::new(claude)),
         Box::new(codex::Codex::new(home)),
         Box::new(grok::Grok::new(home)),
         Box::new(cursor::Cursor::new(home)),
@@ -242,8 +243,8 @@ pub fn all(home: &Path, junie: &Path) -> Vec<Box<dyn Source>> {
 }
 
 /// The source of `harness`, made as `all` makes it.
-pub fn of(harness: Harness, home: &Path, junie: &Path) -> Box<dyn Source> {
-    all(home, junie)
+pub fn of(harness: Harness, home: &Path, claude: &Path, junie: &Path) -> Box<dyn Source> {
+    all(home, claude, junie)
         .into_iter()
         .find(|source| source.harness() == harness)
         .expect("every harness has a source")

@@ -1,4 +1,5 @@
-//! Claude Code, from its own files. Each running process keeps a session
+//! Claude Code, from its own files, in `~/.claude` or `$CLAUDE_CONFIG_DIR`.
+//! Each running process keeps a session
 //! file, `~/.claude/sessions/<pid>.json`, rewritten whole with the session it
 //! runs and whether it is busy, idle or waiting on the user. The session's
 //! transcript, `~/.claude/projects/<slug>/<session>.jsonl`, is appended a
@@ -9,6 +10,7 @@
 //! was taken from Claude Code 2.1.325 and the desktop app's 2.1.321.
 
 use std::collections::{BTreeSet, HashMap};
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -373,11 +375,28 @@ pub struct Claude {
     sessions: HashMap<String, Session>,
 }
 
+/// Claude Code's folder for the account at `home`, as this process's
+/// environment gives it to `folder`.
+pub fn config_dir(home: &Path) -> PathBuf {
+    folder(std::env::var_os("CLAUDE_CONFIG_DIR").as_deref(), home)
+}
+
+/// Claude Code's folder given `$CLAUDE_CONFIG_DIR`: that, or `.claude` in
+/// `home`.
+pub fn folder(config_dir: Option<&OsStr>, home: &Path) -> PathBuf {
+    match config_dir {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => home.join(".claude"),
+    }
+}
+
 impl Claude {
-    pub fn new(home: &Path) -> Claude {
+    /// Claude Code's sessions, from its folder, `~/.claude` or
+    /// `$CLAUDE_CONFIG_DIR`.
+    pub fn new(folder: &Path) -> Claude {
         Claude {
-            sessions_dir: home.join(".claude/sessions"),
-            projects_dir: home.join(".claude/projects"),
+            sessions_dir: folder.join("sessions"),
+            projects_dir: folder.join("projects"),
             procs: HashMap::new(),
             sessions: HashMap::new(),
         }
@@ -1027,7 +1046,7 @@ mod tests {
     #[ignore = "reads the real ~/.claude"]
     fn seeds_from_the_real_home() {
         let home = std::env::var_os("HOME").expect("a home");
-        let mut claude = Claude::new(Path::new(&home));
+        let mut claude = Claude::new(&config_dir(Path::new(&home)));
         let mut queue = crate::queue::Queue::default();
         for o in fixture::printed(claude.seed(&liveness::System, &[]).unwrap()) {
             assert!(o.quiet);
