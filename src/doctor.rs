@@ -34,9 +34,16 @@ pub fn run() -> Result<()> {
     let saved = daemon::saved_queue();
     checks.push(("queue".to_owned(), queue(&saved, &home)));
     let saved = saved.unwrap_or_default();
+    // Junie's folder as the service finds it, from launchd's environment.
+    let junie = source::junie::folder(launchd::getenv("JUNIE_HOME").as_deref());
     for (harness, hooks) in harness::check(&home, &exe) {
-        let mut source = source::of(harness, &home, &source::junie::home());
-        let files = files(source.as_mut(), &System, &saved, &home);
+        let mut source = source::of(harness, &home, &junie);
+        let mut files = files(source.as_mut(), &System, &saved, &home);
+        if harness == Harness::Junie
+            && let Some(problem) = elsewhere(&junie, &source::junie::home(), &home)
+        {
+            files = both(files, Err(anyhow::anyhow!(problem)));
+        }
         let hooks = hooks.map(|()| harness.registered().to_owned());
         checks.push((harness.title().to_owned(), both(files, hooks)));
     }
@@ -159,6 +166,20 @@ fn queue(saved: &Result<Queue>, home: &Path) -> Result<String> {
         0 => format!("no sessions saved in {path}"),
         1 => format!("1 session saved in {path}"),
         n => format!("{n} sessions saved in {path}"),
+    })
+}
+
+/// What is wrong when Junie, run from this shell, keeps its folder at
+/// `here` while the service reads `service`: a `JUNIE_HOME` exported in a
+/// shell's profile never reaches a LaunchAgent.
+fn elsewhere(service: &Path, here: &Path, home: &Path) -> Option<String> {
+    (service != here).then(|| {
+        format!(
+            "JUNIE_HOME here is {}, which the service does not see; run \
+             `launchctl setenv JUNIE_HOME {}`, then `agent-leds install` to restart it",
+            tilde(here, home),
+            here.display()
+        )
     })
 }
 
@@ -512,6 +533,19 @@ mod tests {
                 "{folder}: {problem}"
             );
         }
+    }
+
+    #[test]
+    fn a_junie_folder_the_service_does_not_read_needs_attention() {
+        let home = Path::new("/Users/me");
+        let default = home.join(".junie");
+        assert_eq!(elsewhere(&default, &default, home), None);
+        assert_eq!(
+            elsewhere(&default, &home.join("work/junie"), home).unwrap(),
+            "JUNIE_HOME here is ~/work/junie, which the service does not see; run \
+             `launchctl setenv JUNIE_HOME /Users/me/work/junie`, then `agent-leds install` to \
+             restart it"
+        );
     }
 
     #[test]

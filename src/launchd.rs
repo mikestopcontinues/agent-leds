@@ -1,6 +1,8 @@
 //! Runs the daemon at login as a per-user LaunchAgent.
 
+use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
@@ -25,6 +27,18 @@ fn domain() -> String {
 /// Where the daemon's errors go.
 pub fn log() -> PathBuf {
     state_dir().join("daemon.log")
+}
+
+/// A variable in the environment launchd starts the user's agents with, as
+/// `launchctl setenv` sets it, if it is set. A shell's own exports never
+/// reach it.
+pub fn getenv(name: &str) -> Option<OsString> {
+    let output = Command::new("launchctl")
+        .args(["getenv", name])
+        .output()
+        .ok()?;
+    let value = output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout);
+    (output.status.success() && !value.is_empty()).then(|| OsStr::from_bytes(value).to_owned())
 }
 
 /// The binary the installed LaunchAgent runs, if one is installed.

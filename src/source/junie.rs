@@ -103,10 +103,15 @@ pub const SIGNALS: &[Declared] = &[
     ),
 ];
 
-/// Junie's folder: `$JUNIE_HOME`, or `.junie` in the account's home
-/// directory, which Junie takes from the system and never from `$HOME`.
+/// Junie's folder, as this process's environment gives it to `folder`.
 pub fn home() -> PathBuf {
-    match std::env::var_os("JUNIE_HOME") {
+    folder(std::env::var_os("JUNIE_HOME").as_deref())
+}
+
+/// Junie's folder given `$JUNIE_HOME`: that, or `.junie` in the account's
+/// home directory, which Junie takes from the system and never from `$HOME`.
+pub fn folder(junie_home: Option<&OsStr>) -> PathBuf {
+    match junie_home {
         Some(home) if !home.is_empty() => PathBuf::from(home),
         _ => account_home().join(".junie"),
     }
