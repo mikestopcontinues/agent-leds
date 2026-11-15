@@ -54,6 +54,11 @@ pub fn run() -> Result<()> {
         if let Some(problem) = problem {
             files = both(files, Err(anyhow::anyhow!(problem)));
         }
+        if harness == Harness::Grok
+            && let Some(problem) = source::grok::drift(&home, grok_version().as_deref())
+        {
+            files = both(files, Err(anyhow::anyhow!(problem)));
+        }
         let hooks = hooks.map(|()| harness.registered().to_owned());
         checks.push((harness.title().to_owned(), both(files, hooks)));
     }
@@ -192,6 +197,15 @@ fn elsewhere(variable: &str, service: &Path, here: &Path, home: &Path) -> Option
             here.display()
         )
     })
+}
+
+/// What `grok --version` prints, when the `grok` on this shell's PATH runs.
+fn grok_version() -> Option<String> {
+    let output = Command::new("grok").arg("--version").output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Whether only a hook or plugin can start a session of `harness`, whose

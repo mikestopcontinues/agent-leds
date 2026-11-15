@@ -38,13 +38,13 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | [Started](#started) | file | file | file | hook | file* | hook | hook |
 | [Prompted](#prompted) | file | file | file | file+hook | file* | file+hook | file+hook |
-| [PermissionAsked](#permissionasked) | file | hook | — | — | file* | hook | — |
+| [PermissionAsked](#permissionasked) | file | hook | file | — | file* | hook | — |
 | [QuestionAsked](#questionasked) | file | file | file | — | file* | file | hook |
 | [Answered](#answered) | file | file | file | — | file* | file+hook | file*+hook |
 | [Released](#released) | file* | — | — | — | — | — | — |
 | [TurnEnded](#turnended) | file | file | file | file | file* | file | file |
 | [TurnEndedAsking](#turnendedasking) | file | file | file | file | file* | file | file |
-| [TurnFailed](#turnfailed) | file | file | hook* | file* | file* | file+hook* | hook |
+| [TurnFailed](#turnfailed) | file | file | file | file* | file* | file+hook* | hook |
 | [Interrupted](#interrupted) | file | file | file | file+hook* | file* | file+hook | file+hook |
 | [Backgrounded](#backgrounded) | file | file | file | — | — | — | — |
 | [BackgroundDone](#backgrounddone) | file | file | file* | — | — | — | — |
@@ -77,6 +77,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 - Claude Code, file, observed: the session file going to status waiting, for anything but input needed or dialog open; or a prompt read while the session file waits (probe-claude cc1, cc4, cc10)
 - Codex, hook, observed: PermissionRequest naming the turn the rollout has open (0.5.0 hooks during probe-codex runA PROMPT4 and codex2)
+- Grok, file, observed: plan_mode.json awaiting_plan_approval true while a turn is open, as exit_plan_mode's plan card waits on the user; not for a tool's approval card (gaps p3)
 - Junie, file, inferred: a SessionA2uxEvent in state INPUT_REQUIRED whose block carries an approvalRequest and is not COMPLETED, once per stepId (probe-junie permission_pending; Irrlicht real-terminal-approval)
 - OpenCode, hook, observed: permission.asked, for the session or a subagent's session under it (probe-opencode T3, T4, T7, T8, T12)
 
@@ -93,7 +94,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 - Claude Code, file, observed: the session file going from waiting to busy while the turn is open, or after it closed when a subagent it left is let go on; or from waiting to idle while the turn is open, as a denial does before its interrupt (probe-claude cc1, cc2)
 - Codex, file, observed: the output for the pending question's call_id; or, after the approval hook or a daemon start inside a turn, the next call output, completed item that is not a subagent's, or task_complete (probe-codex runA PROMPT2, DENY-ESC; codex2 (approved))
-- Grok, file, observed: events.jsonl tool_completed for ask_user_question (probe-grok question_pending, grok5)
+- Grok, file, observed: events.jsonl tool_completed for ask_user_question, or plan_mode.json awaiting_plan_approval false again while the turn goes on (probe-grok question_pending, grok5; gaps p3)
 - Junie, file, inferred: the last waiting step written again as COMPLETED or in a state other than INPUT_REQUIRED, or a UserAsyncResponseEvent or UserResponseEvent while a step waits (probe-junie permission_resolved, question_answered; Irrlicht real-terminal-approval, real-lifecycle-session)
 - OpenCode, hook, observed: permission.replied, for the session or a subagent's session under it (probe-opencode T3, T7, T12)
 - OpenCode, file, observed: no question tool part running in the turn any more, while it runs (probe-opencode T5)
@@ -128,7 +129,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 - Claude Code, file, observed: an assistant record with isApiErrorMessage (probe-claude cc4, cc5)
 - Codex, file, observed: task_complete with an error (probe-codex runC; 119 such records in earlier rollouts)
-- Grok, hook, inferred: stop_failure whose promptId is the newest turn's in updates.jsonl, or one never seen while that turn has named none; Grok can report a turn after the next has started, and that report tells nothing; no terminal API error was produced in the probe, whose refused connections retried without end (probe-grok turn_error, runs c, k; Grok's hook docs)
+- Grok, file, observed: events.jsonl turn_ended with outcome error, written as a turn ends on an API error, before Grok runs StopFailure for it; whether a refusal or a max_output_tokens end writes it is unverified, and a request that cannot connect retries without end (gaps p2; probe-grok runs c, k)
 - Cursor, file, inferred: turn_ended with status error, from the bundle's code; not reproduced (probe-cursor turn_error (bundle 2986/7777.index.js))
 - Junie, file, inferred: TaskState after a task started, when it is FAILED, which only Irrlicht's parser reads, or the task had an AgentFailureEvent or an AgentTaskFailedEvent (probe-junie turn_error; Irrlicht real-failed-session)
 - OpenCode, file, observed: that message carrying an error, a MessageAbortedError included (probe-opencode T7–T9)
@@ -139,7 +140,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 - Claude Code, file, observed: a user text starting [Request interrupted by user (probe-claude cc1–cc4)
 - Codex, file, observed: event_msg turn_aborted for any reason but replaced, which a new turn follows; a cancelled approval writes it too (probe-codex runA CTRLC-INTERRUPT, DENY-ESC; codex2)
-- Grok, file, observed: a cancelled turn_ended triggered by ctrl_c, the stop button or the dashboard, or cancelled as permission_rejected or permission_cancelled (probe-grok interrupted, runs a, h)
+- Grok, file, observed: a cancelled turn_ended triggered by ctrl_c, the stop button, the dashboard or send_now (the user's next prompt, whose turn_started follows at once), or cancelled as permission_rejected or permission_cancelled (probe-grok interrupted, runs a, h; gaps grok-x a)
 - Cursor, hook, inferred: stop with status aborted, for a chat bound to its process; Cursor runs it on every interrupt, from the bundle's code (probe-cursor run B, turn 3 (no write); bundle 2986.index.js, the abort path)
 - Cursor, file, observed: turn_ended with status aborted, including the previous turn's end rewritten to aborted (probe-cursor runs B, H)
 - Junie, file, inferred: TaskState after a task started that had a CancelAgentEvent (probe-junie interrupted; Irrlicht parser_test.go)
@@ -152,13 +153,13 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 - Claude Code, file, observed: an end_turn record while the session file is busy with delegated work, not while it says a dialog is open; or waiting to busy after the turn closed (probe-claude cc3, cc4, cc5)
 - Codex, file, observed: task_complete while a subagent the turn started, or gave a followup_task, has not completed, or while the thread's goal in goals_1.sqlite is active with no continuation deferral, which Codex goes on with by itself (probe-codex runA PROMPT5; desktop rollouts 2026-10-13 and 2026-10-15)
-- Grok, file, observed: a turn_ended while updates.jsonl has a subagent_spawned with no subagent_finished (probe-grok subagent, run e)
+- Grok, file, observed: a turn_ended while updates.jsonl has a subagent_spawned with no subagent_finished, or its last background_tasks lists a command running that no task_completed has ended since; a command that never exits, such as a dev server, keeps every later turn end in the background, unannounced, since nothing says at its start whether it will wake the session (probe-grok subagent, run e; gaps grok-x a)
 
 ### BackgroundDone
 
 - Claude Code, file, observed: the session file going from busy to idle after a backgrounded turn (probe-claude cc3)
 - Codex, file, observed: after the turn ended, the last such subagent's SubAgentActivity completed or interrupted, or the goal no longer active, with neither left (probe-codex runA PROMPT5; desktop rollout 2026-10-13; the goal from Codex 0.162's statements on goals_1.sqlite, unseen)
-- Grok, file, inferred: updates.jsonl subagent_finished with will_wake false, leaving no subagent running; will_wake false was seen only for subagents that finished inside the turn, and the one that finished after its turn ended had will_wake true and started a turn, so this may never fire (probe-grok subagent, run e; session 01a1db59-934f)
+- Grok, file, inferred: updates.jsonl subagent_finished or task_completed with will_wake false, leaving nothing running; will_wake false was seen only for work that finished inside the turn, a subagent and a background command killed with kill_command_or_subagent, and work that finished after its turn ended had will_wake true and started a turn, so this may never fire (probe-grok subagent, run e; session 01a1db59-934f; gaps grok-x a)
 
 ### Ended
 
@@ -176,7 +177,7 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 
 **PermissionAsked**: an approval wait shows as the light it interrupts.
 
-- Grok: Idle, Working, Background, Asked, AskedRead, Stopped, StoppedRead, Failed → Blocked
+- Grok, for a tool's approval card
 - Cursor: Idle, Working, Asked, AskedRead, Stopped, StoppedRead, Failed → Blocked
 - Pi: Idle, Working, Asked, AskedRead, Stopped, StoppedRead, Failed → Blocked
 

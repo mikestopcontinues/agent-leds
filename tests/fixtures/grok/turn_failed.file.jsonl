@@ -1,0 +1,14 @@
+{"cite":"gaps p2, a 400 from a fake API, Grok 1.0.77 (cwd folder renamed)","evidence":"observed"}
+{"alive":53859,"started_us":1794752943621520}
+{"expect":[]}
+{"write":".grok/active_sessions.json","text":"[\n  {\n    \"session_id\": \"00840660-28e9-4cff-b156-6d3139cbed4a\",\n    \"pid\": 53859,\n    \"pid_start\": 1794752943621520,\n    \"cwd\": \"/Users/me/Code/app\",\n    \"opened_at\": \"2026-11-15T14:29:03.935946Z\"\n  }\n]"}
+{"expect":[["started","file"]]}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/00840660-28e9-4cff-b156-6d3139cbed4a/events.jsonl","line":{"ts":"2026-11-15T14:29:04.026Z","type":"turn_started","session_id":"00840660-28e9-4cff-b156-6d3139cbed4a","turn_number":0,"model_id":"grok-4.6","yolo_mode":true,"conversation_message_count":3,"session_relationship":"primary","schema_version":"1.0"}}
+{"expect":[["prompted","file"]]}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/00840660-28e9-4cff-b156-6d3139cbed4a/updates.jsonl","line":{"timestamp":1794752944,"method":"session/update","params":{"sessionId":"00840660-28e9-4cff-b156-6d3139cbed4a","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"Say hi"},"_meta":{"modelId":"grok-4.6","promptIndex":0}},"_meta":{"eventId":"00840660-28e9-4cff-b156-6d3139cbed4a-3","agentTimestampMs":1794752944083}}}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/00840660-28e9-4cff-b156-6d3139cbed4a/events.jsonl","line":{"ts":"2026-11-15T14:29:04.134Z","type":"loop_started","loop_index":0}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/00840660-28e9-4cff-b156-6d3139cbed4a/updates.jsonl","line":{"timestamp":1794752944,"method":"_x.ai/session/update","params":{"sessionId":"00840660-28e9-4cff-b156-6d3139cbed4a","update":{"sessionUpdate":"retry_state","type":"failed","error_type":"api","message":"API error (status 400 Bad Request): invalid_request_error: fake failure 400"},"_meta":{"eventId":"00840660-28e9-4cff-b156-6d3139cbed4a-5","agentTimestampMs":1794752944161}}}}
+{"expect":[]}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/00840660-28e9-4cff-b156-6d3139cbed4a/updates.jsonl","line":{"timestamp":1794752944,"method":"_x.ai/session/update","params":{"sessionId":"00840660-28e9-4cff-b156-6d3139cbed4a","update":{"sessionUpdate":"turn_completed","prompt_id":"03b9f8be-b1ef-4c3b-8ae4-d45a8c2f8f37","stop_reason":"error","agent_result":"API error (status 400 Bad Request): invalid_request_error: fake failure 400","elapsed_ms":193},"_meta":{"eventId":"00840660-28e9-4cff-b156-6d3139cbed4a-6","agentTimestampMs":1794752944213}}}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/00840660-28e9-4cff-b156-6d3139cbed4a/events.jsonl","line":{"ts":"2026-11-15T14:29:04.193Z","type":"turn_ended","outcome":"error"}}
+{"expect":[[["turn_ended","turn_failed"],"file"]]}
