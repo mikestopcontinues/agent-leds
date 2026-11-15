@@ -664,7 +664,7 @@ pub fn seed(replay: &Replay) -> Queue {
 /// A daemon starting now: a fresh source seeded with the hook-bound
 /// sessions the replay's queue holds, and the queue it shows, that seed
 /// restored against the replay's queue as saved.
-fn restarted(replay: &Replay) -> (Box<dyn Source>, Queue) {
+pub fn restarted(replay: &Replay) -> (Box<dyn Source>, Queue) {
     let saved: Queue =
         serde_json::from_value(serde_json::to_value(&replay.queue).unwrap()).unwrap();
     let (source, fresh) = seeded(replay, &saved.bound());

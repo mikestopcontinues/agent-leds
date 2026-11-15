@@ -175,6 +175,16 @@ impl Process {
             },
         )
     }
+
+    /// Whether the process waits on a request Claude Code makes of the user
+    /// outside a turn, for a worker or a sandbox.
+    fn requests(&self) -> bool {
+        self.status.as_deref() == Some("waiting")
+            && matches!(
+                self.waiting_for.as_deref(),
+                Some("worker request" | "sandbox request")
+            )
+    }
 }
 
 /// One transcript record, with only the fields that carry state.
@@ -413,6 +423,9 @@ struct Session {
     status: Status,
     /// Whether the session file says a dialog is open, which hides `status`.
     dialog: bool,
+    /// Whether the wait the session file says is a request made outside a
+    /// turn, which began after the turn's end.
+    request: bool,
     transcript: Option<(PathBuf, Tail)>,
     /// Whether the last read of the transcript stopped at its budget.
     behind: bool,
@@ -574,6 +587,7 @@ impl Claude {
                 Some(session) => {
                     let status = process.status();
                     session.dialog = status.is_none();
+                    session.request = process.requests();
                     if let Some(status) = status
                         && session.status != status
                     {
@@ -603,6 +617,7 @@ impl Claude {
             return Ok(());
         }
         let status = process.status();
+        let request = process.requests();
         self.procs.insert(
             path.to_owned(),
             Proc {
@@ -632,6 +647,7 @@ impl Claude {
                 owner: path.to_owned(),
                 status: Status::Starting,
                 dialog: status.is_none(),
+                request,
                 transcript,
                 behind: false,
                 open: false,
@@ -681,14 +697,15 @@ impl Claude {
             return;
         };
         // The same session resumed in another process, which goes on with it.
-        let status = Claude::process(&other)
-            .ok()
-            .flatten()
+        let process = Claude::process(&other).ok().flatten();
+        let status = process
+            .as_ref()
             .map_or(Some(Status::Starting), |(process, _)| process.status());
         let session = self.sessions.get_mut(id).expect("owned");
         session.start = start;
         session.owner = other;
         session.dialog = status.is_none();
+        session.request = process.is_some_and(|(process, _)| process.requests());
         session.status = status.unwrap_or(Status::Starting);
         out.push(Observation::new(
             Harness::Claude,
@@ -832,8 +849,22 @@ impl Claude {
 
     /// Where the tail of a session's transcript leaves it, read against the
     /// session file as it is now: back to where its last turn began, or to
-    /// what an earlier process wrote.
+    /// what an earlier process wrote. A request made outside a turn began
+    /// after the transcript's last turn ended, so the transcript is read as
+    /// it was before the wait, which the session file's edge tells after it,
+    /// as it would have been told live.
     fn seed_transcript(&mut self, id: &str, path: &Path) -> io::Result<()> {
+        let session = self.sessions.get_mut(id).expect("started");
+        let status = session.status;
+        if session.request {
+            session.status = Status::Starting;
+        }
+        let seeded = self.seed_records(id, path);
+        self.sessions.get_mut(id).expect("started").status = status;
+        seeded
+    }
+
+    fn seed_records(&mut self, id: &str, path: &Path) -> io::Result<()> {
         let start = self.sessions[id].start;
         let anchors = |record: &Record| record.is_prompt() || record.before(start);
         let (lines, tail) = tail::tail_back(path, |line| {
@@ -1318,6 +1349,61 @@ mod tests {
                 && !o.event.signals().contains(&Signal::BackgroundDone)
         }));
         assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    /// Rewrites a replay's session file with another status.
+    fn set_status(replay: &Replay, status: &str, waiting_for: Option<&str>) -> PathBuf {
+        let path = replay.home.path().join(".claude/sessions/90859.json");
+        let mut file: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        file["status"] = status.into();
+        let file_mut = file.as_object_mut().unwrap();
+        match waiting_for {
+            Some(waiting_for) => file_mut.insert("waitingFor".into(), waiting_for.into()),
+            None => file_mut.remove("waitingFor"),
+        };
+        crate::files::replace(&path, &file.to_string()).unwrap();
+        path
+    }
+
+    /// A request made outside a turn that began while the daemon was down
+    /// shows, and lets go back to the read mark or dismissal the session
+    /// had, unannounced, as it does live.
+    #[test]
+    fn a_request_made_while_the_daemon_was_down_lets_go_back_to_where_the_daemon_left_it() {
+        let key = Key {
+            harness: Harness::Claude,
+            id: "e8f843a7-1f54-44e3-b14d-99f53e9cec7a".into(),
+        };
+        for (moved, back) in [
+            (Signal::Looked, Phase::StoppedRead),
+            (Signal::Dismissed, Phase::Idle),
+        ] {
+            let mut replay = replay("turn_ended.file");
+            let daemon = Observation::new(
+                Harness::Claude,
+                &key.id,
+                Channel::Daemon,
+                Event::one(moved),
+                None,
+            );
+            replay.queue.apply(&daemon, 100);
+            assert_eq!(phase(&replay), back);
+            for ends in ["idle", "busy"] {
+                set_status(&replay, "waiting", Some("worker request"));
+                let (mut source, mut queue) = fixture::restarted(&replay);
+                assert_eq!(queue.phase(&key), Phase::Blocked);
+                let file = set_status(&replay, ends, None);
+                for o in source.changed(&replay.kernel, Some(&[file])) {
+                    let change = queue.apply(&o, 200);
+                    assert!(
+                        !matches!(change, crate::queue::Change::Announce(_)),
+                        "{moved:?}, then {ends}: {:?}",
+                        o.event.signals()
+                    );
+                }
+                assert_eq!(queue.phase(&key), back, "{moved:?}, then {ends}");
+            }
+        }
     }
 
     #[test]
