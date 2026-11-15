@@ -8,11 +8,12 @@
 //! The events own every boundary; the updates are read to their end when a
 //! turn ends, for its final text. Beside them `plan_mode.json`,
 //! replaced whole at each change, says whether a plan waits on the user's
-//! approval. No hook is needed.
+//! approval.
 //!
 //! Every tool writes a permission request, and nothing in the request tells
-//! one Grok approves by itself from one that waits on the user, so a tool
-//! approval wait is not told and shows as working.
+//! one Grok approves by itself from one that waits on the user, so the one
+//! hook, `Notification` for `permission_prompt`, says a tool's approval card
+//! waits; the request's resolution in the events answers it.
 //!
 //! The files are undocumented. What they say at each moment of a session
 //! was taken from Grok [`VERSION`], and [`drift`] says when Grok has moved on.
@@ -58,7 +59,7 @@ const fn file(
     }
 }
 
-/// What Grok's files tell.
+/// What Grok's files and its hook tell.
 pub const SIGNALS: &[Declared] = &[
     file(
         Signal::Started,
@@ -77,8 +78,15 @@ pub const SIGNALS: &[Declared] = &[
         Evidence::Observed,
         "plan_mode.json awaiting_plan_approval true while a turn is open, as exit_plan_mode's plan card waits on the user",
         "gaps p3",
-    )
-    .untold("a tool's approval card"),
+    ),
+    Declared {
+        signal: Signal::PermissionAsked,
+        channel: Channel::Hook,
+        evidence: Evidence::Observed,
+        record: "Notification permission_prompt while the open turn has a permission_requested in events.jsonl with no permission_resolved after it, ask_user_question's own pair aside; the prompt of a plan card comes once exit_plan_mode's request is resolved, so plan_mode.json alone tells it",
+        cite: "ap-grok runs 1, 2",
+        untold: None,
+    },
     file(
         Signal::QuestionAsked,
         Evidence::Observed,
@@ -88,8 +96,8 @@ pub const SIGNALS: &[Declared] = &[
     file(
         Signal::Answered,
         Evidence::Observed,
-        "events.jsonl tool_completed for ask_user_question, or plan_mode.json awaiting_plan_approval false again while the turn goes on",
-        "probe-grok question_pending, grok5; gaps p3",
+        "events.jsonl tool_completed for ask_user_question, plan_mode.json awaiting_plan_approval false again while the turn goes on, or the permission_resolved that leaves no request waiting, once the hook told one or a daemon started with one waiting",
+        "probe-grok question_pending, grok5; gaps p3; ap-grok runs 1, 2",
     ),
     file(
         Signal::TurnEnded,
@@ -145,6 +153,10 @@ const USER_TRIGGERS: [&str; 4] = ["ctrl_c", "mouse", "dashboard_stop", "send_now
 const USER_CATEGORIES: [&str; 2] = ["permission_rejected", "permission_cancelled"];
 
 const QUESTION_TOOL: &str = "ask_user_question";
+
+/// The notification Grok raises as an approval card waits on the user, a
+/// plan's or a diff's included, which the hook is registered for.
+pub const PERMISSION_PROMPT: &str = "permission_prompt";
 
 /// A row of `active_sessions.json`.
 #[derive(Deserialize)]
@@ -353,6 +365,11 @@ struct Session {
     question: bool,
     /// Whether a plan waits on the user's approval.
     plan: bool,
+    /// The open turn's permission requests not yet resolved, the question
+    /// tool's aside.
+    requests: usize,
+    /// Whether an approval card the hook told may still wait.
+    approval: bool,
     /// The subagents started and not finished.
     subagents: HashSet<String>,
     /// The last thing the agent wrote since the latest prompt.
@@ -484,6 +501,8 @@ impl Grok {
                 turn: None,
                 question: false,
                 plan: false,
+                requests: 0,
+                approval: false,
                 subagents: HashSet::new(),
                 text: String::new(),
                 told: Told::default(),
@@ -609,7 +628,7 @@ impl Grok {
             } else {
                 Signal::Answered
             };
-            tell(id, session, [signal], out);
+            tell(id, session, Channel::File, [signal], out);
         }
         Ok(())
     }
@@ -631,16 +650,27 @@ impl Grok {
                 session.turn = record.turn_number.map(|n| TurnKey(n.to_string()));
                 session.question = false;
                 session.plan = false;
-                tell(id, session, [Signal::Prompted], out);
+                session.requests = 0;
+                session.approval = false;
+                tell(id, session, Channel::File, [Signal::Prompted], out);
             }
             _ if session.open.is_none() => {}
             "tool_started" if tool == Some(QUESTION_TOOL) => {
                 session.question = true;
-                tell(id, session, [Signal::QuestionAsked], out);
+                tell(id, session, Channel::File, [Signal::QuestionAsked], out);
             }
             "tool_completed" if tool == Some(QUESTION_TOOL) && session.question => {
                 session.question = false;
-                tell(id, session, [Signal::Answered], out);
+                tell(id, session, Channel::File, [Signal::Answered], out);
+            }
+            // The question tool's request is resolved as it is made.
+            "permission_requested" if tool != Some(QUESTION_TOOL) => session.requests += 1,
+            "permission_resolved" if tool != Some(QUESTION_TOOL) => {
+                session.requests = session.requests.saturating_sub(1);
+                if session.requests == 0 && session.approval {
+                    session.approval = false;
+                    tell(id, session, Channel::File, [Signal::Answered], out);
+                }
             }
             "turn_ended" => self.end(id, &record, out),
             _ => {}
@@ -661,6 +691,8 @@ impl Grok {
         session.open = None;
         session.question = false;
         session.plan = false;
+        session.requests = 0;
+        session.approval = false;
         let mut end = BTreeSet::from([Signal::TurnEnded]);
         match record.outcome.as_deref() {
             Some("completed") if ends_on_question(&session.text) => {
@@ -677,7 +709,7 @@ impl Grok {
         if !session.subagents.is_empty() {
             end.insert(Signal::Backgrounded);
         }
-        tell(id, session, end, out);
+        tell(id, session, Channel::File, end, out);
     }
 
     /// What one updates record says.
@@ -709,7 +741,7 @@ impl Grok {
                 }
                 // A subagent that wakes its parent starts a turn instead.
                 if session.subagents.is_empty() && !change.will_wake {
-                    tell(id, session, [Signal::BackgroundDone], out);
+                    tell(id, session, Channel::File, [Signal::BackgroundDone], out);
                 }
             }
             _ => {}
@@ -717,20 +749,19 @@ impl Grok {
     }
 }
 
-/// Tells what one record says.
+/// Tells what one record or hook says.
 fn tell(
     id: &str,
     session: &mut Session,
+    channel: Channel,
     signals: impl IntoIterator<Item = Signal>,
     out: &mut Vec<Observation>,
 ) {
-    out.push(session.told.observe(
-        Harness::Grok,
-        id,
-        Channel::File,
-        signals,
-        session.turn.clone(),
-    ));
+    out.push(
+        session
+            .told
+            .observe(Harness::Grok, id, channel, signals, session.turn.clone()),
+    );
 }
 
 /// What says Grok may write its files otherwise than the fixtures pin:
@@ -800,9 +831,12 @@ impl Source for Grok {
             unread.extend(self.start(k, &rows[id], &mut started));
             // Only where the logs leave the session is told, after its start.
             started.truncate(1);
-            let Some(session) = self.sessions.get(id) else {
+            let Some(session) = self.sessions.get_mut(id) else {
                 continue;
             };
+            // A request left waiting may be an approval card the hook told
+            // before the daemon started: its resolution answers it.
+            session.approval = session.requests > 0;
             let turn = session.turn.clone();
             seeded.extend(session.told.seeded(started, turn, |_| Channel::File));
         }
@@ -854,8 +888,36 @@ impl Source for Grok {
         out
     }
 
-    fn hook(&mut self, _k: &dyn Kernel, _hook: &Hook) -> Vec<Observation> {
-        Vec::new()
+    /// An approval card, kept only while the open turn has a request that
+    /// waits. Grok writes the request before it runs the hook, so the
+    /// registry and the session's events are read first.
+    fn hook(&mut self, k: &dyn Kernel, hook: &Hook) -> Vec<Observation> {
+        let payload = &hook.payload;
+        if payload["hook_event_name"] != "Notification"
+            || payload["notification_type"] != PERMISSION_PROMPT
+        {
+            return Vec::new();
+        }
+        let Some(id) = payload["session_id"].as_str() else {
+            return Vec::new();
+        };
+        let mut paths = vec![self.registry.clone()];
+        paths.extend(self.find(id).map(|dir| dir.join(Log::Events.name())));
+        let mut out = self.changed(k, Some(&paths));
+        if let Some(session) = self.sessions.get_mut(id)
+            && session.open.is_some()
+            && session.requests > 0
+        {
+            session.approval = true;
+            tell(
+                id,
+                session,
+                Channel::Hook,
+                [Signal::PermissionAsked],
+                &mut out,
+            );
+        }
+        out
     }
 
     fn behind(&self) -> Vec<PathBuf> {
@@ -971,6 +1033,38 @@ mod tests {
             "{told:?}"
         );
         assert_eq!(phase(&replay), Phase::Stopped);
+    }
+
+    #[test]
+    fn a_tool_approval_card_blocks_until_its_request_is_resolved() {
+        let replay = replay("permission_asked.hook");
+        let told = told(&replay);
+        let asked = told
+            .iter()
+            .position(|signals| signals.contains(&Signal::PermissionAsked))
+            .expect("the card is told");
+        assert_eq!(replay.yielded[asked].0.channel, Channel::Hook);
+        assert_eq!(told[asked + 1], BTreeSet::from([Signal::Answered]));
+    }
+
+    /// The question tool's request and exit_plan_mode's are resolved as
+    /// they are made, so the prompt a plan card raises is dropped, and only
+    /// its plan file asks.
+    #[test]
+    fn only_an_approval_still_waiting_takes_the_permission_prompt() {
+        let replay = replay("only_an_approval_still_waiting_takes_the_permission_prompt");
+        let hooked: Vec<BTreeSet<Signal>> = replay
+            .yielded
+            .iter()
+            .filter(|(o, _)| o.channel == Channel::Hook)
+            .map(|(o, _)| o.event.signals())
+            .collect();
+        assert_eq!(hooked, [BTreeSet::from([Signal::PermissionAsked])]);
+        let plan = told(&replay)
+            .into_iter()
+            .filter(|signals| signals.contains(&Signal::PermissionAsked))
+            .count();
+        assert_eq!(plan, 2);
     }
 
     #[test]
