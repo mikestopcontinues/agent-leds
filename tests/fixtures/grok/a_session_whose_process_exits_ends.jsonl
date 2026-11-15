@@ -1,7 +1,16 @@
-{"cite": "0.5.0 hooks, probe-grok runs a–l", "evidence": "observed"}
-{"alive": 71001, "started_us": 1794693357000000}
-{"expect": []}
-{"hook": {"hookEventName": "user_prompt_submit", "sessionId": "019f0a3c-6f0e-7a51-8d2b-5d2f4c0e9a11", "cwd": "/Users/me/Code/app", "workspaceRoot": "/Users/me/Code/app", "permissionMode": "default", "promptId": "p1", "timestamp": "2026-11-14T21:56:00Z"}, "ancestry": [{"pid": 71050, "started_us": 1794693362000000, "name": "sh"}, {"pid": 71001, "started_us": 1794693357000000, "name": "grok-native"}, {"pid": 500, "started_us": 1794692357000000, "name": "zsh"}]}
-{"expect": [["started", "hook"], ["prompted", "hook"]]}
-{"exit": 71001}
-{"expect": [["ended", "hook"]]}
+{"cite":"probe-grok quit/crash, run b","evidence":"observed"}
+{"alive":90492,"started_us":1794693343679933}
+{"expect":[]}
+{"write":".grok/active_sessions.json","text":"[\n  {\n    \"session_id\": \"01a1dc0f-2aac-7612-811b-f0be51b21bed\",\n    \"pid\": 90492,\n    \"pid_start\": 1794693343679933,\n    \"cwd\": \"/Users/me/Code/app\",\n    \"opened_at\": \"2026-11-14T21:55:43.679Z\"\n  }\n]"}
+{"expect":[["started","file"]]}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dc0f-2aac-7612-811b-f0be51b21bed/updates.jsonl","line":{"timestamp":1794693344,"method":"session/update","params":{"sessionId":"01a1dc0f-2aac-7612-811b-f0be51b21bed","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"Say hi"}},"_meta":{"eventId":"01a1dc0f-2aac-7612-811b-f0be51b21bed-3","agentTimestampMs":1794693344276}}}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dc0f-2aac-7612-811b-f0be51b21bed/events.jsonl","line":{"ts":"2026-11-14T21:55:44.144Z","type":"turn_started","session_id":"01a1dc0f-2aac-7612-811b-f0be51b21bed","turn_number":0,"model_id":"grok-4.7","yolo_mode":true,"conversation_message_count":3,"session_relationship":"primary","schema_version":"1.0"}}
+{"expect":[["prompted","file"]]}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dc0f-2aac-7612-811b-f0be51b21bed/events.jsonl","line":{"ts":"2026-11-14T21:55:44.321Z","type":"loop_started","loop_index":0}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dc0f-2aac-7612-811b-f0be51b21bed/events.jsonl","line":{"ts":"2026-11-14T21:55:44.360Z","type":"phase_changed","phase":"waiting_for_model"}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dc0f-2aac-7612-811b-f0be51b21bed/updates.jsonl","line":{"timestamp":1794693346,"method":"session/update","params":{"sessionId":"01a1dc0f-2aac-7612-811b-f0be51b21bed","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hi. What are we working on?"}},"_meta":{"totalTokens":1417,"requestTrimmedTokens":0,"eventId":"01a1dc0f-2aac-7612-811b-f0be51b21bed-14","agentTimestampMs":1794693346443,"promptId":"64e4e76b-9396-494c-bdab-9b0309bfae84","streamStartMs":1794693345014,"turnStartMs":1794693344134,"updateType":"AgentMessageChunk","chunkId":10}}}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dc0f-2aac-7612-811b-f0be51b21bed/events.jsonl","line":{"ts":"2026-11-14T21:55:46.443Z","type":"first_token"}}
+{"append":".grok/sessions/%2FUsers%2Fme%2FCode%2Fapp/01a1dc0f-2aac-7612-811b-f0be51b21bed/events.jsonl","line":{"ts":"2026-11-14T21:55:46.597Z","type":"turn_ended","outcome":"completed"}}
+{"expect":[[["turn_ended","turn_ended_asking"],"file"]]}
+{"exit":90492}
+{"expect":[["ended","file"]]}

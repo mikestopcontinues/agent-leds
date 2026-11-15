@@ -125,9 +125,8 @@ impl Harness {
 
     fn event(self, payload: &Value) -> Option<Event> {
         match self {
-            Harness::Claude => None,
+            Harness::Claude | Harness::Grok => None,
             Harness::Codex => codex::event(payload),
-            Harness::Grok => grok::event(payload),
             Harness::Cursor => cursor::event(payload),
             Harness::Junie => junie::event(payload),
             Harness::OpenCode => opencode::event(payload),
@@ -140,7 +139,7 @@ impl Harness {
         match self {
             Harness::Claude => claude::HOOKS.to_vec(),
             Harness::Codex => codex::HOOKS.to_vec(),
-            Harness::Grok => grok::HOOKS.map(|(event, _)| event).to_vec(),
+            Harness::Grok => grok::HOOKS.to_vec(),
             Harness::Cursor => cursor::HOOKS.to_vec(),
             Harness::Junie => junie::HOOKS.to_vec(),
             // These load a plugin of ours, which `check` looks at instead.
@@ -292,7 +291,7 @@ pub fn signals(harness: Harness) -> &'static [Declared] {
     match harness {
         Harness::Claude => source::claude::SIGNALS,
         Harness::Codex => codex::SIGNALS,
-        Harness::Grok => grok::SIGNALS,
+        Harness::Grok => source::grok::SIGNALS,
         Harness::Cursor => cursor::SIGNALS,
         Harness::Junie => junie::SIGNALS,
         Harness::OpenCode => opencode::SIGNALS,

@@ -9,6 +9,7 @@
 pub mod claude;
 #[cfg(test)]
 pub mod fixture;
+pub mod grok;
 pub mod interim;
 pub mod tail;
 
@@ -148,9 +149,12 @@ impl Told {
 /// hooks of the harnesses whose files are not read yet keep what they need
 /// between events in `state`.
 pub fn all(home: &Path, state: &Path) -> Vec<Box<dyn Source>> {
-    let mut sources: Vec<Box<dyn Source>> = vec![Box::new(claude::Claude::new(home))];
+    let mut sources: Vec<Box<dyn Source>> = vec![
+        Box::new(claude::Claude::new(home)),
+        Box::new(grok::Grok::new(home)),
+    ];
     for harness in Harness::ALL {
-        if harness != Harness::Claude {
+        if !matches!(harness, Harness::Claude | Harness::Grok) {
             sources.push(Box::new(interim::Interim::new(harness, home, state)));
         }
     }
