@@ -227,6 +227,28 @@ pub fn follow_rotated(
     Ok(lines)
 }
 
+/// Hands `each` every complete line of the file at `path`, from its first
+/// byte, as it is read in slices of READ_BUDGET, so a long file is never
+/// held whole, and counts in `strange` each line too long to read. A file
+/// replaced while it is read is read no further.
+pub fn each_line(
+    path: &Path,
+    strange: &mut Strange,
+    mut each: impl FnMut(&[u8]),
+) -> io::Result<()> {
+    let mut tail = Tail::at_start(path)?;
+    loop {
+        let Lines::Read { lines, more } = tail.read(path)? else {
+            return Ok(());
+        };
+        tail.count(strange);
+        lines.iter().for_each(|line| each(line));
+        if !more {
+            return Ok(());
+        }
+    }
+}
+
 /// Reads backward from the end in windows of 256 KiB, doubling up to 16 MiB,
 /// until the window holds a line `anchors` accepts (one where the state the
 /// lines fold into began), or reaches the start of the file. Each byte is

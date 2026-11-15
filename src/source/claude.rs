@@ -626,56 +626,69 @@ impl Claude {
 
     /// Reads the desktop app's log to its end at a seed: back to where the
     /// app last started, through the files it rotated the log to, at most
-    /// four, for the dialogs still open. Only those are looked up.
+    /// four, for the dialogs still open. Only those are looked up. Each
+    /// line is applied as it is read, so the logs are never held whole.
     fn seed_log(&mut self, k: &dyn Kernel) -> io::Result<()> {
         let (path, rotated) = (self.log_path(), self.logs_dir.join("main1.log"));
-        let mut files = Vec::new();
+        let older: Vec<PathBuf> = (1..=4)
+            .map(|n| self.logs_dir.join(format!("main{n}.log")))
+            .collect();
+        // Whether a file records the app's start: none that is not there.
+        // What it holds that cannot be read is counted as it is applied.
+        let launched = |file: &Path| {
+            let mut launched = false;
+            let found = |line: &[u8]| launched |= Said::read(line) == Some(Said::Launched);
+            match tail::each_line(file, &mut Strange::default(), found) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+                read => read.map(|()| Some(launched)),
+            }
+        };
+        // How many rotated files the app's last start is back in.
+        let mut back = 0;
+        let mut found = launched(&path)? == Some(true);
+        while !found && back < older.len() {
+            match launched(&older[back])? {
+                None => break,
+                Some(launch) => (found, back) = (launch, back + 1),
+            }
+        }
+        self.dialogs.clear();
+        // The lines fold into the dialogs as they are read, oldest first.
+        let mut strange = mem::take(&mut self.strange);
+        let mut read = Ok(());
+        for file in older[..back].iter().rev() {
+            read = tail::each_line(file, &mut strange, |line| {
+                if let Some(said) = Said::read(line) {
+                    self.said(k, said);
+                }
+            });
+            if read.is_err() {
+                break;
+            }
+        }
+        self.strange = strange;
+        read?;
         match Tail::at_start(&path) {
             Ok(tail) => {
                 self.log = Some(tail);
-                let mut lines = Vec::new();
                 loop {
-                    lines.extend(tail::follow_rotated(
+                    let lines = tail::follow_rotated(
                         &mut self.log,
                         &path,
                         &rotated,
                         &mut self.log_behind,
                         &mut self.strange,
-                    )?);
+                    )?;
+                    for said in lines.iter().filter_map(|line| Said::read(line)) {
+                        self.said(k, said);
+                    }
                     if !self.log_behind {
                         break;
                     }
                 }
-                files.push(lines);
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
-        }
-        let launched = |lines: &[Vec<u8>]| {
-            let launch = |line: &Vec<u8>| Said::read(line) == Some(Said::Launched);
-            lines.iter().any(launch)
-        };
-        for n in 1..=4 {
-            if files.last().is_some_and(|lines| launched(lines)) {
-                break;
-            }
-            let bytes = match fs::read(self.logs_dir.join(format!("main{n}.log"))) {
-                Ok(bytes) => bytes,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => break,
-                Err(error) => return Err(error),
-            };
-            files.push(
-                bytes
-                    .split(|&byte| byte == b'\n')
-                    .map(<[u8]>::to_vec)
-                    .collect(),
-            );
-        }
-        self.dialogs.clear();
-        for line in files.iter().rev().flatten() {
-            if let Some(said) = Said::read(line) {
-                self.said(k, said);
-            }
         }
         self.resolve();
         Ok(())
@@ -1738,6 +1751,47 @@ mod tests {
         assert_eq!(fixture::seed(&replay).phase(&key), Phase::Stopped);
         fs::write(&log, "").unwrap();
         assert_eq!(fixture::seed(&replay).phase(&key), Phase::Blocked);
+    }
+
+    /// A seed reads the rotated logs back to the app's last start, a line at
+    /// a time and skipping one too long to read, and no further.
+    #[test]
+    fn a_seed_reads_the_rotated_logs_back_to_the_app_s_last_start() {
+        let replay =
+            replay("a_desktop_dialog_the_session_file_does_not_show_blocks_until_it_closes");
+        let logs = replay.home.path().join("Library/Logs/Claude");
+        let key = replay.queue.sessions()[0].key.clone();
+        let local = "local_9c213b9c-d3e3-4d97-94b7-1d7465e037f7";
+        let opened = |at: &str, request: &str| {
+            format!(
+                "2026-11-15 {at} [info] Emitted tool permission request {request} for \
+                 browser:open_site in session {local}\n"
+            )
+        };
+        let start = "2026-11-15 11:04:00 [info] Starting app {\n";
+        fs::write(logs.join("main4.log"), opened("11:02:00", "r9")).unwrap();
+        fs::write(logs.join("main3.log"), opened("11:03:00", "r0") + start).unwrap();
+        let long = "x".repeat(tail::MAX_LINE + 1) + "\n";
+        fs::write(logs.join("main2.log"), long + &opened("11:05:00", "r3")).unwrap();
+        fs::write(
+            logs.join("main1.log"),
+            "2026-11-15 11:06:00 [info] Config file written\n",
+        )
+        .unwrap();
+        let mut source = replay.source();
+        let seeded = source.seed(&replay.kernel, &[]).unwrap();
+        assert!(seeded.unread.is_empty());
+        assert_eq!(source.strange().oversized, 1);
+        assert_eq!(fixture::seed(&replay).phase(&key), Phase::Blocked);
+        // The one dialog open since the start closes: the ones before it,
+        // and before the file it is in, are not open.
+        let closed = "2026-11-15 11:07:00 [info] Received permission response for r3: once (tool: browser:open_site)\n";
+        let mut log = fs::OpenOptions::new()
+            .append(true)
+            .open(logs.join("main.log"))
+            .unwrap();
+        std::io::Write::write_all(&mut log, closed.as_bytes()).unwrap();
+        assert_eq!(fixture::seed(&replay).phase(&key), Phase::Stopped);
     }
 
     /// The app's file for its session, caught half written as a dialog
