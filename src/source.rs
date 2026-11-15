@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::daemon::Input;
-use crate::fsm::{self, Channel, Holds, Phase, Signal};
+use crate::fsm::{self, Channel, Holds, Phase, Signal, To};
 use crate::harness::{self, Harness};
 use crate::liveness::{Kernel, Liveness, Proc, System};
 use crate::queue::{Key, TurnKey};
@@ -260,6 +260,9 @@ pub struct Told {
     /// While blocked or unattended, the phase it entered that from, and
     /// what an error a turn nobody typed ended on holds.
     held: Option<Phase>,
+    /// When its last move went back to what it held: the phase it left and
+    /// the signal that took it back, which a seed tells again.
+    back: Option<(Phase, Signal)>,
 }
 
 /// A session just started: Idle.
@@ -269,6 +272,7 @@ impl Default for Told {
             phase: Phase::Idle,
             wait: Signal::PermissionAsked,
             held: None,
+            back: None,
         }
     }
 }
@@ -280,6 +284,7 @@ impl Told {
         };
         let to = rule.to.phase(self.held.unwrap_or(Phase::Idle));
         self.held = fsm::held(self.phase, self.held, rule.on, to).map(Holds::phase);
+        self.back = (rule.to == To::Back).then_some((self.phase, rule.on));
         self.phase = to;
         if matches!(rule.on, Signal::PermissionAsked | Signal::QuestionAsked) {
             self.wait = rule.on;
@@ -327,12 +332,28 @@ impl Told {
 
     /// The shortest signals from Idle to the same phase, each told on its
     /// own: for a phase that holds one, by way of the phase it holds, which
-    /// never holds one of its own.
+    /// never holds one of its own; and for a phase its last move went back
+    /// to, by way of that move, so a restart can take the saved session
+    /// back to what it held, as it was read or dismissed.
     pub fn current(&self) -> Vec<Signal> {
+        if let Some((from, on)) = self.back {
+            let mut path = Told {
+                back: None,
+                ..*self
+            }
+            .current();
+            let entered = match from {
+                Phase::Blocked => self.wait,
+                _ => Signal::Woke,
+            };
+            path.extend([entered, on]);
+            return path;
+        }
         let by = |last: &[Signal]| {
             let held = Told {
                 phase: self.held.unwrap_or(Phase::Idle),
                 held: None,
+                back: None,
                 ..*self
             };
             let mut path = held.current();
