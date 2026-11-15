@@ -1,0 +1,22 @@
+{"cite":"Codex 0.162's goals_1.sqlite schema and the statements its binary runs on it (a deferral row, a token budget that limits the goal, complete), on the records of the desktop rollout of 2026-10-15; no move after a turn end was seen","evidence":"inferred"}
+{"lock":".codex/thread-writer-locks/01a125ab-e498-73c1-b80b-fa13a7fe5502.lock","at":"2026-10-10T11:56:24Z"}
+{"sql":".codex/goals_1.sqlite","from":"goals.sql"}
+{"append":".codex/sessions/2026/10/10/rollout-2026-10-10T06-56-24-01a125ab-e498-73c1-b80b-fa13a7fe5502.jsonl","line":{"timestamp":"2026-10-10T11:56:25.207Z","ordinal":0,"type":"session_meta","payload":{"session_id":"01a125ab-e498-73c1-b80b-fa13a7fe5502","id":"01a125ab-e498-73c1-b80b-fa13a7fe5502","timestamp":"2026-10-10T11:56:24.618Z","cwd":"/Users/me/Code/app","originator":"Codex Desktop","cli_version":"0.162.0-alpha.2","source":"vscode","thread_source":"user","model_provider":"openai"}}}
+{"expect":[["started","file"]]}
+{"sql":".codex/goals_1.sqlite","run":"insert into thread_goals (thread_id, goal_id, objective, status, token_budget, tokens_used, time_used_seconds, created_at_ms, updated_at_ms) values ('01a125ab-e498-73c1-b80b-fa13a7fe5502', 'b0e5a419-d884-4319-858f-2aaca6bee6e9', 'PROBE objective', 'active', 40000000, 33456815, 216957, 1791806394502, 1792023353274);"}
+{"append":".codex/sessions/2026/10/10/rollout-2026-10-10T06-56-24-01a125ab-e498-73c1-b80b-fa13a7fe5502.jsonl","line":{"timestamp":"2026-10-15T06:24:18.368Z","ordinal":115249,"type":"event_msg","payload":{"type":"task_started","turn_attribution":{"turn_id":"01a13e3b-a3b7-79f0-8d1e-24ab4aa268f8","turn_trigger":"composer","parent_turn_id":null,"initiating_agent_path":null,"root_turn_id":"01a13e3b-a3b7-79f0-8d1e-24ab4aa268f8"},"turn_id":"01a13e3b-a3b7-79f0-8d1e-24ab4aa268f8","root_turn_id":"01a13e3b-a3b7-79f0-8d1e-24ab4aa268f8","started_at":1792045458,"model_context_window":475000,"collaboration_mode_kind":"default"}}}
+{"expect":[["prompted","file"]]}
+{"append":".codex/sessions/2026/10/10/rollout-2026-10-10T06-56-24-01a125ab-e498-73c1-b80b-fa13a7fe5502.jsonl","line":{"timestamp":"2026-10-15T07:11:35.392Z","ordinal":116341,"type":"event_msg","payload":{"type":"task_complete","root_turn_id":"01a13e3b-a3b7-79f0-8d1e-24ab4aa268f8","turn_id":"01a13e3b-a3b7-79f0-8d1e-24ab4aa268f8","last_agent_message":"PROBE the next step is under way.","started_at":1792045458,"completed_at":1792048295,"duration_ms":2837033,"time_to_first_token_ms":5141}}}
+{"expect":[[["turn_ended","backgrounded"],"file"]]}
+{"sql":".codex/goals_1.sqlite","run":"insert into thread_goal_continuation_deferrals (thread_id) values ('01a125ab-e498-73c1-b80b-fa13a7fe5502') on conflict(thread_id) do nothing;"}
+{"expect":[["background_done","file"]]}
+{"sql":".codex/goals_1.sqlite","run":"delete from thread_goal_continuation_deferrals where thread_id = '01a125ab-e498-73c1-b80b-fa13a7fe5502';"}
+{"expect":[["backgrounded","file"]]}
+{"sql":".codex/goals_1.sqlite","run":"update thread_goals set status = 'budget_limited', tokens_used = 40000512, updated_at_ms = 1792048300000 where thread_id = '01a125ab-e498-73c1-b80b-fa13a7fe5502';"}
+{"expect":[["turn_ended_asking","file"]]}
+{"append":".codex/sessions/2026/10/10/rollout-2026-10-10T06-56-24-01a125ab-e498-73c1-b80b-fa13a7fe5502.jsonl","line":{"timestamp":"2026-10-15T07:30:02.100Z","ordinal":116342,"type":"event_msg","payload":{"type":"task_started","turn_attribution":{"turn_id":"01a13e78-0a1c-7f00-9c2e-1d2a3b4c5d6e","turn_trigger":"composer","parent_turn_id":null,"initiating_agent_path":null,"root_turn_id":"01a13e78-0a1c-7f00-9c2e-1d2a3b4c5d6e"},"turn_id":"01a13e78-0a1c-7f00-9c2e-1d2a3b4c5d6e","root_turn_id":"01a13e78-0a1c-7f00-9c2e-1d2a3b4c5d6e","started_at":1792049402,"model_context_window":475000,"collaboration_mode_kind":"default"}}}
+{"expect":[["prompted","file"]]}
+{"sql":".codex/goals_1.sqlite","run":"update thread_goals set status = 'complete', updated_at_ms = 1792049500000 where thread_id = '01a125ab-e498-73c1-b80b-fa13a7fe5502';"}
+{"expect":[]}
+{"append":".codex/sessions/2026/10/10/rollout-2026-10-10T06-56-24-01a125ab-e498-73c1-b80b-fa13a7fe5502.jsonl","line":{"timestamp":"2026-10-15T07:31:45.500Z","ordinal":116380,"type":"event_msg","payload":{"type":"task_complete","root_turn_id":"01a13e78-0a1c-7f00-9c2e-1d2a3b4c5d6e","turn_id":"01a13e78-0a1c-7f00-9c2e-1d2a3b4c5d6e","last_agent_message":"PROBE the goal is complete.","started_at":1792049402,"completed_at":1792049505,"duration_ms":103400,"time_to_first_token_ms":4100}}}
+{"expect":[["turn_ended","file"]]}
