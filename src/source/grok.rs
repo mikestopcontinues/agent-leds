@@ -155,7 +155,7 @@ const USER_CATEGORIES: [&str; 2] = ["permission_rejected", "permission_cancelled
 const QUESTION_TOOL: &str = "ask_user_question";
 
 /// The notification Grok raises as an approval card waits on the user, a
-/// plan's or a diff's included, which the hook is registered for.
+/// tool's or a plan's, which the hook is registered for.
 pub const PERMISSION_PROMPT: &str = "permission_prompt";
 
 /// A row of `active_sessions.json`.
