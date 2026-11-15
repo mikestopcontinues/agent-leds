@@ -1,0 +1,27 @@
+{"cite":"probe-pi ext084, the session's header and a 500 retried twice","evidence":"observed"}
+{"alive":89653,"started_us":1794745289327000}
+{"expect":[]}
+{"hook":{"event":"session_start","session":"01a1df27-cb1f-7a4a-a17c-e6183f04fd77","pid":89653,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl"},"ancestry":[{"pid":89653,"started_us":1794745289327000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
+{"expect":[["started","hook"]]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl","line":{"type":"session","version":3,"id":"01a1df27-cb1f-7a4a-a17c-e6183f04fd77","timestamp":"2026-11-15T12:21:29.503Z","cwd":"/Users/me/Code/app"}}
+{"expect":[]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl","line":{"type":"model_change","id":"8fdfe4f7","parentId":null,"timestamp":"2026-11-15T12:21:29.540Z","provider":"fake","modelId":"fake"}}
+{"expect":[]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl","line":{"type":"thinking_level_change","id":"e6ae1748","parentId":"8fdfe4f7","timestamp":"2026-11-15T12:21:29.540Z","thinkingLevel":"off"}}
+{"expect":[]}
+{"hook":{"event":"agent_start","session":"01a1df27-cb1f-7a4a-a17c-e6183f04fd77","pid":89653,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl"},"ancestry":[{"pid":89653,"started_us":1794745289327000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
+{"expect":[["started","hook"],["prompted","hook"]]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl","line":{"type":"message","id":"68673e91","parentId":"0d1d8e44","timestamp":"2026-11-15T12:21:38.302Z","message":{"role":"user","content":[{"type":"text","text":"fail500always please"}],"timestamp":1794745298260}}}
+{"expect":[["prompted","file"]]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl","line":{"type":"message","id":"52764b40","parentId":"68673e91","timestamp":"2026-11-15T12:21:38.305Z","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"fake","model":"fake","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1794745298303,"errorMessage":"500: {\"message\":\"fake internal server error\"}"}}}
+{"expect":[]}
+{"hook":{"event":"agent_start","session":"01a1df27-cb1f-7a4a-a17c-e6183f04fd77","pid":89653,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl"},"ancestry":[{"pid":89653,"started_us":1794745289327000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
+{"expect":[["started","hook"],["prompted","hook"]]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl","line":{"type":"message","id":"0e120e36","parentId":"52764b40","timestamp":"2026-11-15T12:21:39.349Z","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"fake","model":"fake","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1794745299347,"errorMessage":"500: {\"message\":\"fake internal server error\"}"}}}
+{"expect":[]}
+{"hook":{"event":"agent_start","session":"01a1df27-cb1f-7a4a-a17c-e6183f04fd77","pid":89653,"cwd":"/Users/me/Code/app","file":"~/.pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl"},"ancestry":[{"pid":89653,"started_us":1794745289327000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
+{"expect":[["started","hook"],["prompted","hook"]]}
+{"append":".pi/agent/sessions/--Users-me-Code-app--/2026-11-15T12-21-29-503Z_01a1df27-cb1f-7a4a-a17c-e6183f04fd77.jsonl","line":{"type":"message","id":"05d8d692","parentId":"0e120e36","timestamp":"2026-11-15T12:21:41.486Z","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"fake","model":"fake","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1794745301374,"errorMessage":"500: {\"message\":\"fake internal server error\"}"}}}
+{"expect":[]}
+{"hook":{"event":"agent_settled","session":"01a1df27-cb1f-7a4a-a17c-e6183f04fd77","aborted":false,"stop_reason":"error"},"ancestry":[{"pid":89653,"started_us":1794745289327000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
+{"expect":[["turn_failed","hook"]],"restart":"working"}

@@ -125,13 +125,12 @@ impl Harness {
 
     fn event(self, payload: &Value) -> Option<Event> {
         match self {
-            Harness::Claude => None,
+            Harness::Claude | Harness::Pi => None,
             Harness::Codex => codex::event(payload),
             Harness::Grok => grok::event(payload),
             Harness::Cursor => cursor::event(payload),
             Harness::Junie => junie::event(payload),
             Harness::OpenCode => opencode::event(payload),
-            Harness::Pi => pi::event(payload),
         }
     }
 
@@ -143,8 +142,10 @@ impl Harness {
             Harness::Grok => grok::HOOKS.map(|(event, _)| event).to_vec(),
             Harness::Cursor => cursor::HOOKS.to_vec(),
             Harness::Junie => junie::HOOKS.to_vec(),
-            // These load a plugin of ours, which `check` looks at instead.
-            Harness::OpenCode | Harness::Pi => Vec::new(),
+            // An extension of ours passes these on, and `check` looks at it.
+            Harness::Pi => pi::HOOKS.to_vec(),
+            // This loads a plugin of ours, which `check` looks at instead.
+            Harness::OpenCode => Vec::new(),
         }
     }
 
@@ -296,7 +297,7 @@ pub fn signals(harness: Harness) -> &'static [Declared] {
         Harness::Cursor => cursor::SIGNALS,
         Harness::Junie => junie::SIGNALS,
         Harness::OpenCode => opencode::SIGNALS,
-        Harness::Pi => pi::SIGNALS,
+        Harness::Pi => source::pi::SIGNALS,
     }
 }
 

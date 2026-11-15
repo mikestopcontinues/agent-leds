@@ -33,9 +33,9 @@ impl Interim {
 }
 
 /// Which of the hook's ancestors runs the session, until the harness's own
-/// files name it: the parent for OpenCode and Pi, whose plugins run the hook
-/// themselves; the ancestor with Cursor's own `.running` marker; and for
-/// Codex, Grok and Junie the ancestor with the harness's process name.
+/// files name it: the parent for OpenCode, whose plugin runs the hook itself;
+/// the ancestor with Cursor's own `.running` marker; and for Codex, Grok and
+/// Junie the ancestor with the harness's process name.
 fn process(harness: Harness, home: &Path, ancestry: &[Proc]) -> Option<Liveness> {
     let exact = |proc: &Proc| Liveness::Process {
         pid: proc.pid,
@@ -43,12 +43,12 @@ fn process(harness: Harness, home: &Path, ancestry: &[Proc]) -> Option<Liveness>
     };
     let named = |name: &str| ancestry.iter().find(|proc| proc.name == name).map(exact);
     match harness {
-        Harness::OpenCode | Harness::Pi => ancestry.first().map(exact),
+        Harness::OpenCode => ancestry.first().map(exact),
         Harness::Cursor => ancestry.iter().find_map(|proc| cursor(home, proc)),
         Harness::Codex => named("codex"),
         Harness::Grok => named("grok-native"),
         Harness::Junie => named("junie"),
-        Harness::Claude => None,
+        Harness::Claude | Harness::Pi => None,
     }
 }
 

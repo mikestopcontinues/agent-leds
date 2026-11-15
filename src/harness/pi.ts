@@ -1,5 +1,10 @@
-// agent-leds: tells the agent-leds service what each Pi session needs.
+// agent-leds: tells the agent-leds service what Pi's session files cannot.
 // `agent-leds install` writes this file and `agent-leds uninstall` removes it.
+//
+// Pi writes each session to a file of its own, which the service reads. What
+// no file records is told here: which process runs the session and where its
+// file is, when a dialog holds a run up, and how a run settled, which a file
+// cannot say while Pi may still retry.
 import { spawnSync } from "node:child_process";
 
 const AGENT_LEDS = "__AGENT_LEDS__";
@@ -12,7 +17,7 @@ export default function (pi: any) {
     // Without a UI no one is there to need anything: print and JSON modes,
     // and the subagents that run in them.
     if (!ctx.hasUI) return;
-    const payload = { event, session: ctx.sessionManager.getSessionId(), cwd: ctx.cwd, ...fields };
+    const payload = { event, session: ctx.sessionManager.getSessionId(), ...fields };
     try {
       spawnSync(AGENT_LEDS, ["hook", "pi"], {
         input: JSON.stringify(payload),
@@ -22,9 +27,19 @@ export default function (pi: any) {
     } catch {}
   };
 
+  /** The process that runs the session, the folder it works in, and the file it writes. */
+  const where = (ctx: any) => ({
+    pid: process.pid,
+    cwd: ctx.cwd,
+    file: ctx.sessionManager.getSessionFile() ?? null,
+  });
+
+  pi.on("session_start", (_event: any, ctx: any) => {
+    send(ctx, "session_start", where(ctx));
+  });
   pi.on("agent_start", (_event: any, ctx: any) => {
     running = true;
-    send(ctx, "agent_start");
+    send(ctx, "agent_start", where(ctx));
   });
   pi.on("ui_prompt_start", (_event: any, ctx: any) => {
     if (running) send(ctx, "ui_prompt_start");
@@ -37,14 +52,9 @@ export default function (pi: any) {
     const last = [...ctx.sessionManager.getBranch()]
       .reverse()
       .find((entry: any) => entry.type === "message" && entry.message?.role === "assistant")?.message;
-    const text = (last?.content ?? [])
-      .filter((part: any) => part.type === "text")
-      .map((part: any) => part.text)
-      .join("\n");
     send(ctx, "agent_settled", {
       aborted: event.aborted === true,
       stop_reason: last?.stopReason ?? null,
-      message: text,
     });
   });
   pi.on("session_shutdown", (event: any, ctx: any) => {

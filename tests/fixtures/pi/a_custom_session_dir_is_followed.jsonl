@@ -1,0 +1,29 @@
+{"cite":"probe-pi extdir: --session-dir, two turns","evidence":"observed"}
+{"alive":90865,"started_us":1794745347655000}
+{"expect":[]}
+{"hook":{"event":"session_start","session":"01a1df28-aef0-7086-ae19-601efb920365","pid":90865,"cwd":"/Users/me/Code/app","file":"~/pi-sessions/2026-11-15T12-22-27-824Z_01a1df28-aef0-7086-ae19-601efb920365.jsonl"},"ancestry":[{"pid":90865,"started_us":1794745347655000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
+{"expect":[["started","hook"]]}
+{"hook":{"event":"agent_start","session":"01a1df28-aef0-7086-ae19-601efb920365","pid":90865,"cwd":"/Users/me/Code/app","file":"~/pi-sessions/2026-11-15T12-22-27-824Z_01a1df28-aef0-7086-ae19-601efb920365.jsonl"},"ancestry":[{"pid":90865,"started_us":1794745347655000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
+{"expect":[["started","hook"],["prompted","hook"]]}
+{"append":"pi-sessions/2026-11-15T12-22-27-824Z_01a1df28-aef0-7086-ae19-601efb920365.jsonl","line":{"type":"session","version":3,"id":"01a1df28-aef0-7086-ae19-601efb920365","timestamp":"2026-11-15T12:22:27.824Z","cwd":"/Users/me/Code/app"}}
+{"expect":[]}
+{"append":"pi-sessions/2026-11-15T12-22-27-824Z_01a1df28-aef0-7086-ae19-601efb920365.jsonl","line":{"type":"model_change","id":"7aaca48c","parentId":null,"timestamp":"2026-11-15T12:22:27.861Z","provider":"fake","modelId":"fake"}}
+{"expect":[]}
+{"append":"pi-sessions/2026-11-15T12-22-27-824Z_01a1df28-aef0-7086-ae19-601efb920365.jsonl","line":{"type":"thinking_level_change","id":"56fbbc97","parentId":"7aaca48c","timestamp":"2026-11-15T12:22:27.861Z","thinkingLevel":"off"}}
+{"expect":[]}
+{"append":"pi-sessions/2026-11-15T12-22-27-824Z_01a1df28-aef0-7086-ae19-601efb920365.jsonl","line":{"type":"message","id":"c9fb86a2","parentId":"56fbbc97","timestamp":"2026-11-15T12:22:29.183Z","message":{"role":"user","content":[{"type":"text","text":"Reply with just the word ready."}],"timestamp":1794745349160}}}
+{"expect":[["prompted","file"]],"restart":"idle"}
+{"append":"pi-sessions/2026-11-15T12-22-27-824Z_01a1df28-aef0-7086-ae19-601efb920365.jsonl","line":{"type":"message","id":"75bb1fe7","parentId":"c9fb86a2","timestamp":"2026-11-15T12:22:29.202Z","message":{"role":"assistant","content":[{"type":"text","text":"ready"}],"api":"openai-completions","provider":"fake","model":"fake","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1794745349189,"responseId":"c1","rawStopReason":"stop"}}}
+{"expect":[["turn_ended","file"]],"restart":"idle"}
+{"hook":{"event":"agent_settled","session":"01a1df28-aef0-7086-ae19-601efb920365","aborted":false,"stop_reason":"stop"},"ancestry":[{"pid":90865,"started_us":1794745347655000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
+{"expect":[],"restart":"idle"}
+{"hook":{"event":"agent_start","session":"01a1df28-aef0-7086-ae19-601efb920365","pid":90865,"cwd":"/Users/me/Code/app","file":"~/pi-sessions/2026-11-15T12-22-27-824Z_01a1df28-aef0-7086-ae19-601efb920365.jsonl"},"ancestry":[{"pid":90865,"started_us":1794745347655000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
+{"expect":[["started","hook"],["prompted","hook"]],"restart":"idle"}
+{"append":"pi-sessions/2026-11-15T12-22-27-824Z_01a1df28-aef0-7086-ae19-601efb920365.jsonl","line":{"type":"message","id":"21c61a37","parentId":"75bb1fe7","timestamp":"2026-11-15T12:22:30.028Z","message":{"role":"user","content":[{"type":"text","text":"Reply: Should I keep going?"}],"timestamp":1794745350004}}}
+{"expect":[["prompted","file"]],"restart":"idle"}
+{"append":"pi-sessions/2026-11-15T12-22-27-824Z_01a1df28-aef0-7086-ae19-601efb920365.jsonl","line":{"type":"message","id":"9e47d8d1","parentId":"21c61a37","timestamp":"2026-11-15T12:22:30.031Z","message":{"role":"assistant","content":[{"type":"text","text":"Should I keep going?"}],"api":"openai-completions","provider":"fake","model":"fake","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1794745350029,"responseId":"c1","rawStopReason":"stop"}}}
+{"expect":[[["turn_ended","turn_ended_asking"],"file"]],"restart":"idle"}
+{"hook":{"event":"agent_settled","session":"01a1df28-aef0-7086-ae19-601efb920365","aborted":false,"stop_reason":"stop"},"ancestry":[{"pid":90865,"started_us":1794745347655000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
+{"expect":[],"restart":"idle"}
+{"hook":{"event":"session_shutdown","session":"01a1df28-aef0-7086-ae19-601efb920365"},"ancestry":[{"pid":90865,"started_us":1794745347655000,"name":"node"},{"pid":500,"started_us":1794692357000000,"name":"zsh"}]}
+{"expect":[["ended","hook"]]}
