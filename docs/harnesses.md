@@ -38,7 +38,7 @@ A Codex process holds a lock on `~/.codex/thread-writer-locks/<thread>.lock` for
 | `task_complete` while an item of a `request_user_input_async` call has no answer since the last prompt the user typed | question, as a weak signal |
 | `task_complete`, or a later change to `goals_1.sqlite`, with the thread's goal `blocked`, `usage_limited` or `budget_limited` and its `updated_at_ms` no earlier than the turn's `started_at` second | question, as a weak signal |
 | `task_complete` while a subagent the turn started, or gave a `followup_task`, is still at work, or while the thread's goal is `active` with no continuation deferral | working, in the background |
-| `task_complete` while `queue_1.sqlite` holds a prompt the user queued for the thread | working: Codex starts that prompt next |
+| `task_complete` without an error while `queue_1.sqlite` holds a prompt the user queued for the thread | working: Codex starts that prompt next |
 | `task_complete` otherwise, or, after the turn ended, the last such subagent completed or the goal stopped being active | stopped |
 | `task_complete` with an error | error |
 | `turn_aborted`, which a cancelled approval writes too | idle (no light) |
@@ -56,7 +56,7 @@ A thread whose `session_meta` names a subagent, by its `source` or its `thread_s
 - `request_user_input_async`, the desktop app's question, does not stop the agent, so the session stays working while it waits for the answer, and shows the question only once the turn ends. A prompt the user types lets every question before it go, answered or not, and a turn Codex starts by itself does not: while a question is open and a goal goes on by itself, each of the goal's turns ends on the question again. A question asked before the lock was taken, or further back than the 16 MiB a start reads, is not known.
 - A goal's next turn can come long after the last one ended: of 1,086 goal turns that followed a goal turn in the desktop rollouts, 568 started more than a minute later, and the session shows working in the background meanwhile.
 - A waiting goal made active again, or cleared, after its turn ended keeps the question until the next turn, since no move leaves a question for the background.
-- A queued prompt the user removes just as the turn ends leaves the session working until its next turn.
+- A queued prompt the user removes just as the turn ends leaves the session working until its next turn. Whether Codex starts a queued prompt after a failed turn was not seen, so the failure shows.
 - A failing request that Codex retries leaves no record, so the session stays working until the turn ends. After a turn ends on a capacity error (503), the desktop app can start it again by itself, as a turn with trigger `capacity_retry_automatic` (12 such turns in the desktop rollouts, 4 of them within a minute of an error), which shows working again after the error.
 - A subagent that never reports completing keeps its parent in the background until the next prompt.
 - A subagent started or given its task in an earlier turn does not keep its parent in the background: when the turn ends the session shows stopped while the subagent works. A `send_message` to a subagent starts no turn of its own, so it does not count either.

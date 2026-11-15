@@ -689,12 +689,23 @@ mod tests {
     use super::*;
     use crate::coverage::Declared;
 
-    /// The name a fixture that demonstrates a declaration has:
-    /// `<signal>.<channel>`, as the fixtures spell them.
-    fn demonstrating(declared: &Declared) -> String {
+    /// The name a fixture that demonstrates a declaration of `harness` has:
+    /// `<signal>.<channel>`, as the fixtures spell them, and
+    /// `<signal>.<channel>.inferred` for an inferred case of a signal the
+    /// harness was also seen to tell on that channel.
+    fn demonstrating(harness: Harness, declared: &Declared) -> String {
         let signal = serde_json::to_value(declared.signal).unwrap();
         let channel = serde_json::to_value(declared.channel).unwrap();
-        format!("{}.{}", signal.as_str().unwrap(), channel.as_str().unwrap())
+        let name = format!("{}.{}", signal.as_str().unwrap(), channel.as_str().unwrap());
+        let seen = harness::signals(harness).iter().any(|other| {
+            other.signal == declared.signal
+                && other.channel == declared.channel
+                && other.evidence == Evidence::Observed
+        });
+        match declared.evidence {
+            Evidence::Inferred if seen => format!("{name}.inferred"),
+            _ => name,
+        }
     }
 
     #[test]
@@ -706,7 +717,7 @@ mod tests {
                 .iter()
                 .filter(|declared| declared.channel != Channel::Daemon);
             for declared in sourced {
-                let name = demonstrating(declared);
+                let name = demonstrating(harness, declared);
                 assert!(
                     names(harness).contains(&name),
                     "{}: no fixture {name} demonstrates {:?} on {:?}",

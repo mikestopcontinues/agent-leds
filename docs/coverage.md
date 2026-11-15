@@ -64,7 +64,8 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 ### Prompted
 
 - Claude Code, file, observed: a transcript user record, not a tool result, with a promptSource (typed, sdk or a task notification) or an origin (a skill's slash command), keyed by its promptId; after the turn closed, the isMeta user record starting Stop hook feedback: that a Stop hook that blocks writes, or the model writing again, as after a compaction (probe-claude cc1, cc3; desktop transcripts 2.1.309, 2.1.317, 2.1.321; gaps/stophook-nb (a Stop hook that fails without blocking, 2.1.325))
-- Codex, file, observed: event_msg task_started, keyed by its turn_id; or task_complete while queue_1.sqlite holds a prompt queued for the thread, which Codex starts next (probe-codex runA, runB, runC; the queue from Codex 0.162's schema and a desktop rollout's queued turn, 2026-10-11, its row unseen)
+- Codex, file, observed: event_msg task_started, keyed by its turn_id (probe-codex runA, runB, runC)
+- Codex, file, inferred: task_complete without an error while queue_1.sqlite holds a prompt queued for the thread, which Codex starts next (the queue from Codex 0.162's schema and a desktop rollout's queued turn, 2026-10-11, its row unseen)
 - Grok, file, observed: events.jsonl turn_started, keyed by its turn_number, including the turn a session starts by itself when a background subagent finishes (probe-grok prompt_submitted, runs a, e)
 - Cursor, hook, observed: beforeSubmitPrompt, for a chat bound to its process; the only word of a text-only turn until it ends (probe-cursor run F; 0.5.0 hooks)
 - Cursor, file, observed: a finished transcript whose last record is a user or assistant record, after the turn's end or with more user records than before, as after a background job (probe-cursor runs A, B, D, G, H)
@@ -161,7 +162,8 @@ Each cell is the channel a harness produces the signal on: `file`, `hook`, both,
 ### BackgroundDone
 
 - Claude Code, file, observed: the session file going from busy to idle after a backgrounded turn (probe-claude cc3)
-- Codex, file, observed: after the turn ended, the last such subagent's SubAgentActivity completed or interrupted, or the goal no longer active, with neither left (probe-codex runA PROMPT5; desktop rollout 2026-10-13; the goal from Codex 0.162's statements on goals_1.sqlite, unseen)
+- Codex, file, observed: after the turn ended, the last such subagent's SubAgentActivity completed or interrupted, with no active goal left (probe-codex runA PROMPT5; desktop rollout 2026-10-13)
+- Codex, file, inferred: after the turn ended, the thread's goal in goals_1.sqlite no longer active, or deferred, with no such subagent left (the goal from Codex 0.162's statements on goals_1.sqlite, unseen)
 - Grok, file, inferred: updates.jsonl subagent_finished with will_wake false, leaving no subagent running; will_wake false was seen only for subagents that finished inside the turn, and the one that finished after its turn ended had will_wake true and started a turn, so this may never fire (probe-grok subagent, run e; session 01a1db59-934f)
 
 ### Ended

@@ -45,8 +45,9 @@ const fn file(signal: Signal, record: &'static str, cite: &'static str) -> Decla
     }
 }
 
-/// What Codex's files and its one hook tell, all of it seen in the probe's
-/// runs or in the rollouts Codex had written before them.
+/// What Codex's files and its one hook tell, all of it but the queue and a
+/// goal's moves after its turn seen in the probe's runs or in the rollouts
+/// Codex had written before them.
 pub const SIGNALS: &[Declared] = &[
     file(
         Signal::Started,
@@ -55,8 +56,15 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::Prompted,
-        "event_msg task_started, keyed by its turn_id; or task_complete while queue_1.sqlite holds a prompt queued for the thread, which Codex starts next",
-        "probe-codex runA, runB, runC; the queue from Codex 0.162's schema and a desktop rollout's queued turn, 2026-10-11, its row unseen",
+        "event_msg task_started, keyed by its turn_id",
+        "probe-codex runA, runB, runC",
+    ),
+    Declared::new(
+        Signal::Prompted,
+        Channel::File,
+        Evidence::Inferred,
+        "task_complete without an error while queue_1.sqlite holds a prompt queued for the thread, which Codex starts next",
+        "the queue from Codex 0.162's schema and a desktop rollout's queued turn, 2026-10-11, its row unseen",
     ),
     file(
         Signal::QuestionAsked,
@@ -95,8 +103,15 @@ pub const SIGNALS: &[Declared] = &[
     ),
     file(
         Signal::BackgroundDone,
-        "after the turn ended, the last such subagent's SubAgentActivity completed or interrupted, or the goal no longer active, with neither left",
-        "probe-codex runA PROMPT5; desktop rollout 2026-10-13; the goal from Codex 0.162's statements on goals_1.sqlite, unseen",
+        "after the turn ended, the last such subagent's SubAgentActivity completed or interrupted, with no active goal left",
+        "probe-codex runA PROMPT5; desktop rollout 2026-10-13",
+    ),
+    Declared::new(
+        Signal::BackgroundDone,
+        Channel::File,
+        Evidence::Inferred,
+        "after the turn ended, the thread's goal in goals_1.sqlite no longer active, or deferred, with no such subagent left",
+        "the goal from Codex 0.162's statements on goals_1.sqlite, unseen",
     ),
     file(
         Signal::Ended,
@@ -980,17 +995,13 @@ fn says(
             tell(id, thread, Channel::File, [Signal::Answered], out);
         }
         close(thread, payload);
-        // The prompt the user queued starts next, so the session works on.
-        if databases.queued(id) {
-            tell(id, thread, Channel::File, [Signal::Prompted], out);
-            return;
-        }
         let mut told = BTreeSet::from([Signal::TurnEnded]);
         let message = payload.last_agent_message.as_deref().unwrap_or_default();
         if ends_on_question(message) || proposes_plan(message) || !thread.asks.is_empty() {
             told.insert(Signal::TurnEndedAsking);
         }
-        if payload.error.is_some() {
+        let failed = payload.error.is_some();
+        if failed {
             told.insert(Signal::TurnFailed);
         }
         thread.rest = Some(Rest {
@@ -998,6 +1009,13 @@ fn says(
             started: payload.started_at,
             goal: databases.goal(id, payload.started_at),
         });
+        // The prompt the user queued starts next, so the session works on;
+        // whether Codex starts it after a failure is not known, and the
+        // failure is told. The end stays, for what changes before it starts.
+        if !failed && databases.queued(id) {
+            tell(id, thread, Channel::File, [Signal::Prompted], out);
+            return;
+        }
         let end = thread.end().expect("rested");
         tell(id, thread, Channel::File, end, out);
     } else if record.is("event_msg", "turn_aborted") {
@@ -1476,7 +1494,7 @@ mod tests {
 
     #[test]
     fn a_goal_that_moves_after_its_turn_ended_moves_the_light() {
-        let replay = replay("a_goal_that_moves_after_its_turn_ended_moves_the_light");
+        let replay = replay("background_done.file.inferred");
         assert_eq!(phase(&replay), Phase::Stopped);
     }
 
@@ -1494,13 +1512,21 @@ mod tests {
 
     #[test]
     fn a_prompt_queued_when_the_turn_ends_keeps_the_session_working() {
-        let replay = replay("a_prompt_queued_when_the_turn_ends_keeps_the_session_working");
+        let replay = replay("prompted.file.inferred");
         assert_eq!(phase(&replay), Phase::Working);
         assert!(
             told(&replay)
                 .iter()
                 .all(|told| !told.contains(&Signal::TurnEnded))
         );
+    }
+
+    /// A failed turn is told even with a prompt queued, since whether Codex
+    /// starts the prompt after it is not known.
+    #[test]
+    fn a_turn_that_fails_with_a_prompt_queued_fails() {
+        let replay = replay("a_turn_that_fails_with_a_prompt_queued_fails");
+        assert_eq!(phase(&replay), Phase::Failed);
     }
 
     /// A goals database as Codex leaves it, with `status` for the thread.
